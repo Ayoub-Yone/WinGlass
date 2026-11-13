@@ -1,0 +1,423 @@
+// The floating capsule: horizontal wheel scrolling with inertia, pointer drag-and-drop reordering
+// with spring transitions (persisted to SQLite), vertical drag to snap between the top and bottom
+// screen edges, fullscreen slide-away, liquid-glass backdrop, and the right-click menu.
+
+import {
+  Layers,
+  LayoutGrid,
+  Maximize2,
+  Palette,
+  PanelBottom,
+  PanelTop,
+  Power,
+  Settings as SettingsIcon,
+  Trash2,
+  Zap,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { LiquidGlassCanvas } from "./LiquidGlassCanvas";
+import { openSettings } from "./ui";
+import { useHub } from "../engine/DataHub";
+import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/ThemeEngine";
+import { pushCapture, useHitRegion } from "../lib/hitRegions";
+import { patchSettings, useSettings } from "../lib/hooks";
+import { ipc, subscribe } from "../lib/ipc";
+import { clamp } from "../lib/format";
+import { getWidget, sanitizeLayout } from "../widgets/WidgetRegistry";
+import type { LayoutItem, Span } from "../types/lumabar";
+
+const SPRING = "transform 280ms cubic-bezier(0.2, 0.9, 0.3, 1.15)";
+
+type Drag =
+  | {
+      kind: "reorder";
+      id: string;
+      from: number;
+      to: number;
+      dx: number;
+      rects: DOMRect[];
+      settling: boolean;
+    }
+  | { kind: "snap"; dy: number; screenY: number };
+
+/** Same rule as the backend's snap_to_cursor: upper half of the monitor -> top edge. */
+function edgeForScreenY(screenY: number): "top" | "bottom" {
+  const scr = window.screen as Screen & { availTop?: number };
+  const top = scr.availTop ?? 0;
+  return screenY < top + scr.height / 2 ? "top" : "bottom";
+}
+
+interface Pending {
+  x: number;
+  y: number;
+  pointerId: number;
+  itemId: string | null;
+  started: boolean;
+  release: (() => void) | null;
+}
+
+function swallowNextClick(): void {
+  const stop = (e: MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+  };
+  window.addEventListener("click", stop, { capture: true, once: true });
+  window.setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 400);
+}
+
+export function DockContainer() {
+  const settings = useSettings();
+  const position = useHub((s) => s.position);
+  const fullscreen = useHub((s) => s.fullscreen);
+  const [layout, setLayout] = useState<LayoutItem[] | null>(null);
+  const [drag, setDrag] = useState<Drag | null>(null);
+  const [instant, setInstant] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number; instanceId: string | null } | null>(null);
+  const [glassActive, setGlassActive] = useState(false);
+
+  const pillRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef(new Map<string, HTMLDivElement>());
+  const pending = useRef<Pending | null>(null);
+  const scrollTarget = useRef<number | null>(null);
+  const scrollAnim = useRef(0);
+
+  useHitRegion(pillRef, !fullscreen);
+
+  const theme = THEMES[settings?.theme ?? "ios-glass"];
+  const size = SIZES[settings?.size ?? "medium"];
+
+  // ------------------------------------------------------------ layout load / sync / persist
+
+  useEffect(() => {
+    void ipc.getLayout().then((stored) => {
+      const clean = sanitizeLayout(stored);
+      setLayout(clean);
+      if (!stored) void ipc.saveLayout(clean);
+    });
+    return subscribe("layout:changed", ({ source, layout: next }) => {
+      if (source !== "dock") setLayout(sanitizeLayout(next));
+    });
+  }, []);
+
+  const persist = useCallback((next: LayoutItem[]) => {
+    setLayout(next);
+    void ipc.saveLayout(next);
+  }, []);
+
+  // ------------------------------------------------------------ liquid glass capture rect
+
+  useEffect(() => {
+    if (!theme.usesGlassShader) return;
+    const pill = pillRef.current;
+    if (!pill) return;
+    const report = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const r = pill.getBoundingClientRect();
+      void ipc.setGlassRect([r.left * dpr, r.top * dpr, r.width * dpr, r.height * dpr]).catch(() => undefined);
+    };
+    const ro = new ResizeObserver(report);
+    ro.observe(pill);
+    report();
+    const off = subscribe("dock:layout", () => window.setTimeout(report, 50));
+    const t = window.setInterval(report, 2000);
+    return () => {
+      ro.disconnect();
+      off();
+      window.clearInterval(t);
+    };
+  }, [theme.usesGlassShader, position, settings?.size]);
+
+  // ------------------------------------------------------------ wheel -> horizontal scroll with inertia
+
+  const onWheel = (e: React.WheelEvent) => {
+    const el = scrollRef.current;
+    if (!el || el.scrollWidth <= el.clientWidth + 1) return;
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    const max = el.scrollWidth - el.clientWidth;
+    const base = scrollTarget.current ?? el.scrollLeft;
+    scrollTarget.current = clamp(base + delta, 0, max);
+    if (scrollAnim.current) return;
+    const step = () => {
+      const target = scrollTarget.current;
+      if (target === null) {
+        scrollAnim.current = 0;
+        return;
+      }
+      const diff = target - el.scrollLeft;
+      if (Math.abs(diff) < 0.5) {
+        el.scrollLeft = target;
+        scrollTarget.current = null;
+        scrollAnim.current = 0;
+        return;
+      }
+      el.scrollLeft += diff * 0.2;
+      scrollAnim.current = requestAnimationFrame(step);
+    };
+    scrollAnim.current = requestAnimationFrame(step);
+  };
+
+  // ------------------------------------------------------------ pointer: reorder & edge snap
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || drag) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("input, textarea, [data-no-drag]")) return;
+    const itemEl = target.closest<HTMLElement>("[data-instance]");
+    pending.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId, itemId: itemEl?.dataset.instance ?? null, started: false, release: null };
+  };
+
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const p = pending.current;
+    if (!p || !layout) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+
+    if (!p.started) {
+      const horizontal = Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy) * 1.2;
+      const vertical = Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx);
+      if (!horizontal && !vertical) return;
+      p.started = true;
+      p.release = pushCapture();
+      pillRef.current?.setPointerCapture(e.pointerId);
+      if (horizontal && p.itemId) {
+        const rects = layout.map((it) => itemRefs.current.get(it.instanceId)?.getBoundingClientRect() ?? new DOMRect());
+        const from = layout.findIndex((it) => it.instanceId === p.itemId);
+        setDrag({ kind: "reorder", id: p.itemId, from, to: from, dx, rects, settling: false });
+      } else if (vertical) {
+        setDrag({ kind: "snap", dy, screenY: e.screenY });
+      } else {
+        // Horizontal drag on the pill background: nothing to reorder.
+        p.release();
+        pending.current = null;
+      }
+      return;
+    }
+
+    setDrag((d) => {
+      if (!d) return d;
+      if (d.kind === "snap") return { ...d, dy, screenY: e.screenY };
+      if (d.settling) return d;
+      const dragged = d.rects[d.from];
+      const center = dragged.left + dragged.width / 2 + dx;
+      let to = 0;
+      d.rects.forEach((r, i) => {
+        if (i !== d.from && r.left + r.width / 2 < center) to += 1;
+      });
+      return { ...d, dx, to };
+    });
+  };
+
+  const finishPointer = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const p = pending.current;
+    pending.current = null;
+    if (!p?.started) return;
+    swallowNextClick();
+    try {
+      pillRef.current?.releasePointerCapture(e.pointerId);
+    } catch {
+      /* capture already released */
+    }
+    const current = drag;
+    if (current?.kind === "snap") {
+      setDrag(null);
+      p.release?.();
+      if (Math.abs(current.dy) > 40) void ipc.snapDockToCursor().catch(() => undefined);
+      return;
+    }
+    if (current?.kind === "reorder" && layout) {
+      const { from, to, rects } = current;
+      const width = rects[from].width;
+      const finalLeft = to > from ? rects[to].right - width : to < from ? rects[to].left : rects[from].left;
+      setDrag({ ...current, dx: finalLeft - rects[from].left, settling: true });
+      window.setTimeout(() => {
+        const next = [...layout];
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        setInstant(true);
+        setDrag(null);
+        if (from !== to) persist(next);
+        requestAnimationFrame(() => requestAnimationFrame(() => setInstant(false)));
+        p.release?.();
+      }, 190);
+      return;
+    }
+    p.release?.();
+    setDrag(null);
+  };
+
+  const itemStyle = (index: number, id: string): CSSProperties => {
+    if (!drag || drag.kind !== "reorder") return { transition: instant ? "none" : SPRING };
+    if (id === drag.id) {
+      return {
+        transform: `translateX(${drag.dx}px) scale(${drag.settling ? 1 : 1.04})`,
+        transition: drag.settling ? "transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1)" : "none",
+        zIndex: 10,
+        filter: drag.settling ? undefined : "drop-shadow(0 6px 14px rgba(0,0,0,0.35))",
+      };
+    }
+    const shift = drag.rects[drag.from].width + size.gap;
+    let offset = 0;
+    if (drag.from < drag.to && index > drag.from && index <= drag.to) offset = -shift;
+    if (drag.from > drag.to && index >= drag.to && index < drag.from) offset = shift;
+    return { transform: `translateX(${offset}px)`, transition: SPRING };
+  };
+
+  // ------------------------------------------------------------ context menu
+
+  const menuItems = (instanceId: string | null): MenuItem[] => {
+    const items: MenuItem[] = [];
+    const inst = instanceId ? layout?.find((l) => l.instanceId === instanceId) : undefined;
+    const def = inst ? getWidget(inst.widgetId) : undefined;
+    if (inst && def && layout) {
+      if (def.sizes.length > 1) {
+        items.push({
+          id: "size",
+          label: `${def.name} size`,
+          icon: Maximize2,
+          submenu: def.sizes.map((s: Span) => ({
+            id: `size-${s}`,
+            label: s,
+            checked: inst.span === s,
+            onSelect: () => persist(layout.map((l) => (l.instanceId === inst.instanceId ? { ...l, span: s } : l))),
+          })),
+        });
+      }
+      items.push({
+        id: "remove",
+        label: `Remove ${def.name}`,
+        icon: Trash2,
+        danger: true,
+        onSelect: () => persist(layout.filter((l) => l.instanceId !== inst.instanceId)),
+      });
+    }
+    items.push(
+      { id: "add", label: "Add Widgets…", icon: LayoutGrid, separatorBefore: items.length > 0, onSelect: () => void ipc.openWindow("picker") },
+      {
+        id: "style",
+        label: "Style",
+        icon: Palette,
+        submenu: [
+          ...THEME_ORDER.map((t) => ({
+            id: `theme-${t}`,
+            label: THEMES[t].name,
+            checked: settings?.theme === t,
+            onSelect: () => void patchSettings((s) => ({ ...s, theme: t })),
+          })),
+          ...SIZE_ORDER.map((sz, i) => ({
+            id: `size-${sz}`,
+            label: SIZES[sz].name,
+            checked: settings?.size === sz,
+            separatorBefore: i === 0,
+            onSelect: () => void patchSettings((s) => ({ ...s, size: sz })),
+          })),
+        ],
+      },
+      {
+        id: "position",
+        label: "Position",
+        icon: Layers,
+        submenu: [
+          { id: "pos-bottom", label: "Bottom", icon: PanelBottom, checked: position === "bottom", onSelect: () => void ipc.setDockPosition("bottom") },
+          { id: "pos-top", label: "Top", icon: PanelTop, checked: position === "top", onSelect: () => void ipc.setDockPosition("top") },
+        ],
+      },
+      { id: "automations", label: "Automations", icon: Zap, onSelect: () => openSettings("automations") },
+      { id: "settings", label: "Settings", icon: SettingsIcon, onSelect: () => openSettings("general") },
+      { id: "quit", label: "Restore Windows Taskbar & Quit", icon: Power, danger: true, separatorBefore: true, onSelect: () => void ipc.restoreTaskbarAndQuit() },
+    );
+    return items;
+  };
+
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const itemEl = (e.target as HTMLElement).closest<HTMLElement>("[data-instance]");
+    setMenu({ x: e.clientX, y: e.clientY, instanceId: itemEl?.dataset.instance ?? null });
+  };
+
+  // ------------------------------------------------------------ render
+
+  const hidden = fullscreen;
+  const snapDy = drag?.kind === "snap" ? drag.dy : 0;
+  const pillStyle: CSSProperties = {
+    height: "var(--lb-height)",
+    padding: "var(--lb-padding)",
+    maxWidth: "100%",
+    transform: hidden ? `translateY(${position === "bottom" ? 150 : -150}%)` : `translateY(${snapDy}px)`,
+    opacity: hidden ? 0 : 1,
+    transition: drag?.kind === "snap" ? "none" : "transform 320ms cubic-bezier(0.3, 0.9, 0.3, 1), opacity 240ms ease",
+    background: theme.usesGlassShader ? (glassActive ? "transparent" : "rgba(22, 22, 26, 0.72)") : undefined,
+    backdropFilter: theme.usesGlassShader ? "none" : undefined,
+  };
+
+  const snapTarget = drag?.kind === "snap" && Math.abs(drag.dy) > 40 ? edgeForScreenY(drag.screenY) : null;
+
+  return (
+    <div
+      className="flex h-full w-full justify-center"
+      style={{
+        alignItems: position === "bottom" ? "flex-end" : "flex-start",
+        paddingBottom: position === "bottom" ? "10px" : 0,
+        paddingTop: position === "top" ? "10px" : 0,
+      }}
+    >
+      <div
+        ref={pillRef}
+        className="lb-pill relative flex items-center"
+        style={pillStyle}
+        onWheel={onWheel}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={finishPointer}
+        onPointerCancel={finishPointer}
+        onContextMenu={onContextMenu}
+      >
+        {theme.usesGlassShader && <LiquidGlassCanvas radius={size.radius} onActiveChange={setGlassActive} />}
+        <div ref={scrollRef} className="lb-noscroll relative flex h-full min-w-0 items-center overflow-x-auto" style={{ gap: "var(--lb-gap)" }}>
+          {(layout ?? []).map((item, index) => {
+            const def = getWidget(item.widgetId);
+            if (!def) return null;
+            const Component = def.component;
+            return (
+              <div
+                key={item.instanceId}
+                data-instance={item.instanceId}
+                ref={(el) => {
+                  if (el) itemRefs.current.set(item.instanceId, el);
+                  else itemRefs.current.delete(item.instanceId);
+                }}
+                className="relative flex h-full shrink-0 items-center"
+                style={itemStyle(index, item.instanceId)}
+              >
+                <Component instance={item} span={item.span} />
+              </div>
+            );
+          })}
+          {layout && layout.length === 0 && (
+            <button className="lb-card flex h-full items-center gap-2 border-none px-4" onClick={() => void ipc.openWindow("picker")}>
+              <LayoutGrid size={15} /> Add widgets
+            </button>
+          )}
+        </div>
+        {snapTarget && snapTarget !== position && (
+          <div
+            className="lb-menu pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap px-3 py-1.5"
+            style={position === "bottom" ? { bottom: "calc(100% + 10px)" } : { top: "calc(100% + 10px)" }}
+          >
+            Release to dock at the {snapTarget}
+          </div>
+        )}
+      </div>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.instanceId)}
+          preferUp={position === "bottom"}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </div>
+  );
+}

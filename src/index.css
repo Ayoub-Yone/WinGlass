@@ -1,0 +1,189 @@
+@import "tailwindcss";
+
+:root {
+  --lb-surface: rgba(22, 22, 26, 0.72);
+  --lb-border: 1px solid rgba(255, 255, 255, 0.14);
+  --lb-card: rgba(255, 255, 255, 0.07);
+  --lb-card-hover: rgba(255, 255, 255, 0.12);
+  --lb-text: #f5f5f7;
+  --lb-muted: rgba(235, 235, 245, 0.62);
+  --lb-faint: rgba(235, 235, 245, 0.34);
+  --lb-track: rgba(255, 255, 255, 0.12);
+  --lb-backdrop: blur(28px) saturate(180%);
+  --lb-menu: rgba(28, 28, 32, 0.9);
+  --lb-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  --lb-accent: #0a84ff;
+  --lb-height: 58px;
+  --lb-padding: 6px;
+  --lb-gap: 6px;
+  --lb-unit: 108px;
+  --lb-radius: 22px;
+  --lb-card-radius: 14px;
+  --lb-icon: 30px;
+  --lb-font: 12px;
+  --lb-small: 10px;
+  --lb-large: 17px;
+  --lb-green: #30d158;
+  --lb-amber: #ffb340;
+  --lb-red: #ff453a;
+  --lb-purple: #bf5af2;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-size: var(--lb-font);
+  color: var(--lb-text);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "tnum" 1;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+/* Modal windows have their own opaque-ish surface. */
+html[data-window="picker"] body,
+html[data-window="settings"] body {
+  background: transparent;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  user-select: text;
+}
+
+.lb-noscroll {
+  scrollbar-width: none;
+}
+.lb-noscroll::-webkit-scrollbar {
+  display: none;
+}
+
+.lb-thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--lb-track) transparent;
+}
+
+.lb-pill {
+  background: var(--lb-surface);
+  border: var(--lb-border);
+  border-radius: var(--lb-radius);
+  backdrop-filter: var(--lb-backdrop);
+  -webkit-backdrop-filter: var(--lb-backdrop);
+  box-shadow: var(--lb-shadow);
+}
+
+.lb-card {
+  background: var(--lb-card);
+  border-radius: var(--lb-card-radius);
+  transition: background-color 160ms ease;
+}
+.lb-card:hover {
+  background: var(--lb-card-hover);
+}
+
+.lb-menu {
+  background: var(--lb-menu);
+  border: var(--lb-border);
+  border-radius: 14px;
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--lb-shadow);
+}
+
+.lb-muted {
+  color: var(--lb-muted);
+}
+.lb-faint {
+  color: var(--lb-faint);
+}
+
+.lb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  cursor: default;
+  transition: background-color 140ms ease, transform 120ms ease;
+}
+.lb-icon-btn:hover {
+  background: var(--lb-card-hover);
+}
+.lb-icon-btn:active {
+  transform: scale(0.92);
+}
+.lb-icon-btn:focus-visible,
+.lb-focus:focus-visible {
+  outline: 2px solid var(--lb-accent);
+  outline-offset: 1px;
+}
+
+@keyframes lb-toast-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes lb-toast-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes lb-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes lb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.lb-pop {
+  animation: lb-pop-in 140ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
