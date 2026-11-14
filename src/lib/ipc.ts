@@ -7,8 +7,9 @@ import type {
   AppEntry,
   AppAudio,
   AppHit,
-  TrayButton,
+  TrayAction,
   TrayIcon,
+  TrayOutcome,
   AudioState,
   DockLayout,
   DockPosition,
@@ -59,7 +60,7 @@ export const ipc = {
   setAppMute: (pid: number, muted: boolean) => invoke<AppAudio[]>("set_app_mute", { pid, muted }),
 
   getTrayIcons: () => invoke<TrayIcon[]>("get_tray_icons"),
-  activateTrayIcon: (id: string, button: TrayButton) => invoke<void>("activate_tray_icon", { id, button }),
+  trayIconAction: (id: string, action: TrayAction) => invoke<TrayOutcome>("tray_icon_action", { id, action }),
 
   mediaState: () => invoke<MediaState>("media_state"),
   mediaCommand: (action: "toggle" | "pause" | "play" | "next" | "previous") => invoke<void>("media_command", { action }),

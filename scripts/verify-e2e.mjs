@@ -452,28 +452,59 @@ try {
     check("volume flyout closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="volume-popover"]')`)) === true);
   }
 
-  // ---------------------------------------------------------------- hidden-icons chevron (no tray strip in the bar)
+  // ---------------------------------------------------------------- hidden-icons chevron + tray card (no tray strip in the bar)
   const tray = await dock.invoke("get_tray_icons");
-  check("get_tray_icons: running tray apps with icons, never lumabar", Array.isArray(tray) && tray.every((t) => t.id && t.name && t.iconPng?.startsWith("data:image/png") && !/lumabar/i.test(t.exe)), JSON.stringify(tray.map((t) => t.name)));
-  const chevron = await waitFor(() => dock.eval(`(() => { const c = document.querySelector('.lb-pill [data-testid="tray-chevron"]'); return c ? { up: Boolean(c.querySelector('.lucide-chevron-up')), label: c.getAttribute('aria-label'), iconsInBar: document.querySelectorAll('.lb-pill [data-testid="tray-icon"]').length } : null; })()`), 6000);
-  check("one « Afficher les icônes cachées » chevron (^ docked bottom), zero tray icons in the bar", chevron && chevron.up && chevron.label === "Afficher les icônes cachées" && chevron.iconsInBar === 0, JSON.stringify(chevron));
+  check("get_tray_icons: running tray apps, never the shell, lumabar listed as itself", Array.isArray(tray) && tray.every((t) => t.id && t.name && !/\\explorer\.exe$/i.test(t.exe)) && tray.some((t) => t.isSelf && /lumabar\.exe$/i.test(t.exe)), JSON.stringify(tray.map((t) => `${t.name}${t.isSelf ? "*" : ""}`)));
+  const chevron = await waitFor(() => dock.eval(`(() => {
+    const c = document.querySelector('.lb-pill [data-testid="tray-chevron"]');
+    if (!c) return null;
+    const slot = c.closest('[data-instance]');
+    const next = slot?.nextElementSibling;
+    return { up: Boolean(c.querySelector('.lucide-chevron-up')), tile: c.classList.contains('lb-card'), label: c.getAttribute('aria-label'), iconsInBar: document.querySelectorAll('.lb-pill [data-testid="tray-icon"]').length, nextIsClock: Boolean(next && next.getAttribute('data-instance')?.startsWith('clock')) };
+  })()`), 6000);
+  check("one rounded « Afficher les icônes cachées » chevron tile (^), left of the clock, zero tray icons in the bar", chevron && chevron.up && chevron.tile && chevron.label === "Afficher les icônes cachées" && chevron.iconsInBar === 0 && chevron.nextIsClock, JSON.stringify(chevron));
+  const shellBefore = taskbar();
   await dock.eval(`document.querySelector('[data-testid="tray-chevron"]').click()`);
-  const trayPanel = await waitFor(() => dock.eval(`(() => { const p = document.querySelector('[data-testid="tray-panel"]'); if (!p) return null; const pr = p.closest('.lb-menu').getBoundingClientRect(); const cr = document.querySelector('[data-testid="tray-chevron"]').getBoundingClientRect(); return { cells: p.querySelectorAll('[data-testid="tray-icon"]').length, names: [...p.querySelectorAll('[data-testid="tray-icon"]')].map((b) => b.getAttribute('aria-label')), above: pr.bottom <= cr.top }; })()`), 3000);
-  check("chevron opens the frosted grid above it with every tray app", trayPanel && trayPanel.cells === tray.length && trayPanel.above, JSON.stringify(trayPanel));
-  if (trayPanel?.cells) {
-    const hoverName = await dock.eval(`(() => { const b = document.querySelector('[data-testid="tray-panel"] [data-testid="tray-icon"]'); b.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); b.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); return new Promise((r) => setTimeout(() => r({ want: b.getAttribute('aria-label'), got: document.querySelector('[data-testid="tray-hover-name"]').textContent }), 100)); })()`);
-    check("hovering a tray icon shows the app's name", hoverName.want === hoverName.got, JSON.stringify(hoverName));
-  }
+  const card = await waitFor(() => dock.eval(`(() => {
+    const card = document.querySelector('[data-testid="tray-card"]');
+    const grid = document.querySelector('[data-testid="tray-grid"]');
+    if (!card || !grid) return null;
+    const cs = getComputedStyle(card), gs = getComputedStyle(grid);
+    const cr = card.getBoundingClientRect(), ch = document.querySelector('[data-testid="tray-chevron"]').getBoundingClientRect();
+    const cells = [...grid.querySelectorAll('[data-testid="tray-icon"]')];
+    const img = cells[0]?.querySelector('img, svg')?.getBoundingClientRect();
+    return { radius: cs.borderTopLeftRadius, bg: cs.backgroundColor, border: cs.borderTopColor, padding: cs.paddingTop, columns: gs.gridTemplateColumns.split(' ').length, gap: gs.columnGap, cells: cells.length, self: grid.querySelectorAll('[data-self]').length, gapAbove: Math.round(ch.top - cr.bottom), icon: img ? Math.round(img.width) : 0, labelsUnderIcons: grid.innerText.trim().length };
+  })()`), 3000);
+  check("tray card: 22px radius, rgba(24,24,26,0.92), 1px rgba(255,255,255,0.08) border, 22px padding, ~10px above the chevron", card && card.radius === "22px" && card.bg === "rgba(24, 24, 26, 0.92)" && card.border === "rgba(255, 255, 255, 0.08)" && card.padding === "22px" && Math.abs(card.gapAbove - 10) <= 1, JSON.stringify(card));
+  check("tray card: 5-column grid, 22px gaps, 28–30px icons, every tray app incl. lumabar, no text labels", card && card.columns === 5 && card.gap === "22px" && card.icon >= 26 && card.icon <= 30 && card.cells === tray.length && card.self === 1 && card.labelsUnderIcons === 0, JSON.stringify(card));
+  const tip = await dock.eval(`(() => { const b = document.querySelector('[data-testid="tray-grid"] [data-testid="tray-icon"]'); b.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); return new Promise((r) => setTimeout(() => r({ want: b.getAttribute('aria-label'), got: document.querySelector('[data-testid="tray-tooltip"]')?.textContent ?? null }), 120)); })()`);
+  check("hovering a tray icon shows a floating app-name tooltip", tip.got === tip.want, JSON.stringify(tip));
+  // Right click on lumabar's own icon: lumabar's glass menu, never the Windows tray.
+  await dock.eval(`document.querySelector('[data-testid="tray-grid"] [data-self]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))`);
+  const trayMenu = await waitFor(() => dock.eval(`(() => { const m = document.querySelector('[data-testid="tray-menu"]'); return m ? { header: m.querySelector('[data-testid="tray-menu-header"]').innerText.trim(), items: [...m.querySelectorAll('[role="menuitem"]')].map((i) => i.innerText.trim()), cardClosed: !document.querySelector('[data-testid="tray-card"]') } : null; })()`), 3000);
+  check("right click: lumabar menu with the app's name + Ouvrir / Paramètres / Quitter", trayMenu && trayMenu.header === "lumabar" && JSON.stringify(trayMenu.items) === JSON.stringify(["Ouvrir", "Paramètres", "Quitter"]), JSON.stringify(trayMenu));
+  const shellAfterMenu = taskbar();
+  check("right click never shows Shell_TrayWnd or an overflow window", shellAfterMenu.visible === shellBefore.visible && shellAfterMenu.overflow === false, JSON.stringify({ before: shellBefore, after: shellAfterMenu }));
+  await dock.eval(`document.querySelector('[data-testid="tray-menu-settings"]').click()`);
+  const settingsFromTray = await waitFor(async () => ((await findTarget("settings")) ? true : null), 8000);
+  check("Paramètres on lumabar opens lumabar's Settings", settingsFromTray === true);
+  await dock.invoke("close_window", { label: "settings" }).catch(() => undefined);
+  await sleep(500);
+  // Escape / outside click dismiss the card; the menu closes on Escape.
+  await dock.eval(`document.querySelector('[data-testid="tray-chevron"]').click()`);
+  await sleep(200);
   await dock.eval(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
   await sleep(200);
-  check("tray grid closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="tray-panel"]')`)) === true);
+  check("tray card closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="tray-card"]')`)) === true);
   await dock.eval(`document.querySelector('[data-testid="tray-chevron"]').click()`);
   await sleep(200);
   await dock.eval(`document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }))`);
   await sleep(200);
-  check("tray grid closes on an outside click", (await dock.eval(`!document.querySelector('[data-testid="tray-panel"]')`)) === true);
-  const badActivate = await dock.invoke("activate_tray_icon", { id: "no-such-id", button: "right" }).then(() => "ok", (e) => String(e));
-  check("activate_tray_icon rejects unknown items without touching the shell", badActivate !== "ok", badActivate);
+  check("tray card closes on an outside click", (await dock.eval(`!document.querySelector('[data-testid="tray-card"]')`)) === true);
+  const bad = await dock.invoke("tray_icon_action", { id: "no-such-id", action: "quit" }).then(() => "ok", (e) => String(e));
+  const selfEntry = tray.find((t) => t.isSelf);
+  const selfAct = selfEntry ? await dock.invoke("tray_icon_action", { id: selfEntry.id, action: "quit" }).then(() => "ok", (e) => String(e)) : "no self";
+  check("tray_icon_action rejects unknown items and never quits lumabar behind the dock's back", bad !== "ok" && selfAct !== "ok" && taskbar().overflow === false, `${bad} | ${selfAct}`);
 
   // ---------------------------------------------------------------- dock magnification (local compression) + glass bulge
   const mag = await dock.eval(`(async () => {

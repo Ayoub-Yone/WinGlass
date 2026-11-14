@@ -340,9 +340,13 @@ export interface TrayIcon {
   /** PNG data URL. */
   iconPng: string | null;
   isHiddenOverflow: boolean;
+  /** lumabar's own entry: the dock handles Open / Settings / Quit itself. */
+  isSelf: boolean;
 }
 
-export type TrayButton = "left" | "right" | "double";
+export type TrayAction = "open" | "settings" | "quit";
+
+export type TrayOutcome = "focused" | "invoked" | "launched" | "shown" | "closed" | "terminated" | "stillOpen";
 
 /** Integrated launcher result (Start Menu / Desktop / App Paths). */
 export interface AppHit {

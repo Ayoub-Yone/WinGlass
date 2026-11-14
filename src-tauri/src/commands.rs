@@ -274,11 +274,12 @@ pub async fn get_tray_icons() -> Result<Vec<TrayIcon>, String> {
     blocking(|| Ok(tray_icons::list())).await
 }
 
-/// `button`: "left" | "right" | "double". Forwarded to the app's real tray icon.
+/// `action`: "open" | "settings" | "quit" — acts on the app itself; the Windows tray and its
+/// overflow are never shown or clicked.
 #[tauri::command]
-pub async fn activate_tray_icon(id: String, button: String) -> Result<(), String> {
-    let button = tray_icons::Button::parse(&button).ok_or_else(|| format!("unknown button '{button}'"))?;
-    blocking(move || tray_icons::activate(&id, button)).await
+pub async fn tray_icon_action(id: String, action: String) -> Result<tray_icons::Outcome, String> {
+    let action = tray_icons::Action::parse(&action).ok_or_else(|| format!("unknown action '{action}'"))?;
+    blocking(move || tray_icons::act(&id, action)).await
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -403,8 +404,27 @@ pub fn get_secret_names(state: State<'_, AppState>) -> Vec<String> {
 /// (kv flag, widget, span, insert before the first of these widgets present — else at the end)
 const LAYOUT_MIGRATIONS: &[(&str, &str, &str, &[&str])] = &[
     ("layout_migration_volume", "volume", "1x1", &["clock"]),
-    ("layout_migration_hidden_tray", "hidden-tray", "auto", &["volume", "clock"]),
+    ("layout_migration_hidden_tray", "hidden-tray", "auto", &["clock"]),
 ];
+
+/// Widgets repositioned once (kv flag, widget, put just before this widget).
+const LAYOUT_MOVES: &[(&str, &str, &str)] = &[
+    // The hidden-icons chevron sits directly left of the clock / date tile.
+    ("layout_move_hidden_tray_by_clock", "hidden-tray", "clock"),
+];
+
+/// Move `widget_id` directly before `anchor` when both are present; true when the layout changed.
+pub fn move_widget_before(layout: &mut Vec<Value>, widget_id: &str, anchor: &str) -> bool {
+    let pos = |l: &Vec<Value>, id: &str| l.iter().position(|i| i.get("widgetId").and_then(|w| w.as_str()) == Some(id));
+    let (Some(from), Some(to)) = (pos(layout, widget_id), pos(layout, anchor)) else { return false };
+    if from + 1 == to {
+        return false;
+    }
+    let item = layout.remove(from);
+    let to = pos(layout, anchor).unwrap_or(layout.len());
+    layout.insert(to, item);
+    true
+}
 
 /// Widgets that no longer exist (the open-apps box, the always-visible tray strip): dropped from
 /// stored layouts.
@@ -441,6 +461,12 @@ pub fn get_layout(state: State<'_, AppState>) -> Option<Value> {
         for (flag, widget, span, anchors) in LAYOUT_MIGRATIONS {
             if state.db.kv_get(flag).is_none() {
                 changed |= add_widget_once(items, widget, span, anchors);
+                let _ = state.db.kv_set(flag, "1");
+            }
+        }
+        for (flag, widget, anchor) in LAYOUT_MOVES {
+            if state.db.kv_get(flag).is_none() {
+                changed |= move_widget_before(items, widget, anchor);
                 let _ = state.db.kv_set(flag, "1");
             }
         }
@@ -526,6 +552,21 @@ mod tests {
         let mut no_clock: Vec<Value> = Vec::new();
         assert!(add_widget_once(&mut no_clock, "volume", "1x1", &["clock"]));
         assert_eq!(no_clock[0]["instanceId"], "volume-default");
+    }
+
+    #[test]
+    fn hidden_tray_chevron_moves_next_to_the_clock_once() {
+        let ids = |l: &Vec<Value>| l.iter().filter_map(|i| i["widgetId"].as_str().map(str::to_string)).collect::<Vec<_>>();
+        let mut layout: Vec<Value> = serde_json::from_str(r#"[{"widgetId":"weather"},{"widgetId":"hidden-tray"},{"widgetId":"volume"},{"widgetId":"clock"}]"#).unwrap();
+        assert!(move_widget_before(&mut layout, "hidden-tray", "clock"));
+        assert_eq!(ids(&layout), ["weather", "volume", "hidden-tray", "clock"]);
+        assert!(!move_widget_before(&mut layout, "hidden-tray", "clock"));
+        // Clock first, or one of them missing.
+        let mut first: Vec<Value> = serde_json::from_str(r#"[{"widgetId":"clock"},{"widgetId":"hidden-tray"}]"#).unwrap();
+        assert!(move_widget_before(&mut first, "hidden-tray", "clock"));
+        assert_eq!(ids(&first), ["hidden-tray", "clock"]);
+        let mut none: Vec<Value> = serde_json::from_str(r#"[{"widgetId":"hidden-tray"}]"#).unwrap();
+        assert!(!move_widget_before(&mut none, "hidden-tray", "clock"));
     }
 
     #[test]

@@ -164,7 +164,7 @@ pub fn run() {
             commands::set_app_volume,
             commands::set_app_mute,
             commands::get_tray_icons,
-            commands::activate_tray_icon,
+            commands::tray_icon_action,
             commands::account_status,
             commands::account_login,
             commands::media_state,

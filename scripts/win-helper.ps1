@@ -46,6 +46,11 @@ public static class LumabarProbe {
     return (uint)SHAppBarMessage(4 /* ABM_GETSTATE */, ref d);
   }
   public static bool TrayVisible() { return IsWindowVisible(FindWindowW("Shell_TrayWnd", null)); }
+  public static bool OverflowVisible() {
+    IntPtr a = FindWindowW("TopLevelWindowForOverflowXamlIsland", null);
+    IntPtr b = FindWindowW("NotifyIconOverflowWindow", null);
+    return (a != IntPtr.Zero && IsWindowVisible(a)) || (b != IntPtr.Zero && IsWindowVisible(b));
+  }
   public static void Chord(byte[] keys) {
     foreach (byte k in keys) keybd_event(k, 0, 0, UIntPtr.Zero);
     System.Threading.Thread.Sleep(80);
@@ -120,7 +125,7 @@ switch ($Action) {
   }
   "taskbar" {
     $state = [LumabarProbe]::AppBarState()
-    @{ autoHide = [bool]($state -band 1); visible = [LumabarProbe]::TrayVisible() } | ConvertTo-Json -Compress
+    @{ autoHide = [bool]($state -band 1); visible = [LumabarProbe]::TrayVisible(); overflow = [LumabarProbe]::OverflowVisible() } | ConvertTo-Json -Compress
   }
   "hotkey" {
     # Ctrl + Alt + Shift + R

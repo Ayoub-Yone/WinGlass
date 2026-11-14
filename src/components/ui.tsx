@@ -168,8 +168,11 @@ export function Popover(props: {
   onClose: () => void;
   width: number;
   children: ReactNode;
+  /** Custom surface: no default menu background / padding (the caller styles it). */
+  surface?: CSSProperties;
+  testId?: string;
 }) {
-  const { anchor, open, onClose, width, children } = props;
+  const { anchor, open, onClose, width, children, surface, testId } = props;
   const position = useHub((s) => s.position);
   const ref = useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
@@ -209,8 +212,9 @@ export function Popover(props: {
   return createPortal(
     <div
       ref={ref}
-      className="lb-menu lb-pop fixed z-50 p-3"
-      style={{ ...style, transformOrigin: position === "bottom" ? "bottom center" : "top center", color: "var(--lb-text)" }}
+      data-testid={testId}
+      className={surface ? "lb-pop fixed z-50" : "lb-menu lb-pop fixed z-50 p-3"}
+      style={{ ...surface, ...style, transformOrigin: position === "bottom" ? "bottom center" : "top center", color: "var(--lb-text)" }}
       onPointerDown={(e) => e.stopPropagation()}
       // Portaled, but React still bubbles to the dock: the wheel must scroll the popover, not the dock.
       onWheel={(e) => e.stopPropagation()}

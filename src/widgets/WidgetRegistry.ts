@@ -177,8 +177,8 @@ export const DEFAULT_LAYOUT: LayoutItem[] = [
   { instanceId: "quick-toggles-default", widgetId: "quick-toggles", span: "2x1" },
   { instanceId: "cpu-default", widgetId: "cpu", span: "1x1" },
   { instanceId: "weather-default", widgetId: "weather", span: "2x1" },
-  { instanceId: "hidden-tray-default", widgetId: "hidden-tray", span: "auto" },
   { instanceId: "volume-default", widgetId: "volume", span: "1x1" },
+  { instanceId: "hidden-tray-default", widgetId: "hidden-tray", span: "auto" },
   { instanceId: "clock-default", widgetId: "clock", span: "1x1" },
 ];
 

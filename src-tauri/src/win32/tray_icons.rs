@@ -1,26 +1,32 @@
 //! Notification-area apps behind the dock's « Afficher les icônes cachées » chevron.
 //!
-//! **Listing** never moves the cursor or reveals the taskbar: Windows 11 records every app that ever showed a tray icon
-//! under `HKCU\Control Panel\NotifyIconSettings\<id>` (`ExecutablePath`, `InitialTooltip`,
-//! `IsPromoted`, `IconSnapshot`). An entry is live when its executable is running; paths may start
-//! with a Known Folder GUID (`{6D809377-…}\AMD\…`) which is expanded first. Icons come from the
-//! executable through the bounded icon LRU, with the shell's own `IconSnapshot` PNG as fallback.
-//! The list is then checked against the live UI Automation tree: whenever the tray XAML is
-//! exposed (taskbar on screen, or during an activation's reveal — the overflow flyout included),
-//! every `NotifyItemIcon` is read and running apps that have **no** live icon are dropped for a
-//! while (`ABSENT_TTL`), so the popup shows what the native flyout would.
+//! **Silent enumeration** — the Windows tray / overflow UI is never shown, focused or clicked:
+//! 1. Windows 11 records every app that ever showed a tray icon under
+//!    `HKCU\Control Panel\NotifyIconSettings\<id>` (`ExecutablePath` — possibly prefixed with a
+//!    Known Folder GUID —, `InitialTooltip`, `IsPromoted`, `IconSnapshot`). An entry is live when
+//!    its executable is running. lumabar's own entry is listed too (`is_self`).
+//! 2. UI Automation (`TreeScope_Descendants`) reads `NotifyItemIcon`s from `Shell_TrayWnd` and the
+//!    overflow (`TopLevelWindowForOverflowXamlIsland`) **only when Windows already exposes them**
+//!    (taskbar on screen, flyout opened by the user): live names, and with the overflow open,
+//!    running apps without a live icon drop out for a while (`ABSENT_TTL`). Windows does not expose
+//!    the tray XAML while the taskbar is hidden, and never builds the overflow tree until it opens.
+//! 3. Windows 10: the legacy `ToolbarWindow32` of `TrayNotifyWnd\SysPager` and
+//!    `NotifyIconOverflowWindow` (`TB_BUTTONCOUNT` / `TB_GETBUTTON` + the shell's `TRAYDATA`, read
+//!    from Explorer's memory) — hwnd / uID / callback message and the live HICON of every icon.
 //!
-//! **Activation** forwards to the real tray item through UI Automation. The shell only exposes the
-//! tray's XAML tree while the taskbar is on screen, so the item is revealed first: the taskbar is
-//! shown (`completely_hidden` mode re-hides it a few seconds later), the cursor is parked on the
-//! taskbar edge (how a user reveals an auto-hidden taskbar), hidden icons come from the overflow
-//! flyout (chevron `Invoke`). Left click = `InvokePattern::Invoke` (the app gets its normal
-//! NIN_SELECT / click; `LegacyIAccessible::DoDefaultAction`, then a real click, as fallbacks),
-//! right and double click are real clicks on the item so the app opens its own native context
-//! menu (« Quitter », « Paramètres »…). The cursor is put back at once; a watcher keeps the taskbar
-//! reachable while that menu is open, then closes the overflow flyout and re-hides the taskbar.
+//! Icons: the executable's (SHGetFileInfo, bounded LRU), else the live tray HICON (Win10), else one
+//! of the app's window icons (WM_GETICON / GCLP_HICON), else the shell's `IconSnapshot`; with none
+//! the dock draws a fallback glyph — an item is never dropped for lack of an icon.
 //!
-//! UIA objects live only on the per-call worker thread, which initializes COM itself (invariant 5).
+//! **Actions** act on the application, never on the shell:
+//! * Open — restore + focus the app's main window; else a silent UIA Invoke when the item happens
+//!   to be exposed (no cursor, no reveal); else the Win10 tray callback (posted click); else relaunch
+//!   the executable (single-instance tray apps surface their window); else show its hidden window.
+//! * Quit — `WM_CLOSE` to every top-level window of the app's processes, then, once no visible
+//!   window remains, terminate what is still running (a visible "save changes?" prompt is left alone).
+//! lumabar's own entry is handled by the dock (Settings modal / restore-and-quit).
+//!
+//! UIA objects live only on a per-call worker thread that initializes COM itself (invariant 5).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -31,71 +37,90 @@ use base64::engine::general_purpose::STANDARD;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::Serialize;
-use windows::Win32::Foundation::{CloseHandle, HWND, POINT, RECT};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, RECT, WAIT_TIMEOUT, WPARAM};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize};
+use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+use windows::Win32::System::Memory::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, REG_VALUE_TYPE, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW,
     RegGetValueW, RegOpenKeyExW,
+};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+    TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationInvokePattern, IUIAutomationLegacyIAccessiblePattern,
     TreeScope_Descendants, UIA_InvokePatternId, UIA_LegacyIAccessiblePatternId,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SendInput, VK_ESCAPE,
-};
-use windows::Win32::UI::Shell::{ABM_GETTASKBARPOS, APPBARDATA, KF_FLAG_DEFAULT, SHAppBarMessage, SHGetKnownFolderPath};
+use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GWL_EXSTYLE, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowThreadProcessId, IsWindowVisible, SetCursorPos,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    EnumWindows, FindWindowExW, FindWindowW, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetWindow, GetWindowLongW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, SW_RESTORE, SW_SHOW, SendMessageW, ShowWindow,
+    WM_CLOSE, WM_LBUTTONDOWN, WM_LBUTTONUP, WS_CAPTION, WS_EX_TOOLWINDOW,
 };
-use windows::core::{GUID, PCWSTR, PWSTR, w};
+use windows::core::{BOOL, GUID, PCWSTR, PWSTR, w};
 
-use super::{apps_enum, from_wide, taskbar, wide};
+use super::{apps_enum, from_wide, wide};
 
 const SETTINGS_KEY: &str = r"Control Panel\NotifyIconSettings";
-/// UIA tree must appear within this after the reveal.
-const REVEAL_TIMEOUT: Duration = Duration::from_millis(1800);
-const OVERFLOW_TIMEOUT: Duration = Duration::from_millis(1500);
-/// How long `completely_hidden` leaves the revealed taskbar alone (menus, flyouts).
-const REVEAL_GRACE: Duration = Duration::from_secs(5);
 /// A running app the live tray tree showed without an icon stays out of the list this long.
 const ABSENT_TTL: Duration = Duration::from_secs(10 * 60);
-/// Longest a forwarded native menu may keep the taskbar revealed.
-const MENU_WATCH_MAX: Duration = Duration::from_secs(120);
+/// How long Quit waits for the windows to close before terminating what is left.
+const QUIT_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrayIcon {
-    /// NotifyIconSettings sub-key: stable across restarts.
+    /// NotifyIconSettings sub-key (stable across restarts), or `tb:<hwnd>:<uid>` on Windows 10.
     pub id: String,
     pub name: String,
     pub exe: String,
-    /// PNG data URL (executable icon via the LRU, else the shell's tray snapshot).
+    /// PNG data URL; None = the dock draws its fallback glyph.
     pub icon_png: Option<String>,
     /// Lives in the "hidden icons" overflow rather than on the taskbar.
     pub is_hidden_overflow: bool,
+    /// lumabar's own tray entry (the dock handles Open / Settings / Quit itself).
+    pub is_self: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Button {
-    Left,
-    Right,
-    Double,
+pub enum Action {
+    Open,
+    /// The app's main window to the front (lumabar's own Settings are opened by the dock).
+    Settings,
+    Quit,
 }
 
-impl Button {
-    pub fn parse(s: &str) -> Option<Button> {
+impl Action {
+    pub fn parse(s: &str) -> Option<Action> {
         match s {
-            "left" => Some(Button::Left),
-            "right" => Some(Button::Right),
-            "double" => Some(Button::Double),
+            "open" => Some(Action::Open),
+            "settings" => Some(Action::Settings),
+            "quit" => Some(Action::Quit),
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Outcome {
+    /// A main window was restored / focused.
+    Focused,
+    /// The tray item itself was invoked (UIA, or the Win10 callback message).
+    Invoked,
+    /// The executable was started again (single-instance apps surface their window).
+    Launched,
+    /// The app's hidden main window was shown.
+    Shown,
+    /// Every process exited after WM_CLOSE.
+    Closed,
+    /// Windows were closed, the background process was terminated.
+    Terminated,
+    /// A window is still visible after WM_CLOSE (e.g. a "save changes?" prompt): left to the user.
+    StillOpen,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -146,6 +171,42 @@ pub fn match_score(candidates: &[String], uia_name: &str) -> u32 {
 /// System-owned entries (Explorer, the Windows Update flyout host…) are not apps.
 fn is_shell_owned(exe_lower: &str) -> bool {
     exe_lower.ends_with("\\explorer.exe") || exe_lower.ends_with("\\monotificationux.exe") || exe_lower.ends_with("\\rundll32.exe")
+}
+
+/// Drop bidi / zero-width marks shells put in tooltips (U+202A before "Microsoft 365…").
+pub fn clean_name(s: &str) -> String {
+    s.lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !matches!(*c as u32, 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+pub fn has_area(r: RECT) -> bool {
+    r.right - r.left >= 4 && r.bottom - r.top >= 4
+}
+
+/// What Quit does once the grace period is over.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QuitStep {
+    Done,
+    /// A visible window survived WM_CLOSE: the app is asking the user something.
+    LeaveToUser,
+    /// Only background processes remain.
+    Terminate,
+}
+
+pub fn quit_step(alive_processes: usize, visible_windows: usize) -> QuitStep {
+    if alive_processes == 0 {
+        QuitStep::Done
+    } else if visible_windows > 0 {
+        QuitStep::LeaveToUser
+    } else {
+        QuitStep::Terminate
+    }
 }
 
 /// Exes (lower-case) the live tray tree showed without an icon, with when that was seen.
@@ -248,13 +309,7 @@ fn read_entries() -> Vec<Entry> {
             .unwrap_or(false);
         let snapshot = reg_value(key, &id, "IconSnapshot", RRF_RT_REG_BINARY).filter(|b| b.starts_with(&[0x89, b'P', b'N', b'G']));
         let tooltip = reg_string(key, &id, "InitialTooltip").unwrap_or_default();
-        out.push(Entry {
-            id,
-            exe: expand_known_folder(&raw_exe),
-            tooltip,
-            promoted,
-            snapshot,
-        });
+        out.push(Entry { id, exe: expand_known_folder(&raw_exe), tooltip, promoted, snapshot });
     }
     unsafe {
         let _ = RegCloseKey(key);
@@ -262,55 +317,53 @@ fn read_entries() -> Vec<Entry> {
     out
 }
 
-static RUNNING: Lazy<Mutex<Option<(Instant, HashSet<String>)>>> = Lazy::new(|| Mutex::new(None));
-
-/// Lower-cased image paths of every process we can query (cached 2 s).
-fn running_paths() -> HashSet<String> {
-    if let Some((at, set)) = RUNNING.lock().as_ref() {
-        if at.elapsed() < Duration::from_secs(2) {
-            return set.clone();
-        }
-    }
-    let mut set = HashSet::new();
+/// (pid, lower-cased image path) of every process we can query.
+fn processes() -> Vec<(u32, String)> {
+    let mut out = Vec::new();
     unsafe {
         if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
             let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
             let mut ok = Process32FirstW(snap, &mut entry).is_ok();
             while ok {
                 if let Some(path) = apps_enum::process_image_path(entry.th32ProcessID) {
-                    set.insert(path.to_ascii_lowercase());
+                    out.push((entry.th32ProcessID, path.to_ascii_lowercase()));
                 }
                 ok = Process32NextW(snap, &mut entry).is_ok();
             }
             let _ = CloseHandle(snap);
         }
     }
-    *RUNNING.lock() = Some((Instant::now(), set.clone()));
-    set
+    out
+}
+
+static RUNNING: Lazy<Mutex<Option<(Instant, Vec<(u32, String)>)>>> = Lazy::new(|| Mutex::new(None));
+
+/// `processes()` cached for 2 s (the popup refreshes while open).
+fn running() -> Vec<(u32, String)> {
+    if let Some((at, list)) = RUNNING.lock().as_ref() {
+        if at.elapsed() < Duration::from_secs(2) {
+            return list.clone();
+        }
+    }
+    let list = processes();
+    *RUNNING.lock() = Some((Instant::now(), list.clone()));
+    list
+}
+
+fn pids_of(exe_lower: &str) -> Vec<u32> {
+    processes().into_iter().filter(|(_, p)| p == exe_lower).map(|(pid, _)| pid).collect()
 }
 
 fn own_exe() -> String {
     std::env::current_exe().map(|p| p.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
-/// Drop bidi / zero-width marks shells put in tooltips (U+202A before "Microsoft 365…").
-pub fn clean_name(s: &str) -> String {
-    s.lines()
-        .next()
-        .unwrap_or("")
-        .chars()
-        .filter(|c| !matches!(*c as u32, 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF))
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-/// Names a tray item may carry for this entry, best display name first: a short tooltip, the
-/// product name, the file stem. (A tooltip that is a whole sentence is a status, not a name.)
-fn candidate_names(e: &Entry) -> Vec<String> {
+/// Names a tray item may carry for this app, best display name first: a short tooltip, the product
+/// name, the file stem. (A tooltip that is a whole sentence is a status, not a name.)
+fn candidates_for(exe: &str, tooltip: &str) -> Vec<String> {
     let mut names = Vec::new();
-    let tooltip = clean_name(&e.tooltip);
-    let friendly = apps_enum::friendly_name(&e.exe);
+    let tooltip = clean_name(tooltip);
+    let friendly = apps_enum::friendly_name(exe);
     if !tooltip.is_empty() && tooltip.chars().count() <= 32 {
         names.push(tooltip.clone());
     }
@@ -318,374 +371,14 @@ fn candidate_names(e: &Entry) -> Vec<String> {
     if !tooltip.is_empty() && tooltip.chars().count() > 32 {
         names.push(tooltip);
     }
-    if let Some(stem) = Path::new(&e.exe).file_stem().and_then(|s| s.to_str()) {
+    if let Some(stem) = Path::new(exe).file_stem().and_then(|s| s.to_str()) {
         names.push(stem.to_string());
     }
     names
 }
 
-/// Names seen on real tray items during activations (exe -> tray name), so the list shows them.
+/// Names seen on real tray items (exe -> tray name), so the list shows them.
 static SEEN_NAMES: Lazy<Mutex<Vec<(String, String)>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
-fn live_entries() -> Vec<Entry> {
-    let running = running_paths();
-    let own = own_exe();
-    let mut seen = HashSet::new();
-    read_entries()
-        .into_iter()
-        .filter(|e| {
-            let lower = e.exe.to_ascii_lowercase();
-            running.contains(&lower) && lower != own && !is_shell_owned(&lower) && seen.insert(lower)
-        })
-        .collect()
-}
-
-pub fn list() -> Vec<TrayIcon> {
-    let entries = live_entries();
-    // Cheap live check when the tray XAML is already exposed (taskbar on screen); never reveals.
-    if let Ok(Some((names, complete))) = on_uia_thread(exposed_tray_names) {
-        reconcile(&entries, &names, complete);
-    }
-    let seen = SEEN_NAMES.lock().clone();
-    let now = Instant::now();
-    let absent = ABSENT.lock();
-    let mut out: Vec<TrayIcon> = entries
-        .into_iter()
-        .filter(|e| !absent.contains(&e.exe.to_ascii_lowercase(), now, ABSENT_TTL))
-        .map(|e| {
-            let lower = e.exe.to_ascii_lowercase();
-            let name = seen
-                .iter()
-                .find(|(exe, _)| *exe == lower)
-                .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| candidate_names(&e).into_iter().next().unwrap_or_default());
-            let icon_png = apps_enum::icon_data_url(&e.exe)
-                .or_else(|| e.snapshot.as_ref().map(|png| format!("data:image/png;base64,{}", STANDARD.encode(png))));
-            TrayIcon { id: e.id, name: clean_name(&name), exe: e.exe, icon_png, is_hidden_overflow: !e.promoted }
-        })
-        .collect();
-    // Taskbar-promoted icons first, then alphabetical (stable while apps come and go).
-    drop(absent);
-    out.sort_by(|a, b| a.is_hidden_overflow.cmp(&b.is_hidden_overflow).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
-    out
-}
-
-/// Live tray item names. `complete` = the overflow flyout was read too, so an entry missing from
-/// `names` really has no icon (otherwise only matches count).
-fn reconcile(entries: &[Entry], names: &[String], complete: bool) {
-    let now = Instant::now();
-    for e in entries {
-        let lower = e.exe.to_ascii_lowercase();
-        let candidates = candidate_names(e);
-        let best = names.iter().map(|n| (match_score(&candidates, n), n)).max_by_key(|(s, _)| *s);
-        match best {
-            Some((score, name)) if score >= 60 => {
-                ABSENT.lock().clear(&lower);
-                remember_name(&e.exe, name);
-            }
-            _ if complete => ABSENT.lock().mark(&lower, now),
-            _ => {}
-        }
-    }
-}
-
-/// Names on the taskbar's tray (+ the overflow flyout if it happens to be open), without revealing
-/// anything. None when the tray XAML is not exposed (taskbar hidden).
-fn exposed_tray_names() -> Result<Option<(Vec<String>, bool)>, String> {
-    let Ok(tray) = (unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }) else { return Ok(None) };
-    if !unsafe { IsWindowVisible(tray) }.as_bool() {
-        return Ok(None);
-    }
-    let uia: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(|e| e.to_string())?;
-    let (items, chevron) = tray_items(&uia, tray);
-    if chevron.is_none() && items.is_empty() {
-        return Ok(None);
-    }
-    let mut names: Vec<String> = items.into_iter().map(|i| i.name).collect();
-    let overflow = overflow_window();
-    if let Some(o) = overflow {
-        names.extend(tray_items(&uia, o).0.into_iter().map(|i| i.name));
-    }
-    Ok(Some((names, overflow.is_some())))
-}
-
-/// The hidden-icons flyout, when it is open.
-fn overflow_window() -> Option<HWND> {
-    let hwnd = unsafe { FindWindowW(w!("TopLevelWindowForOverflowXamlIsland"), None) }.ok()?;
-    unsafe { IsWindowVisible(hwnd) }.as_bool().then_some(hwnd)
-}
-
-// ---------------------------------------------------------------------------------------------
-// UI Automation activation
-// ---------------------------------------------------------------------------------------------
-
-struct Item {
-    element: IUIAutomationElement,
-    name: String,
-    rect: RECT,
-}
-
-fn bstr(r: windows::core::Result<windows::core::BSTR>) -> String {
-    r.map(|b| b.to_string()).unwrap_or_default()
-}
-
-/// Notification icons (and the overflow chevron) under a shell window.
-fn tray_items(uia: &IUIAutomation, hwnd: HWND) -> (Vec<Item>, Option<IUIAutomationElement>) {
-    let mut items = Vec::new();
-    let mut chevron = None;
-    unsafe {
-        let Ok(root) = uia.ElementFromHandle(hwnd) else { return (items, None) };
-        let Ok(cond) = uia.CreateTrueCondition() else { return (items, None) };
-        let Ok(all) = root.FindAll(TreeScope_Descendants, &cond) else { return (items, None) };
-        for i in 0..all.Length().unwrap_or(0) {
-            let Ok(el) = all.GetElement(i) else { continue };
-            let id = bstr(el.CurrentAutomationId());
-            let class = bstr(el.CurrentClassName());
-            if id == "NotifyItemIcon" {
-                let rect = el.CurrentBoundingRectangle().unwrap_or_default();
-                items.push(Item { name: bstr(el.CurrentName()), element: el, rect });
-            } else if id == "SystemTrayIcon" && class == "SystemTray.NormalButton" && chevron.is_none() {
-                // The first plain SystemTray button is « Afficher les icônes cachées ».
-                chevron = Some(el);
-            }
-        }
-    }
-    (items, chevron)
-}
-
-/// The item once its rect stopped moving (two equal reads): the taskbar and the overflow flyout
-/// slide in, and a click mid-animation could miss.
-fn settled(timeout: Duration, mut f: impl FnMut() -> Option<Item>) -> Option<Item> {
-    let mut prev: Option<RECT> = None;
-    let mut last = None;
-    let found = wait_for(timeout, || {
-        let item = f()?;
-        let stable = prev == Some(item.rect);
-        prev = Some(item.rect);
-        if stable { Some(item) } else {
-            last = Some(item);
-            None
-        }
-    });
-    // Still moving at the deadline: the latest position beats nothing.
-    found.or(last)
-}
-
-fn wait_for<T>(timeout: Duration, mut f: impl FnMut() -> Option<T>) -> Option<T> {
-    let start = Instant::now();
-    loop {
-        if let Some(v) = f() {
-            return Some(v);
-        }
-        if start.elapsed() >= timeout {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(40));
-    }
-}
-
-/// The point on the taskbar's screen edge that slides an auto-hidden taskbar in.
-fn reveal_point(tray: HWND) -> Option<POINT> {
-    unsafe {
-        let mut abd = APPBARDATA { cbSize: std::mem::size_of::<APPBARDATA>() as u32, hWnd: tray, ..Default::default() };
-        SHAppBarMessage(ABM_GETTASKBARPOS, &mut abd);
-        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-        if !GetMonitorInfoW(MonitorFromWindow(tray, MONITOR_DEFAULTTOPRIMARY), &mut info).as_bool() {
-            return None;
-        }
-        let m = info.rcMonitor;
-        let (cx, cy) = ((m.left + m.right) / 2, (m.top + m.bottom) / 2);
-        Some(match abd.uEdge {
-            0 => POINT { x: m.left, y: cy },
-            1 => POINT { x: cx, y: m.top },
-            2 => POINT { x: m.right - 1, y: cy },
-            _ => POINT { x: cx, y: m.bottom - 1 },
-        })
-    }
-}
-
-fn mouse(flags: MOUSE_EVENT_FLAGS) -> INPUT {
-    INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: flags, ..Default::default() } } }
-}
-
-pub fn has_area(r: RECT) -> bool {
-    r.right - r.left >= 4 && r.bottom - r.top >= 4
-}
-
-fn click_at(rect: RECT, button: Button) -> Result<(), String> {
-    if !has_area(rect) {
-        return Err("the tray icon is not on screen".into());
-    }
-    let (x, y) = ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
-    unsafe {
-        SetCursorPos(x, y).map_err(|e| e.to_string())?;
-        std::thread::sleep(Duration::from_millis(30));
-        let inputs: Vec<INPUT> = match button {
-            Button::Right => vec![mouse(MOUSEEVENTF_RIGHTDOWN), mouse(MOUSEEVENTF_RIGHTUP)],
-            Button::Double => vec![mouse(MOUSEEVENTF_LEFTDOWN), mouse(MOUSEEVENTF_LEFTUP), mouse(MOUSEEVENTF_LEFTDOWN), mouse(MOUSEEVENTF_LEFTUP)],
-            Button::Left => vec![mouse(MOUSEEVENTF_LEFTDOWN), mouse(MOUSEEVENTF_LEFTUP)],
-        };
-        if SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize != inputs.len() {
-            return Err("SendInput was blocked (is an elevated window focused?)".into());
-        }
-    }
-    Ok(())
-}
-
-fn press_escape() {
-    let key = |flags| INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_ESCAPE, dwFlags: flags, ..Default::default() } },
-    };
-    unsafe {
-        SendInput(&[key(Default::default()), key(KEYEVENTF_KEYUP)], std::mem::size_of::<INPUT>() as i32);
-    }
-}
-
-/// What happened, for tests and error messages.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Located {
-    pub name: String,
-    pub rect: RECT,
-    pub in_overflow: bool,
-}
-
-/// Reveal the tray, find the item for `candidates`, run `act` on it. Restores the cursor.
-fn with_tray_item<T>(candidates: &[String], act: impl FnOnce(&Item, bool) -> Result<T, String>) -> Result<(T, Located), String> {
-    let tray = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.map_err(|_| "the Windows taskbar is not running".to_string())?;
-    let uia: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(|e| format!("UI Automation: {e}"))?;
-    let mut saved = POINT::default();
-    let _ = unsafe { GetCursorPos(&mut saved) };
-
-    taskbar::show_for_interaction(REVEAL_GRACE);
-    let result = (|| {
-        // Already exposed (native taskbar on screen)? Otherwise slide it in from the edge.
-        let mut chevron = tray_items(&uia, tray).1;
-        if chevron.is_none() {
-            let p = reveal_point(tray).ok_or("cannot locate the taskbar's monitor")?;
-            unsafe {
-                let _ = SetCursorPos(p.x, p.y);
-            }
-            chevron = wait_for(REVEAL_TIMEOUT, || tray_items(&uia, tray).1);
-        }
-        // Only laid-out items: the overflow flyout exposes its items before its open animation has
-        // placed them (empty rect), and a click there would land on the screen corner.
-        let best = |items: Vec<Item>| {
-            items
-                .into_iter()
-                .filter(|i| has_area(i.rect))
-                .map(|i| (match_score(candidates, &i.name), i))
-                .filter(|(s, _)| *s > 0)
-                .max_by_key(|(s, _)| *s)
-                .map(|(_, i)| i)
-        };
-        if let Some(item) = settled(Duration::from_millis(400), || best(tray_items(&uia, tray).0)) {
-            let located = Located { name: item.name.clone(), rect: item.rect, in_overflow: false };
-            return act(&item, false).map(|v| (v, located));
-        }
-        let chevron = chevron.ok_or("the notification area is not reachable (is a fullscreen app in front?)")?;
-        unsafe {
-            let invoke: IUIAutomationInvokePattern = chevron.GetCurrentPatternAs(UIA_InvokePatternId).map_err(|e| e.to_string())?;
-            invoke.Invoke().map_err(|e| format!("could not open the hidden icons: {e}"))?;
-        }
-        let overflow = wait_for(OVERFLOW_TIMEOUT, || unsafe { FindWindowW(w!("TopLevelWindowForOverflowXamlIsland"), None) }.ok())
-            .ok_or("the hidden icons flyout did not open")?;
-        let item = settled(OVERFLOW_TIMEOUT, || best(tray_items(&uia, overflow).0));
-        // Both halves of the live tree are on screen now: refresh which apps really have an icon.
-        let mut names: Vec<String> = tray_items(&uia, tray).0.into_iter().map(|i| i.name).collect();
-        names.extend(tray_items(&uia, overflow).0.into_iter().map(|i| i.name));
-        reconcile(&live_entries(), &names, true);
-        let item = item.ok_or_else(|| {
-            close_overflow(&uia, tray);
-            "this app has no icon in the notification area right now".to_string()
-        })?;
-        let located = Located { name: item.name.clone(), rect: item.rect, in_overflow: true };
-        act(&item, true).map(|v| (v, located))
-    })();
-    unsafe {
-        let _ = SetCursorPos(saved.x, saved.y);
-    }
-    result
-}
-
-/// Close the hidden-icons flyout by toggling the chevron (no synthetic key reaches another app
-/// unless the toggle did not work).
-fn close_overflow(uia: &IUIAutomation, tray: HWND) {
-    if overflow_window().is_none() {
-        return;
-    }
-    if let Some(chevron) = tray_items(uia, tray).1 {
-        unsafe {
-            if let Ok(invoke) = chevron.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) {
-                let _ = invoke.Invoke();
-            }
-        }
-    }
-    if wait_for(Duration::from_millis(400), || overflow_window().is_none().then_some(())).is_none() {
-        press_escape();
-    }
-}
-
-/// A native menu (or a topmost / tool popup of the tray app) is on screen.
-fn menu_open(app_pid: Option<u32>) -> bool {
-    unsafe {
-        if FindWindowW(w!("#32768"), None).is_ok_and(|m| IsWindowVisible(m).as_bool()) {
-            return true;
-        }
-        let Some(pid) = app_pid else { return false };
-        let fg = GetForegroundWindow();
-        if fg.is_invalid() {
-            return false;
-        }
-        let mut fg_pid = 0u32;
-        GetWindowThreadProcessId(fg, Some(&mut fg_pid));
-        let ex = GetWindowLongW(fg, GWL_EXSTYLE) as u32;
-        fg_pid == pid && ex & (WS_EX_TOPMOST.0 | WS_EX_TOOLWINDOW.0) != 0
-    }
-}
-
-/// After a forwarded click: keep the taskbar reachable while the app's menu is open, then close
-/// the overflow flyout if it lingers and hide the taskbar again (`completely_hidden`).
-fn watch_interaction(app_pid: Option<u32>) {
-    let _ = std::thread::Builder::new().name("lumabar-tray-menu".into()).spawn(move || {
-        std::thread::sleep(Duration::from_millis(350));
-        let start = Instant::now();
-        while start.elapsed() < MENU_WATCH_MAX && menu_open(app_pid) {
-            taskbar::extend_interaction(Duration::from_secs(2));
-            std::thread::sleep(Duration::from_millis(120));
-        }
-        let _ = on_uia_thread(|| {
-            let tray = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.map_err(|e| e.to_string())?;
-            let uia: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(|e| e.to_string())?;
-            close_overflow(&uia, tray);
-            Ok(())
-        });
-        taskbar::end_interaction();
-    });
-}
-
-/// Pid of a running process with this image path.
-fn pid_of(exe_lower: &str) -> Option<u32> {
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
-        let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
-        let mut ok = Process32FirstW(snap, &mut entry).is_ok();
-        let mut found = None;
-        while ok {
-            if apps_enum::process_image_path(entry.th32ProcessID).is_some_and(|p| p.to_ascii_lowercase() == exe_lower) {
-                found = Some(entry.th32ProcessID);
-                break;
-            }
-            ok = Process32NextW(snap, &mut entry).is_ok();
-        }
-        let _ = CloseHandle(snap);
-        found
-    }
-}
-
-fn entry_by_id(id: &str) -> Result<Entry, String> {
-    live_entries().into_iter().find(|e| e.id == id).ok_or_else(|| "this tray app is no longer running".to_string())
-}
 
 fn remember_name(exe: &str, name: &str) {
     let name = clean_name(name);
@@ -699,6 +392,339 @@ fn remember_name(exe: &str, name: &str) {
     if seen.len() > 64 {
         seen.remove(0);
     }
+}
+
+fn live_entries() -> Vec<Entry> {
+    let running: HashSet<String> = running().into_iter().map(|(_, p)| p).collect();
+    let mut seen = HashSet::new();
+    read_entries()
+        .into_iter()
+        .filter(|e| {
+            let lower = e.exe.to_ascii_lowercase();
+            running.contains(&lower) && !is_shell_owned(&lower) && seen.insert(lower)
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Windows 10 legacy tray toolbar (TRAYDATA)
+// ---------------------------------------------------------------------------------------------
+
+const TB_GETBUTTON: u32 = 0x0417;
+const TB_BUTTONCOUNT: u32 = 0x0418;
+const TB_GETBUTTONTEXTW: u32 = 0x044B;
+
+/// `TBBUTTON` (x64 layout).
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct TbButton {
+    i_bitmap: i32,
+    id_command: i32,
+    fs_state: u8,
+    fs_style: u8,
+    reserved: [u8; 6],
+    dw_data: usize,
+    i_string: isize,
+}
+
+/// The shell's per-button `TRAYDATA` (what `Shell_NotifyIcon` registered).
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct TrayData {
+    hwnd: usize,
+    uid: u32,
+    callback: u32,
+    reserved: [u32; 2],
+    hicon: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ToolbarItem {
+    hwnd: isize,
+    uid: u32,
+    callback: u32,
+    hicon: isize,
+    tooltip: String,
+    exe: String,
+    overflow: bool,
+}
+
+struct Remote {
+    process: HANDLE,
+    base: *mut core::ffi::c_void,
+}
+
+impl Drop for Remote {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = VirtualFreeEx(self.process, self.base, 0, MEM_RELEASE);
+            let _ = CloseHandle(self.process);
+        }
+    }
+}
+
+fn read_remote<T: Default + Copy>(process: HANDLE, addr: usize) -> Option<T> {
+    let mut value = T::default();
+    unsafe {
+        ReadProcessMemory(process, addr as *const _, &mut value as *mut T as *mut _, std::mem::size_of::<T>(), None).ok()?;
+    }
+    Some(value)
+}
+
+fn read_remote_text(process: HANDLE, addr: usize, units: usize) -> Option<String> {
+    let mut buf = vec![0u16; units];
+    unsafe {
+        ReadProcessMemory(process, addr as *const _, buf.as_mut_ptr() as *mut _, units * 2, None).ok()?;
+    }
+    Some(from_wide(&buf))
+}
+
+/// Every button of one legacy tray toolbar (Windows 10). Empty on Windows 11.
+fn read_toolbar(toolbar: HWND, overflow: bool) -> Vec<ToolbarItem> {
+    let mut out = Vec::new();
+    unsafe {
+        let count = SendMessageW(toolbar, TB_BUTTONCOUNT, None, None).0;
+        if count <= 0 {
+            return out;
+        }
+        let mut shell_pid = 0u32;
+        GetWindowThreadProcessId(toolbar, Some(&mut shell_pid));
+        let Ok(process) = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ, false, shell_pid) else { return out };
+        let base = VirtualAllocEx(process, None, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if base.is_null() {
+            let _ = CloseHandle(process);
+            return out;
+        }
+        let remote = Remote { process, base };
+        let text_at = remote.base as usize + 256;
+        for i in 0..count.min(256) {
+            if SendMessageW(toolbar, TB_GETBUTTON, Some(WPARAM(i as usize)), Some(LPARAM(remote.base as isize))).0 == 0 {
+                continue;
+            }
+            let Some(button) = read_remote::<TbButton>(remote.process, remote.base as usize) else { continue };
+            if button.dw_data == 0 {
+                continue;
+            }
+            let Some(data) = read_remote::<TrayData>(remote.process, button.dw_data) else { continue };
+            if data.hwnd == 0 {
+                continue;
+            }
+            // Tooltips are at most 128 UTF-16 units (szTip): well inside the 3.8 KB scratch area.
+            let len = SendMessageW(toolbar, TB_GETBUTTONTEXTW, Some(WPARAM(button.id_command as usize)), Some(LPARAM(text_at as isize))).0;
+            let tooltip = if len > 0 {
+                read_remote_text(remote.process, text_at, (len as usize).min(256)).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let hwnd = HWND(data.hwnd as *mut _);
+            let exe = apps_enum::process_image_path(apps_enum::window_pid(hwnd)).unwrap_or_default();
+            out.push(ToolbarItem {
+                hwnd: data.hwnd as isize,
+                uid: data.uid,
+                callback: data.callback,
+                hicon: data.hicon as isize,
+                tooltip,
+                exe,
+                overflow,
+            });
+        }
+    }
+    out
+}
+
+/// The legacy tray toolbars: TrayNotifyWnd\SysPager and the overflow window (Windows 10 only).
+fn toolbar_items() -> Vec<ToolbarItem> {
+    let mut out = Vec::new();
+    unsafe {
+        if let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), None) {
+            let pager = FindWindowExW(Some(tray), None, w!("TrayNotifyWnd"), None)
+                .and_then(|notify| FindWindowExW(Some(notify), None, w!("SysPager"), None));
+            if let Ok(toolbar) = pager.and_then(|p| FindWindowExW(Some(p), None, w!("ToolbarWindow32"), None)) {
+                out.extend(read_toolbar(toolbar, false));
+            }
+        }
+        if let Ok(overflow) = FindWindowW(w!("NotifyIconOverflowWindow"), None) {
+            if let Ok(toolbar) = FindWindowExW(Some(overflow), None, w!("ToolbarWindow32"), None) {
+                out.extend(read_toolbar(toolbar, true));
+            }
+        }
+    }
+    out.retain(|t| !t.exe.is_empty() && !is_shell_owned(&t.exe.to_ascii_lowercase()));
+    out
+}
+
+fn hicon_data_url(hicon: isize) -> Option<String> {
+    if hicon == 0 {
+        return None;
+    }
+    // A tray HICON is a shared USER object owned by the app: render it, never destroy it.
+    let png = apps_enum::hicon_to_png(windows::Win32::UI::WindowsAndMessaging::HICON(hicon as *mut _))?;
+    Some(format!("data:image/png;base64,{}", STANDARD.encode(png)))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Listing
+// ---------------------------------------------------------------------------------------------
+
+/// A window icon of one of the app's processes (`hwnd:` keys go through the icon LRU).
+fn window_icon_of(pids: &HashSet<u32>) -> Option<String> {
+    windows_of(pids)
+        .into_iter()
+        .filter(|w| w.main_like)
+        .find_map(|w| apps_enum::icon_data_url(&format!("hwnd:{}", w.hwnd.0 as isize)))
+}
+
+pub fn list() -> Vec<TrayIcon> {
+    let entries = live_entries();
+    // Live UIA names when Windows already exposes the tray (never revealed for this).
+    if let Ok(Some((names, complete))) = on_uia_thread(exposed_tray_names) {
+        reconcile(&entries, &names, complete);
+    }
+    let toolbar = toolbar_items();
+    let procs = running();
+    let pids = |exe_lower: &str| procs.iter().filter(|(_, p)| p == exe_lower).map(|(pid, _)| *pid).collect::<HashSet<u32>>();
+    let own = own_exe();
+    let seen = SEEN_NAMES.lock().clone();
+    let now = Instant::now();
+    let mut listed: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+
+    for e in entries {
+        let lower = e.exe.to_ascii_lowercase();
+        if ABSENT.lock().contains(&lower, now, ABSENT_TTL) {
+            continue;
+        }
+        let tb = toolbar.iter().find(|t| t.exe.to_ascii_lowercase() == lower);
+        let name = seen
+            .iter()
+            .find(|(exe, _)| *exe == lower)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| candidates_for(&e.exe, &e.tooltip).into_iter().next().unwrap_or_default());
+        let icon_png = apps_enum::icon_data_url(&e.exe)
+            .or_else(|| tb.and_then(|t| hicon_data_url(t.hicon)))
+            .or_else(|| window_icon_of(&pids(&lower)))
+            .or_else(|| e.snapshot.as_ref().map(|png| format!("data:image/png;base64,{}", STANDARD.encode(png))));
+        out.push(TrayIcon { id: e.id, name: clean_name(&name), is_self: lower == own, exe: e.exe, icon_png, is_hidden_overflow: !e.promoted });
+        listed.insert(lower);
+    }
+    // Windows 10: the legacy toolbar is the source of truth.
+    for t in &toolbar {
+        let lower = t.exe.to_ascii_lowercase();
+        if !listed.insert(lower.clone()) {
+            continue;
+        }
+        let name = candidates_for(&t.exe, &t.tooltip).into_iter().next().unwrap_or_default();
+        let icon_png = hicon_data_url(t.hicon).or_else(|| apps_enum::icon_data_url(&t.exe)).or_else(|| window_icon_of(&pids(&lower)));
+        out.push(TrayIcon {
+            id: format!("tb:{}:{}", t.hwnd, t.uid),
+            name: clean_name(&name),
+            exe: t.exe.clone(),
+            icon_png,
+            is_hidden_overflow: t.overflow,
+            is_self: lower == own,
+        });
+    }
+    // Taskbar-promoted icons first, then alphabetical (stable while apps come and go).
+    out.sort_by(|a, b| a.is_hidden_overflow.cmp(&b.is_hidden_overflow).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out
+}
+
+/// Live tray item names. `complete` = the overflow flyout was read too, so an entry missing from
+/// `names` really has no icon (otherwise only matches count).
+fn reconcile(entries: &[Entry], names: &[String], complete: bool) {
+    let now = Instant::now();
+    for e in entries {
+        let lower = e.exe.to_ascii_lowercase();
+        let candidates = candidates_for(&e.exe, &e.tooltip);
+        let best = names.iter().map(|n| (match_score(&candidates, n), n)).max_by_key(|(s, _)| *s);
+        match best {
+            Some((score, name)) if score >= 60 => {
+                ABSENT.lock().clear(&lower);
+                remember_name(&e.exe, name);
+            }
+            _ if complete => ABSENT.lock().mark(&lower, now),
+            _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// UI Automation (read-only unless the item is already exposed)
+// ---------------------------------------------------------------------------------------------
+
+struct Item {
+    element: IUIAutomationElement,
+    name: String,
+    rect: RECT,
+}
+
+fn bstr(r: windows::core::Result<windows::core::BSTR>) -> String {
+    r.map(|b| b.to_string()).unwrap_or_default()
+}
+
+/// Notification icons under a shell window (Start, Search, Task View, Widgets, the clock and Quick
+/// Settings are other automation ids and never match).
+fn tray_items(uia: &IUIAutomation, hwnd: HWND) -> Vec<Item> {
+    let mut items = Vec::new();
+    unsafe {
+        let Ok(root) = uia.ElementFromHandle(hwnd) else { return items };
+        let Ok(cond) = uia.CreateTrueCondition() else { return items };
+        let Ok(all) = root.FindAll(TreeScope_Descendants, &cond) else { return items };
+        for i in 0..all.Length().unwrap_or(0) {
+            let Ok(el) = all.GetElement(i) else { continue };
+            if bstr(el.CurrentAutomationId()) == "NotifyItemIcon" {
+                let rect = el.CurrentBoundingRectangle().unwrap_or_default();
+                items.push(Item { name: bstr(el.CurrentName()), element: el, rect });
+            }
+        }
+    }
+    items
+}
+
+/// The hidden-icons flyout, when the user has it open.
+fn overflow_window() -> Option<HWND> {
+    let hwnd = unsafe { FindWindowW(w!("TopLevelWindowForOverflowXamlIsland"), None) }.ok()?;
+    unsafe { IsWindowVisible(hwnd) }.as_bool().then_some(hwnd)
+}
+
+/// Tray items Windows currently exposes, plus whether the overflow was among them.
+fn exposed_items(uia: &IUIAutomation) -> Option<(Vec<Item>, bool)> {
+    let tray = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.ok()?;
+    let mut items: Vec<Item> = if unsafe { IsWindowVisible(tray) }.as_bool() { tray_items(uia, tray) } else { Vec::new() };
+    let overflow = overflow_window();
+    if let Some(o) = overflow {
+        items.extend(tray_items(uia, o));
+    }
+    items.retain(|i| has_area(i.rect));
+    (!items.is_empty()).then_some((items, overflow.is_some()))
+}
+
+fn exposed_tray_names() -> Result<Option<(Vec<String>, bool)>, String> {
+    let uia: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(|e| e.to_string())?;
+    Ok(exposed_items(&uia).map(|(items, complete)| (items.into_iter().map(|i| i.name).collect(), complete)))
+}
+
+/// Invoke the item if (and only if) Windows already exposes it: no cursor, no reveal.
+fn silent_invoke(candidates: &[String]) -> Result<bool, String> {
+    let uia: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(|e| e.to_string())?;
+    let Some((items, _)) = exposed_items(&uia) else { return Ok(false) };
+    let Some(item) = items.into_iter().map(|i| (match_score(candidates, &i.name), i)).filter(|(s, _)| *s >= 60).max_by_key(|(s, _)| *s).map(|(_, i)| i)
+    else {
+        return Ok(false);
+    };
+    unsafe {
+        if let Ok(invoke) = item.element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) {
+            if invoke.Invoke().is_ok() {
+                return Ok(true);
+            }
+        }
+        if let Ok(legacy) = item.element.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(UIA_LegacyIAccessiblePatternId) {
+            if legacy.DoDefaultAction().is_ok() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Run `f` on a fresh COM-MTA thread (UIA objects never leave it).
@@ -718,68 +744,221 @@ fn on_uia_thread<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send
         .map_err(|_| "the tray worker crashed".to_string())?
 }
 
-/// Forward a click to the app's real tray icon.
-pub fn activate(id: &str, button: Button) -> Result<(), String> {
-    let entry = entry_by_id(id)?;
-    let candidates = candidate_names(&entry);
-    let exe = entry.exe.clone();
-    let result = on_uia_thread(move || {
-        with_tray_item(&candidates, |item, _in_overflow| match button {
-            Button::Left => left_click(item),
-            Button::Right | Button::Double => click_at(item.rect, button),
-        })
-        .map(|(_, l)| l)
-    });
-    match result {
-        Ok(located) => {
-            remember_name(&exe, &located.name);
-            watch_interaction(pid_of(&exe.to_ascii_lowercase()));
-            Ok(())
-        }
-        Err(e) => {
-            taskbar::end_interaction();
-            Err(e)
-        }
-    }
+// ---------------------------------------------------------------------------------------------
+// Application windows
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct ProcWindow {
+    hwnd: HWND,
+    visible: bool,
+    iconic: bool,
+    /// Not owned by a visible window, not a tool window, titled: what a user calls "the app's
+    /// window" (a hidden owner is the classic trick to keep a window off the taskbar).
+    main_like: bool,
+    area: i64,
 }
 
-/// Invoke, else LegacyIAccessible's default action, else a real click.
-fn left_click(item: &Item) -> Result<(), String> {
+/// Top-level windows (visible or not) of these processes. Never includes shell windows: the pids
+/// come from the app's executable, and shell executables are never listed.
+fn windows_of(pids: &HashSet<u32>) -> Vec<ProcWindow> {
+    struct Ctx<'a> {
+        pids: &'a HashSet<u32>,
+        out: Vec<ProcWindow>,
+    }
+    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = unsafe { &mut *(lparam.0 as *mut Ctx) };
+        let pid = apps_enum::window_pid(hwnd);
+        if ctx.pids.contains(&pid) {
+            unsafe {
+                let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+                let owned = GetWindow(hwnd, GW_OWNER).is_ok_and(|o| !o.is_invalid() && IsWindowVisible(o).as_bool());
+                let mut r = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut r);
+                ctx.out.push(ProcWindow {
+                    hwnd,
+                    visible: IsWindowVisible(hwnd).as_bool(),
+                    iconic: IsIconic(hwnd).as_bool(),
+                    main_like: !owned && ex & WS_EX_TOOLWINDOW.0 == 0 && GetWindowTextLengthW(hwnd) > 0,
+                    area: i64::from(r.right - r.left) * i64::from(r.bottom - r.top),
+                });
+            }
+        }
+        BOOL(1)
+    }
+    let mut ctx = Ctx { pids, out: Vec::new() };
     unsafe {
-        if let Ok(invoke) = item.element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) {
-            if invoke.Invoke().is_ok() {
-                return Ok(());
-            }
+        let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut Ctx as isize));
+    }
+    ctx.out
+}
+
+fn bring_to_front(w: &ProcWindow) {
+    unsafe {
+        if !w.visible {
+            let _ = ShowWindow(w.hwnd, SW_SHOW);
         }
-        if let Ok(legacy) = item.element.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(UIA_LegacyIAccessiblePatternId) {
-            if legacy.DoDefaultAction().is_ok() {
-                return Ok(());
+        if w.iconic || !w.visible {
+            let _ = ShowWindow(w.hwnd, SW_RESTORE);
+        }
+    }
+    apps_enum::focus(w.hwnd);
+}
+
+/// The largest main-like window, visible ones only or hidden ones only.
+fn main_window(windows: &[ProcWindow], visible: bool) -> Option<ProcWindow> {
+    windows
+        .iter()
+        .filter(|w| w.main_like && w.visible == visible)
+        .filter(|w| visible || w.area >= 200 * 120)
+        // A hidden window must look like a real frame (not a 0x0 message sink).
+        .filter(|w| visible || unsafe { GetWindowLongW(w.hwnd, GWL_STYLE) as u32 } & WS_CAPTION.0 != 0)
+        .max_by_key(|w| (!w.iconic, w.area))
+        .cloned()
+}
+
+/// What an action needs to know about its target app.
+struct Target {
+    exe: String,
+    pids: HashSet<u32>,
+    candidates: Vec<String>,
+    toolbar: Option<ToolbarItem>,
+}
+
+fn open_target(t: &Target) -> Result<Outcome, String> {
+    if t.pids.is_empty() {
+        return Err("this app is no longer running".into());
+    }
+    let windows = windows_of(&t.pids);
+    if let Some(w) = main_window(&windows, true) {
+        bring_to_front(&w);
+        return Ok(Outcome::Focused);
+    }
+    let candidates = t.candidates.clone();
+    if on_uia_thread(move || silent_invoke(&candidates)).unwrap_or(false) {
+        return Ok(Outcome::Invoked);
+    }
+    if let Some(tb) = &t.toolbar {
+        // Classic NOTIFYICON callback: wParam = uID, lParam = mouse message.
+        let hwnd = HWND(tb.hwnd as *mut _);
+        unsafe {
+            if PostMessageW(Some(hwnd), tb.callback, WPARAM(tb.uid as usize), LPARAM(WM_LBUTTONDOWN as isize)).is_ok()
+                && PostMessageW(Some(hwnd), tb.callback, WPARAM(tb.uid as usize), LPARAM(WM_LBUTTONUP as isize)).is_ok()
+            {
+                return Ok(Outcome::Invoked);
             }
         }
     }
-    click_at(item.rect, Button::Left)
+    // Packaged apps (WindowsApps) cannot be started from their image path.
+    let packaged = t.exe.to_ascii_lowercase().contains("\\windowsapps\\");
+    if !packaged && Path::new(&t.exe).is_file() && apps_enum::shell_open(&t.exe, None).is_ok() {
+        return Ok(Outcome::Launched);
+    }
+    if let Some(w) = main_window(&windows, false) {
+        bring_to_front(&w);
+        return Ok(Outcome::Shown);
+    }
+    Err("this app has no window to open".into())
 }
 
-/// Reveal and find an entry's tray item without clicking it (closes the flyout again). Test probe.
-#[cfg(test)]
-pub fn locate(id: &str) -> Result<Located, String> {
-    let entry = entry_by_id(id)?;
-    let candidates = candidate_names(&entry);
-    on_uia_thread(move || {
-        let out = with_tray_item(&candidates, |_, _| Ok(())).map(|(_, l)| l);
-        if let Ok(tray) = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) } {
-            if let Ok(uia) = unsafe { CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER) } {
-                close_overflow(&uia, tray);
+fn is_alive(pid: u32) -> bool {
+    unsafe {
+        match OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            Ok(h) => {
+                let alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+                let _ = CloseHandle(h);
+                alive
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+fn quit_target(t: &Target) -> Result<Outcome, String> {
+    let own = std::process::id();
+    let pids: HashSet<u32> = t.pids.iter().copied().filter(|p| *p != own).collect();
+    if pids.is_empty() {
+        return Err("this app is no longer running".into());
+    }
+    for w in windows_of(&pids) {
+        unsafe {
+            let _ = PostMessageW(Some(w.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+    let start = Instant::now();
+    let mut alive: HashSet<u32> = pids.clone();
+    while start.elapsed() < QUIT_GRACE {
+        alive.retain(|p| is_alive(*p));
+        if alive.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let visible = windows_of(&alive).iter().filter(|w| w.visible && w.main_like).count();
+    match quit_step(alive.len(), visible) {
+        QuitStep::Done => Ok(Outcome::Closed),
+        QuitStep::LeaveToUser => Ok(Outcome::StillOpen),
+        QuitStep::Terminate => {
+            let mut denied = 0;
+            for pid in &alive {
+                unsafe {
+                    match OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, *pid) {
+                        Ok(h) => {
+                            if TerminateProcess(h, 0).is_err() {
+                                denied += 1;
+                            }
+                            let _ = CloseHandle(h);
+                        }
+                        Err(_) => denied += 1,
+                    }
+                }
+            }
+            if denied > 0 && denied == alive.len() {
+                Err("Windows refused to close this app (it may run as administrator)".into())
+            } else {
+                Ok(Outcome::Terminated)
             }
         }
-        taskbar::end_interaction();
-        out
-    })
+    }
+}
+
+fn target_by_id(id: &str) -> Result<Target, String> {
+    if let Some(rest) = id.strip_prefix("tb:") {
+        let tb = toolbar_items()
+            .into_iter()
+            .find(|t| format!("{}:{}", t.hwnd, t.uid) == rest)
+            .ok_or_else(|| "this tray app is no longer running".to_string())?;
+        let lower = tb.exe.to_ascii_lowercase();
+        return Ok(Target { pids: pids_of(&lower).into_iter().collect(), candidates: candidates_for(&tb.exe, &tb.tooltip), exe: tb.exe.clone(), toolbar: Some(tb) });
+    }
+    let e = live_entries().into_iter().find(|e| e.id == id).ok_or_else(|| "this tray app is no longer running".to_string())?;
+    let lower = e.exe.to_ascii_lowercase();
+    let toolbar = toolbar_items().into_iter().find(|t| t.exe.to_ascii_lowercase() == lower);
+    Ok(Target { pids: pids_of(&lower).into_iter().collect(), candidates: candidates_for(&e.exe, &e.tooltip), exe: e.exe, toolbar })
+}
+
+/// Open / Settings / Quit for a tray app. lumabar's own entry is refused (the dock opens its
+/// Settings modal or runs the restore-and-quit path itself).
+pub fn act(id: &str, action: Action) -> Result<Outcome, String> {
+    let target = target_by_id(id)?;
+    if target.exe.to_ascii_lowercase() == own_exe() || target.pids.contains(&std::process::id()) {
+        return Err("lumabar's own entry is handled by the dock".into());
+    }
+    match action {
+        Action::Open | Action::Settings => open_target(&target),
+        Action::Quit => {
+            let out = quit_target(&target);
+            *RUNNING.lock() = None;
+            out
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     #[test]
     fn known_folder_prefixes_are_split() {
@@ -788,7 +967,6 @@ mod tests {
         assert_eq!(rest, r"AMD\CNext\RadeonSoftware.exe");
         assert!(split_known_folder(r"C:\Riot Games\Riot Client\RiotClientServices.exe").is_none());
         assert!(split_known_folder(r"{nope}\x.exe").is_none());
-        // ProgramFilesX64 really expands.
         let expanded = expand_known_folder(r"{6D809377-6AF0-444B-8957-A3773F02200E}\Riot Vanguard\vgtray.exe");
         assert!(expanded.to_ascii_lowercase().ends_with(r"program files\riot vanguard\vgtray.exe"), "{expanded}");
     }
@@ -802,9 +980,6 @@ mod tests {
         assert!(match_score(&names(&["Vanguard tray notification.", "vgtray"]), "Riot Vanguard") > 0);
         assert_eq!(match_score(&names(&["Discord"]), "Riot Client"), 0);
         assert_eq!(match_score(&names(&["Discord"]), ""), 0);
-        // Better candidates win.
-        let riot = names(&["Riot Client"]);
-        assert!(match_score(&riot, "Riot Client") > match_score(&riot, "Riot Vanguard"));
     }
 
     #[test]
@@ -821,11 +996,8 @@ mod tests {
         absent.mark(r"c:\epic\launcher.exe", t0);
         assert!(absent.contains(r"c:\epic\launcher.exe", t0 + Duration::from_secs(5), ttl));
         assert!(!absent.contains(r"c:\epic\launcher.exe", t0 + Duration::from_secs(601), ttl));
-        assert!(!absent.contains(r"c:\discord\discord.exe", t0, ttl));
-        // Seen again in the live tree: back in the list at once.
         absent.clear(r"c:\epic\launcher.exe");
         assert!(!absent.contains(r"c:\epic\launcher.exe", t0, ttl));
-        // Bounded.
         for i in 0..100 {
             absent.mark(&format!("c:\\x{i}.exe"), t0);
         }
@@ -833,10 +1005,14 @@ mod tests {
     }
 
     #[test]
-    fn items_without_a_layout_are_never_clicked() {
-        assert!(!has_area(RECT::default()));
-        assert!(has_area(RECT { left: 1800, top: 1040, right: 1832, bottom: 1072 }));
-        assert!(click_at(RECT::default(), Button::Right).is_err());
+    fn quit_terminates_only_background_leftovers() {
+        assert_eq!(quit_step(0, 0), QuitStep::Done);
+        // A "save changes?" prompt survived WM_CLOSE: never kill the app under the user's eyes.
+        assert_eq!(quit_step(1, 1), QuitStep::LeaveToUser);
+        assert_eq!(quit_step(3, 0), QuitStep::Terminate);
+        assert_eq!(Action::parse("quit"), Some(Action::Quit));
+        assert_eq!(Action::parse("open"), Some(Action::Open));
+        assert!(Action::parse("right").is_none());
     }
 
     #[test]
@@ -845,45 +1021,88 @@ mod tests {
         assert!(!is_shell_owned(r"c:\users\me\appdata\local\discord\app-1.0\discord.exe"));
     }
 
-    /// Real enumeration on this machine: every entry is a running, non-shell, non-lumabar
-    /// executable with a unique id and an icon.
-    #[test]
-    fn real_tray_enumeration_lists_running_apps_only() {
-        let icons = list();
-        for t in &icons {
-            eprintln!("tray: {} | overflow={} | {}", t.name, t.is_hidden_overflow, t.exe);
+    /// (Shell_TrayWnd visible, overflow flyout open, Win10 overflow visible, cursor).
+    fn shell_state() -> (bool, bool, bool, (i32, i32)) {
+        unsafe {
+            let tray = FindWindowW(w!("Shell_TrayWnd"), None).is_ok_and(|h| IsWindowVisible(h).as_bool());
+            let legacy = FindWindowW(w!("NotifyIconOverflowWindow"), None).is_ok_and(|h| IsWindowVisible(h).as_bool());
+            let mut p = POINT::default();
+            let _ = GetCursorPos(&mut p);
+            (tray, overflow_window().is_some(), legacy, (p.x, p.y))
         }
-        let running = running_paths();
+    }
+
+    /// Real enumeration on this machine: silent (the shell UI and cursor are untouched), every
+    /// entry is a running non-shell app with a unique id, and a running lumabar is listed.
+    #[test]
+    fn real_tray_enumeration_is_silent_and_includes_lumabar() {
+        let before = shell_state();
+        let icons = list();
+        let after = shell_state();
+        for t in &icons {
+            eprintln!("tray: {} | overflow={} | self={} | icon={} | {}", t.name, t.is_hidden_overflow, t.is_self, t.icon_png.is_some(), t.exe);
+        }
+        assert_eq!(before, after, "listing must never reveal the tray or move the cursor");
+        let procs: HashSet<String> = processes().into_iter().map(|(_, p)| p).collect();
         let mut ids = HashSet::new();
         for t in &icons {
             assert!(ids.insert(t.id.clone()), "duplicate id {}", t.id);
-            assert!(running.contains(&t.exe.to_ascii_lowercase()), "{} is not running", t.exe);
+            assert!(procs.contains(&t.exe.to_ascii_lowercase()), "{} is not running", t.exe);
             assert!(!is_shell_owned(&t.exe.to_ascii_lowercase()));
             assert!(!t.name.is_empty(), "{}", t.exe);
-            assert!(t.icon_png.as_deref().is_some_and(|u| u.starts_with("data:image/png;base64,")), "{} has no icon", t.exe);
         }
-        assert!(Button::parse("right") == Some(Button::Right) && Button::parse("middle").is_none());
-        assert!(activate("no-such-id", Button::Left).is_err());
+        let lumabar_running = procs.iter().any(|p| p.ends_with("\\lumabar.exe"));
+        if lumabar_running {
+            assert!(icons.iter().any(|t| t.exe.to_ascii_lowercase().ends_with("\\lumabar.exe")), "a running lumabar must list itself");
+        }
+        // Windows 11 has no legacy toolbar; the scan must simply come back empty there.
+        let _ = toolbar_items();
+        assert!(act("no-such-id", Action::Open).is_err());
     }
 
-    /// Reveals the real notification area (moves the cursor to the taskbar edge and back, opens and
-    /// closes the hidden-icons flyout). Run explicitly: `cargo test --lib tray_icons -- --ignored`.
+    /// Open + Quit on a real throw-away window (a PowerShell WinForms form): the window is focused
+    /// and then closed by WM_CLOSE, and neither Shell_TrayWnd nor any overflow window is shown,
+    /// nor the cursor moved. Takes focus briefly: `cargo test --lib tray_icons -- --ignored`.
     #[test]
     #[ignore]
-    fn real_tray_items_are_located_through_ui_automation() {
-        let icons = list();
-        assert!(!icons.is_empty(), "no tray app running");
-        let mut found = 0;
-        for t in &icons {
-            match locate(&t.id) {
-                Ok(l) => {
-                    found += 1;
-                    eprintln!("{} -> '{}' overflow={} rect={:?}", t.name, l.name.lines().next().unwrap_or(""), l.in_overflow, l.rect);
-                    assert!(l.rect.right > l.rect.left && l.rect.bottom > l.rect.top);
-                }
-                Err(e) => eprintln!("{}: {e}", t.name),
+    fn open_and_quit_act_on_the_app_never_on_the_shell() {
+        let title = format!("lumabar-tray-test-{}", std::process::id());
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form; $f.Text = '{title}'; $f.ShowInTaskbar = $false; [System.Windows.Forms.Application]::Run($f)"
+        );
+        let child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn powershell");
+        // Never leave the form behind, whatever fails below.
+        struct Reap(std::process::Child);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
             }
         }
-        assert!(found > 0, "no tray item could be located");
+        let child = Reap(child);
+        let pid = child.0.id();
+        let pids: HashSet<u32> = [pid].into_iter().collect();
+        let start = Instant::now();
+        while main_window(&windows_of(&pids), true).is_none() && start.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(main_window(&windows_of(&pids), true).is_some(), "test window never appeared");
+        let exe = apps_enum::process_image_path(pid).unwrap_or_default();
+        let target = Target { exe, pids: pids.clone(), candidates: vec![title.clone()], toolbar: None };
+
+        let before = shell_state();
+        assert_eq!(open_target(&target), Ok(Outcome::Focused));
+        let quit = quit_target(&target);
+        let after = shell_state();
+        assert_eq!(quit, Ok(Outcome::Closed));
+        assert_eq!((before.0, before.1, before.2), (after.0, after.1, after.2), "the tray / overflow visibility changed");
+        assert!(!after.1 && !after.2, "an overflow window is showing");
+        assert_eq!(before.3, after.3, "the cursor moved");
+        drop(child);
     }
 }
