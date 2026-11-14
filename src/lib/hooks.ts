@@ -11,12 +11,21 @@ export function usePreview(): boolean {
   return useContext(PreviewContext);
 }
 
-export function useNow(intervalMs = 1000): number {
+/**
+ * Wall clock that re-renders every `intervalMs`. While the dock is hidden behind a fullscreen
+ * app nobody can see the result, so the timer stops (no 1 Hz re-renders) unless `essential` —
+ * e.g. a running Pomodoro that must still notice its deadline.
+ */
+export function useNow(intervalMs = 1000, essential = false): number {
   const [now, setNow] = useState(() => Date.now());
+  const hidden = useHub((s) => s.fullscreen);
+  const paused = hidden && !essential;
   useEffect(() => {
+    if (paused) return;
+    setNow(Date.now());
     const t = window.setInterval(() => setNow(Date.now()), intervalMs);
     return () => window.clearInterval(t);
-  }, [intervalMs]);
+  }, [intervalMs, paused]);
   return now;
 }
 

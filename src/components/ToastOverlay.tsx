@@ -5,6 +5,7 @@
 import { CalendarDays, Info, RefreshCcw, Sparkles, TrendingUp, X, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useHub } from "../engine/DataHub";
+import { useI18n } from "../i18n";
 import { useHitRegion } from "../lib/hitRegions";
 import { ipc, subscribe } from "../lib/ipc";
 import type { ToastSpec } from "../types/lumabar";
@@ -27,6 +28,7 @@ interface LiveToast extends ToastSpec {
 
 function ToastCard(props: { toast: LiveToast; fromBelow: boolean; onDismiss: (key: string) => void }) {
   const { toast, fromBelow, onDismiss } = props;
+  const { t } = useI18n();
   const ref = useRef<HTMLDivElement | null>(null);
   const remaining = useRef(toast.durationMs ?? DEFAULT_DURATION);
   const startedAt = useRef(Date.now());
@@ -67,6 +69,7 @@ function ToastCard(props: { toast: LiveToast; fromBelow: boolean; onDismiss: (ke
       ref={ref}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      data-toast={toast.id}
       className="lb-menu relative flex w-full items-center gap-3 rounded-[18px] py-3 pl-3.5 pr-9"
       style={{
         color: "var(--lb-text)",
@@ -81,19 +84,19 @@ function ToastCard(props: { toast: LiveToast; fromBelow: boolean; onDismiss: (ke
         <Icon size={18} style={{ color: kind.color }} />
       </div>
       <div className="min-w-0 flex-1 leading-snug">
-        <div className="truncate text-[13.5px] font-semibold">{toast.title}</div>
+        <div className="truncate text-[13.5px] font-semibold" title={toast.title}>{toast.title}</div>
         {toast.subtitle && <div className="truncate text-[12px] lb-muted">{toast.subtitle}</div>}
       </div>
       {toast.actionLabel && (
         <button
-          className="lb-focus shrink-0 rounded-full border-none px-3 py-1 text-[12px] font-semibold"
+          className="lb-focus shrink-0 whitespace-nowrap rounded-full border-none px-3 py-1 text-[12px] font-semibold"
           style={{ background: "var(--lb-card-hover)" }}
           onClick={runAction}
         >
           {toast.actionLabel}
         </button>
       )}
-      <button className="lb-icon-btn absolute right-2 top-2 h-5 w-5" onClick={() => onDismiss(toast.key)} aria-label="Dismiss">
+      <button className="lb-icon-btn absolute right-2 top-2 h-5 w-5" onClick={() => onDismiss(toast.key)} aria-label={t("common.dismiss")}>
         <X size={12} />
       </button>
     </div>

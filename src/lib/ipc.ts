@@ -29,8 +29,8 @@ export const ipc = {
   setDockPosition: (position: DockPosition) => invoke<void>("set_dock_position", { position }),
   setTaskbarMode: (mode: TaskbarMode) => invoke<void>("set_taskbar_mode", { mode }),
   restoreTaskbarAndQuit: () => invoke<void>("restore_taskbar_and_quit"),
-  openWindow: (label: "picker" | "settings") => invoke<void>("open_window", { label }),
-  hideWindow: (label: string) => invoke<void>("hide_window", { label }),
+  openWindow: (label: "picker" | "settings", tab?: string) => invoke<void>("open_window", { label, tab: tab ?? null }),
+  closeWindow: (label: "picker" | "settings") => invoke<void>("close_window", { label }),
 
   setGlassRect: (rect: HitRect) => invoke<void>("set_glass_rect", { rect }),
   getGlassStatus: () => invoke<string>("get_glass_status"),
@@ -45,6 +45,7 @@ export const ipc = {
   mediaState: () => invoke<MediaState>("media_state"),
   mediaCommand: (action: "toggle" | "pause" | "play" | "next" | "previous") => invoke<void>("media_command", { action }),
   mediaPause: () => invoke<void>("media_pause"),
+  mediaOpenSource: () => invoke<string>("media_open_source"),
 
   getScreenTime: (day?: string) => invoke<ScreenTimeDay>("get_screen_time", { day: day ?? null }),
   setRadio: (kind: "wifi" | "bluetooth", on: boolean) => invoke<void>("set_radio", { kind, on }),

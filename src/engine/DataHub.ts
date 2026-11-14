@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import { bus } from "./EventBus";
 import { ipc, subscribe } from "../lib/ipc";
 import { startTimeFormatted } from "../lib/format";
+import { normalizeLang, setActiveLang } from "../i18n";
 import type {
   AiUsageData,
   CalendarData,
@@ -28,6 +29,7 @@ export const EMPTY_MEDIA: MediaState = {
   album: "",
   status: "",
   sourceApp: "",
+  isLiner: false,
   thumbnail: null,
   canNext: false,
   canPrevious: false,
@@ -62,6 +64,8 @@ export function getHub(): HubState {
 }
 
 export function setHub(patch: Partial<HubState>): void {
+  // Formatters and non-React code follow the language as soon as settings arrive.
+  if (patch.settings) setActiveLang(normalizeLang(patch.settings.language));
   state = { ...state, ...patch };
   for (const l of Array.from(listeners)) l();
 }
@@ -126,6 +130,12 @@ export function startHub(options: { calendarTicks?: boolean } = {}): () => void 
   cleanups.push(subscribe("provider:update", acceptProvider));
   cleanups.push(
     subscribe("telemetry:sample", (sample) => {
+      // Hidden behind a fullscreen app: keep the bus fed but skip the 1 Hz widget re-render.
+      if (state.fullscreen) {
+        state = { ...state, telemetry: [...state.telemetry, sample].slice(-TELEMETRY_HISTORY) };
+        bus.emit("telemetry:sample", sample);
+        return;
+      }
       const telemetry = [...state.telemetry, sample].slice(-TELEMETRY_HISTORY);
       setHub({ telemetry });
       bus.emit("telemetry:sample", sample);
@@ -144,7 +154,14 @@ export function startHub(options: { calendarTicks?: boolean } = {}): () => void 
     }),
   );
   cleanups.push(subscribe("dock:layout", (dockLayout) => setHub({ dockLayout, position: dockLayout.position })));
-  cleanups.push(subscribe("dock:fullscreen", (fullscreen) => setHub({ fullscreen })));
+  cleanups.push(
+    subscribe("dock:fullscreen", (fullscreen) => {
+      if (fullscreen === state.fullscreen) return;
+      // Pauses CSS animations (index.css) along with the timers gated on `fullscreen`.
+      document.documentElement.dataset.hidden = String(fullscreen);
+      setHub({ fullscreen });
+    }),
+  );
 
   if (options.calendarTicks) {
     const timer = window.setInterval(emitCalendarTick, 5000);

@@ -1,5 +1,7 @@
 mod commands;
 mod graphics;
+mod i18n;
+mod lru;
 mod providers;
 mod storage;
 mod win32;
@@ -9,6 +11,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 
+use i18n::{Lang, Text, tr};
 use storage::db::Db;
 use storage::settings::Settings;
 use win32::sentinel::{self, SentinelEvent};
@@ -16,6 +19,8 @@ use win32::taskbar::{self, TaskbarMode};
 use win32::window_manager;
 
 pub use win32::guardian::GUARDIAN_FLAG;
+
+const TRAY_ID: &str = "lumabar-tray";
 
 /// Entry point of the out-of-process taskbar guardian (see win32/guardian.rs).
 pub fn run_guardian(pid: u32) {
@@ -45,41 +50,60 @@ fn emergency_restore(app: &AppHandle) {
         let _ = settings.save(&state.db);
     }
     let settings = state.settings.read().clone();
+    let lang = Lang::parse(&settings.language);
     let _ = app.emit("settings:changed", &settings);
     window_manager::relayout_and_broadcast(app);
     let _ = app.emit(
         "toast:push",
         serde_json::json!({
             "id": "emergency-restore",
-            "title": "Windows taskbar restored",
-            "subtitle": "Ctrl + Alt + Shift + R · lumabar keeps running",
+            "title": tr(lang, Text::ToastTaskbarRestored),
+            "subtitle": tr(lang, Text::ToastTaskbarRestoredSub),
             "kind": "system",
         }),
     );
 }
 
-fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let widgets_item = MenuItem::with_id(app, "picker", "Add Widgets…", true, None::<&str>)?;
-    let restore_item = MenuItem::with_id(app, "restore", "Restore Windows Taskbar", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Restore Windows Taskbar & Quit", true, None::<&str>)?;
+fn tray_menu(app: &AppHandle, lang: Lang) -> tauri::Result<Menu<tauri::Wry>> {
+    let settings_item = MenuItem::with_id(app, "settings", tr(lang, Text::TraySettings), true, None::<&str>)?;
+    let widgets_item = MenuItem::with_id(app, "picker", tr(lang, Text::TrayAddWidgets), true, None::<&str>)?;
+    let restore_item = MenuItem::with_id(app, "restore", tr(lang, Text::TrayRestore), true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", tr(lang, Text::TrayRestoreQuit), true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&widgets_item, &settings_item, &separator, &restore_item, &quit_item])?;
+    Menu::with_items(app, &[&widgets_item, &settings_item, &separator, &restore_item, &quit_item])
+}
 
-    let mut builder = TrayIconBuilder::with_id("lumabar-tray").tooltip("lumabar").menu(&menu);
+fn build_tray(app: &AppHandle, lang: Lang) -> tauri::Result<()> {
+    let menu = tray_menu(app, lang)?;
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID).tooltip("lumabar").menu(&menu);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
     builder
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "settings" => window_manager::show_centered(app, "settings"),
-            "picker" => window_manager::show_centered(app, "picker"),
+            // Menu events arrive on the main thread, where creating a window is safe.
+            label @ ("settings" | "picker") => {
+                if let Err(err) = window_manager::open_modal(app, label, None) {
+                    eprintln!("[lumabar] {err}");
+                }
+            }
             "restore" => emergency_restore(app),
             "quit" => restore_and_quit(app),
             _ => {}
         })
         .build(app)?;
     Ok(())
+}
+
+/// Re-label the tray menu after a language switch.
+pub fn refresh_tray_language(app: &AppHandle, language: &str) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
+    match tray_menu(app, Lang::parse(language)) {
+        Ok(menu) => {
+            let _ = tray.set_menu(Some(menu));
+        }
+        Err(err) => eprintln!("[lumabar] could not rebuild the tray menu: {err}"),
+    }
 }
 
 pub fn run() {
@@ -92,7 +116,18 @@ pub fn run() {
     taskbar::init();
     win32::guardian::spawn();
 
-    let db = Db::open().expect("open %APPDATA%\\lumabar\\lumabar.db");
+    // lumabar's async work is a handful of HTTPS polls and short blocking commands: two workers
+    // are plenty, and far cheaper than Tokio's default of one thread (and stack) per logical core.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(8)
+        .thread_name("lumabar-async")
+        .enable_all()
+        .build()
+        .expect("build the async runtime");
+    tauri::async_runtime::set(runtime.handle().clone());
+
+    let db = Db::open().expect(r"open %APPDATA%\lumabar\lumabar.db");
     let settings = Settings::load(&db);
 
     let app = tauri::Builder::default()
@@ -110,7 +145,7 @@ pub fn run() {
             commands::set_taskbar_mode,
             commands::restore_taskbar_and_quit,
             commands::open_window,
-            commands::hide_window,
+            commands::close_window,
             commands::set_glass_rect,
             commands::get_glass_status,
             commands::list_apps,
@@ -122,6 +157,7 @@ pub fn run() {
             commands::media_state,
             commands::media_command,
             commands::media_pause,
+            commands::media_open_source,
             commands::get_screen_time,
             commands::set_radio,
             commands::set_hotspot,
@@ -140,22 +176,22 @@ pub fn run() {
             commands::delete_todo,
             commands::clear_done_todos,
         ])
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                match window.label() {
-                    // Modals are reused: hide instead of destroying.
-                    "picker" | "settings" => {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
-                    // Closing the dock or toast overlay (Alt+F4, `taskkill`) quits, restoring
-                    // the taskbar first.
-                    _ => {
-                        api.prevent_close();
-                        restore_and_quit(window.app_handle());
-                    }
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                // Picker / settings are created on demand and simply close (their webview is
+                // destroyed with them). Closing the dock or toast overlay (Alt+F4, `taskkill`)
+                // quits, restoring the taskbar first.
+                if window_manager::modal_spec(window.label(), Lang::Fr).is_none() {
+                    api.prevent_close();
+                    restore_and_quit(window.app_handle());
                 }
             }
+            WindowEvent::Destroyed => {
+                if window_manager::modal_spec(window.label(), Lang::Fr).is_some() {
+                    window_manager::on_modal_destroyed(window.label());
+                }
+            }
+            _ => {}
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -188,10 +224,11 @@ pub fn run() {
             graphics::dxgi_capture::start(handle.clone());
             graphics::dxgi_capture::set_enabled(&handle, settings.theme == "liquid-glass");
             win32::media_smtc::start(handle.clone());
+            win32::memory::start();
             win32::screen_time::start(handle.clone());
             win32::telemetry::start(handle.clone());
             providers::api_poller::start(handle.clone());
-            build_tray(&handle)?;
+            build_tray(&handle, Lang::parse(&settings.language))?;
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -204,5 +241,6 @@ pub fn run() {
     });
 
     taskbar::restore();
+    runtime.shutdown_background();
     drop(instance_guard);
 }

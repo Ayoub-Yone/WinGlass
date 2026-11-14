@@ -27,7 +27,8 @@
         "maximizable": false,
         "minimizable": false,
         "focus": false,
-        "visible": false
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,AutofillServerCommunication --disable-background-networking --disable-default-apps --disable-extensions --disable-sync --disable-component-update --js-flags=\"--max-old-space-size=48\""
       },
       {
         "label": "toast",
@@ -44,39 +45,8 @@
         "maximizable": false,
         "minimizable": false,
         "focus": false,
-        "visible": false
-      },
-      {
-        "label": "picker",
-        "title": "Add Widgets",
-        "url": "index.html?window=picker",
-        "width": 920,
-        "height": 640,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "shadow": false,
-        "resizable": false,
-        "maximizable": false,
-        "center": true,
-        "visible": false
-      },
-      {
-        "label": "settings",
-        "title": "lumabar Settings",
-        "url": "index.html?window=settings",
-        "width": 860,
-        "height": 640,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "shadow": false,
-        "resizable": false,
-        "maximizable": false,
-        "center": true,
-        "visible": false
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,AutofillServerCommunication --disable-background-networking --disable-default-apps --disable-extensions --disable-sync --disable-component-update --js-flags=\"--max-old-space-size=48\""
       }
     ],
     "security": {

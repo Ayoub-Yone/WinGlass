@@ -1,15 +1,24 @@
-// WebGL2 "liquid glass": live desktop refraction behind the dock.
+// WebGL2 "matte liquid glass": the live desktop behind the dock, diffused into frosted glass.
 //
-// Pipeline (renders only when a new DXGI frame arrives or the canvas resizes — never on an idle
-// rAF loop, so a static desktop costs zero GPU work):
-//   upload  glass://capture RGBA  ->  source texture
-//   pass 1  dual-Kawase blur: 3 downsample + 2 upsample passes (multi-tap, ≈ 28px Gaussian)
-//   pass 2  composite: SDF rounded-box refraction (UVs bend inward near the rim), ±0.002 R/B
-//           chromatic dispersion at the edges, 1px specular rim light on the top/bottom bevel,
-//           dark tint, anti-aliased capsule mask.
+// Pipeline (renders only when a new DXGI frame arrives, the canvas resizes or the frost preset
+// changes — never on an idle rAF loop, so a static desktop costs zero GPU work):
+//   upload  glass://capture BGRA  ->  source texture (swizzled to RGB in the first pass)
+//   pass 1  dual-Kawase blur pyramid: 3–5 downsample + matching upsample passes. Deep enough that
+//           windows and wallpapers dissolve into smooth colour gradients rather than shapes.
+//   pass 2  composite:
+//             · SDF rounded-box lens — UVs bend along the outer 10px perimeter with a circular
+//               bevel profile, ±0.0015 R/B chromatic dispersion at the rim
+//             · micro-grain diffusion — sub-pixel UV jitter + ~0.012 luminance grain (static, so
+//               it never forces a redraw) for a tactile matte finish instead of glossy plastic
+//             · adaptive contrast veil — the matte tint thickens over bright backgrounds so white
+//               text stays readable on a pure-white wallpaper, and a faint lift keeps the glass
+//               visible on pitch black
+//             · soft inner ambient shadow, crisp 1px specular light catch along the top edge
+//             · anti-aliased capsule mask
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
+import { GLASS_TINT_RGB, type FrostPreset } from "../engine/ThemeEngine";
 import { subscribe } from "../lib/ipc";
 
 const VERT = `#version 300 es
@@ -27,6 +36,7 @@ out vec4 o;
 uniform sampler2D u_tex;
 uniform vec2 u_halfpixel;
 uniform float u_offset;
+uniform float u_bgra;   // 1.0 for the raw capture (BGRA byte order), 0.0 afterwards
 void main() {
   vec2 hp = u_halfpixel * u_offset;
   vec4 sum = texture(u_tex, v_uv) * 4.0;
@@ -34,7 +44,8 @@ void main() {
   sum += texture(u_tex, v_uv + hp);
   sum += texture(u_tex, v_uv + vec2(hp.x, -hp.y));
   sum += texture(u_tex, v_uv - vec2(hp.x, -hp.y));
-  o = sum / 8.0;
+  sum /= 8.0;
+  o = vec4(mix(sum.rgb, sum.bgr, u_bgra), 1.0);
 }`;
 
 const KAWASE_UP = `#version 300 es
@@ -65,11 +76,19 @@ uniform sampler2D u_blur;
 uniform vec2 u_size;      // canvas size in device px
 uniform float u_radius;   // corner radius in device px
 uniform float u_dpr;
-uniform vec4 u_tint;
+uniform vec4 u_tint;      // matte veil colour + base opacity
+uniform float u_grain;    // micro-grain amplitude (~0.012)
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
   return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// Hash without sine (stable across GPUs).
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
 }
 
 void main() {
@@ -85,31 +104,45 @@ void main() {
     sdRoundedBox(p + e.yx, half_size, r) - sdRoundedBox(p - e.yx, half_size, r));
   n = normalize(n + 1e-6);
 
-  // Edge-weighted refraction: strongest at the rim, fading to zero ~18px inside.
-  float edge = 18.0 * u_dpr;
-  float t = clamp(1.0 + d / edge, 0.0, 1.0);
-  float bend = t * t * t;
-  vec2 uv = v_uv - n * bend * (12.0 * u_dpr) / u_size;
+  // Optical edge: a 10px bevel with a circular profile, so the bend starts imperceptibly and
+  // steepens smoothly towards the rim (no visible seam where refraction begins).
+  float t = clamp(1.0 + d / (10.0 * u_dpr), 0.0, 1.0);
+  float bend = 1.0 - sqrt(max(1.0 - t * t, 0.0));
 
-  // Chromatic dispersion: R and B pulled ±0.002 along the normal at the edges.
-  float ca = 0.002 * bend;
+  // Frosted diffusion: every pixel looks through the glass at a slightly different angle.
+  float g1 = hash12(gl_FragCoord.xy);
+  float g2 = hash12(gl_FragCoord.xy + 61.7);
+  vec2 scatter = (vec2(g1, g2) - 0.5) * (u_grain / 0.012) * (1.5 * u_dpr) / u_size;
+
+  vec2 uv = v_uv - n * bend * (14.0 * u_dpr) / u_size + scatter;
+
+  // Chromatic dispersion: R and B pulled ±0.0015 along the normal at the rim.
+  float ca = 0.0015 * bend;
   vec3 col;
   col.r = texture(u_blur, uv + n * ca).r;
   col.g = texture(u_blur, uv).g;
   col.b = texture(u_blur, uv - n * ca).b;
 
-  // Gentle vibrancy, then the theme tint.
+  // Matte: only a whisper of vibrancy, then the adaptive contrast veil.
   float luma = dot(col, vec3(0.299, 0.587, 0.114));
-  col = mix(vec3(luma), col, 1.18);
-  col = mix(col, u_tint.rgb, u_tint.a);
+  col = mix(vec3(luma), col, 1.06);
+  float veil = clamp(u_tint.a + 0.30 * smoothstep(0.42, 0.95, luma), 0.0, 0.9);
+  col = mix(col, u_tint.rgb, veil);
+  // Keep the pane distinguishable from a pitch-black wallpaper.
+  col += vec3(0.020, 0.021, 0.024);
 
-  // 1px specular rim light along the top (brighter) and bottom bevel.
-  float rim = 1.0 - smoothstep(0.0, 1.0 * u_dpr, abs(d + 0.75 * u_dpr));
-  float vertical = smoothstep(0.15, 0.95, abs(n.y));
-  float topLight = n.y > 0.0 ? 0.55 : 0.22;
-  col += vec3(rim * vertical * topLight);
-  // Soft inner glow just inside the rim.
-  col += vec3(0.06 * bend * max(n.y, 0.0));
+  // Soft inner ambient shadow, heavier along the bottom, for depth.
+  float inner = smoothstep(-16.0 * u_dpr, 0.0, d);
+  col *= 1.0 - 0.16 * inner * inner * (0.55 + 0.45 * clamp(-n.y, 0.0, 1.0));
+
+  // Crisp 1px specular light catch on the top edge (rgba(255,255,255,0.26)); a faint echo below.
+  float rim = 1.0 - smoothstep(0.35 * u_dpr, 0.85 * u_dpr, abs(d + 0.6 * u_dpr));
+  float top = smoothstep(0.25, 0.9, n.y);
+  float bottom = smoothstep(0.25, 0.9, -n.y);
+  col = mix(col, vec3(1.0), rim * (0.26 * top + 0.07 * bottom + 0.045));
+
+  // Ultra-fine procedural grain.
+  col += (g1 - 0.5) * 2.0 * u_grain;
 
   float alpha = 1.0 - smoothstep(-0.75 * u_dpr, 0.75 * u_dpr, d);
   o = vec4(clamp(col, 0.0, 1.0) * alpha, alpha);
@@ -175,6 +208,7 @@ class GlassRenderer {
   private source: WebGLTexture | null = null;
   private srcW = 0;
   private srcH = 0;
+  /** `levels` downsample targets followed by `levels - 1` upsample targets. */
   private chain: Target[] = [];
   private chainKey = "";
   private uniformCache = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
@@ -208,7 +242,8 @@ class GlassRenderer {
     return m.get(name) ?? null;
   }
 
-  upload(width: number, height: number, rgba: Uint8Array): void {
+  /** `pixels` is the capture's raw BGRA buffer; the first blur pass swizzles it. */
+  upload(width: number, height: number, pixels: Uint8Array): void {
     const gl = this.gl;
     if (!this.source || width !== this.srcW || height !== this.srcH) {
       if (this.source) gl.deleteTexture(this.source);
@@ -219,23 +254,24 @@ class GlassRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.source);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
   }
 
-  private ensureChain(): void {
-    const key = `${this.srcW}x${this.srcH}`;
+  private ensureChain(levels: number): void {
+    const key = `${this.srcW}x${this.srcH}x${levels}`;
     if (key === this.chainKey) return;
     for (const t of this.chain) {
       this.gl.deleteFramebuffer(t.fb);
       this.gl.deleteTexture(t.tex);
     }
-    const sizes = [2, 4, 8].map((d) => [Math.max(1, Math.round(this.srcW / d)), Math.max(1, Math.round(this.srcH / d))]);
-    // down: /2, /4, /8 · up: /4, /2
-    this.chain = [...sizes, sizes[1], sizes[0]].map(([w, h]) => makeTarget(this.gl, w, h));
+    const size = (level: number) => [Math.max(1, Math.round(this.srcW / 2 ** level)), Math.max(1, Math.round(this.srcH / 2 ** level))];
+    const downs = Array.from({ length: levels }, (_, i) => size(i + 1));
+    const ups = Array.from({ length: levels - 1 }, (_, i) => size(levels - 1 - i));
+    this.chain = [...downs, ...ups].map(([w, h]) => makeTarget(this.gl, w, h));
     this.chainKey = key;
   }
 
-  private pass(prog: WebGLProgram, input: WebGLTexture, inW: number, inH: number, target: Target, offset: number): void {
+  private pass(prog: WebGLProgram, input: WebGLTexture, inW: number, inH: number, target: Target, offset: number, bgra = false): void {
     const gl = this.gl;
     gl.useProgram(prog);
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
@@ -245,26 +281,41 @@ class GlassRenderer {
     gl.uniform1i(this.loc(prog, "u_tex"), 0);
     gl.uniform2f(this.loc(prog, "u_halfpixel"), 0.5 / inW, 0.5 / inH);
     gl.uniform1f(this.loc(prog, "u_offset"), offset);
+    if (prog === this.down) gl.uniform1f(this.loc(prog, "u_bgra"), bgra ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  render(radiusCss: number, tint: [number, number, number, number]): boolean {
+  render(radiusCss: number, frost: FrostPreset): boolean {
     if (!this.source) return false;
     const gl = this.gl;
     const dpr = window.devicePixelRatio || 1;
     const w = this.canvas.width;
     const h = this.canvas.height;
     if (w === 0 || h === 0) return false;
-    this.ensureChain();
+    const levels = Math.max(2, Math.min(5, Math.round(frost.levels)));
+    this.ensureChain(levels);
     gl.bindVertexArray(this.vao);
     gl.disable(gl.BLEND);
 
-    const [d1, d2, d3, u2, u1] = this.chain;
-    this.pass(this.down, this.source, this.srcW, this.srcH, d1, 1.5);
-    this.pass(this.down, d1.tex, d1.w, d1.h, d2, 1.5);
-    this.pass(this.down, d2.tex, d2.w, d2.h, d3, 1.5);
-    this.pass(this.up, d3.tex, d3.w, d3.h, u2, 1.5);
-    this.pass(this.up, u2.tex, u2.w, u2.h, u1, 1.5);
+    // Down the pyramid…
+    let input = this.source;
+    let inW = this.srcW;
+    let inH = this.srcH;
+    for (let i = 0; i < levels; i++) {
+      const target = this.chain[i];
+      this.pass(this.down, input, inW, inH, target, frost.offset, i === 0);
+      input = target.tex;
+      inW = target.w;
+      inH = target.h;
+    }
+    // …and back up to half resolution.
+    for (let i = levels; i < this.chain.length; i++) {
+      const target = this.chain[i];
+      this.pass(this.up, input, inW, inH, target, frost.offset);
+      input = target.tex;
+      inW = target.w;
+      inH = target.h;
+    }
 
     gl.useProgram(this.comp);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -272,12 +323,13 @@ class GlassRenderer {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, u1.tex);
+    gl.bindTexture(gl.TEXTURE_2D, input);
     gl.uniform1i(this.loc(this.comp, "u_blur"), 0);
     gl.uniform2f(this.loc(this.comp, "u_size"), w, h);
     gl.uniform1f(this.loc(this.comp, "u_radius"), radiusCss * dpr);
     gl.uniform1f(this.loc(this.comp, "u_dpr"), dpr);
-    gl.uniform4f(this.loc(this.comp, "u_tint"), ...tint);
+    gl.uniform4f(this.loc(this.comp, "u_tint"), GLASS_TINT_RGB[0], GLASS_TINT_RGB[1], GLASS_TINT_RGB[2], frost.tint);
+    gl.uniform1f(this.loc(this.comp, "u_grain"), frost.grain);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return true;
   }
@@ -307,13 +359,16 @@ const CAPTURE_URL = convertFileSrc("capture", "glass");
  * Renders behind the dock pill. `onActiveChange(true)` once the first desktop frame has been
  * drawn — until then (or if capture is unavailable) the dock shows its CSS fallback surface.
  */
-export function LiquidGlassCanvas(props: { radius: number; onActiveChange: (active: boolean) => void }) {
-  const { radius, onActiveChange } = props;
+export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; onActiveChange: (active: boolean) => void }) {
+  const { radius, frost, onActiveChange } = props;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const radiusRef = useRef(radius);
   radiusRef.current = radius;
+  const frostRef = useRef(frost);
+  frostRef.current = frost;
   const activeCb = useRef(onActiveChange);
   activeCb.current = onActiveChange;
+  const redraw = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -327,8 +382,6 @@ export function LiquidGlassCanvas(props: { radius: number; onActiveChange: (acti
       return;
     }
 
-    // Tint rgba(18, 18, 22, 0.28)
-    const tint: [number, number, number, number] = [18 / 255, 18 / 255, 22 / 255, 0.28];
     let disposed = false;
     let inflight = false;
     let wanted = 0;
@@ -339,7 +392,7 @@ export function LiquidGlassCanvas(props: { radius: number; onActiveChange: (acti
     const draw = () => {
       raf = 0;
       if (disposed) return;
-      const ok = renderer.render(radiusRef.current, tint);
+      const ok = renderer.render(radiusRef.current, frostRef.current);
       if (ok !== hasFrame) {
         hasFrame = ok;
         activeCb.current(ok);
@@ -348,6 +401,7 @@ export function LiquidGlassCanvas(props: { radius: number; onActiveChange: (acti
     const scheduleDraw = () => {
       if (!raf) raf = requestAnimationFrame(draw);
     };
+    redraw.current = scheduleDraw;
 
     const pull = async () => {
       if (inflight || disposed || wanted === fetched) return;
@@ -398,6 +452,7 @@ export function LiquidGlassCanvas(props: { radius: number; onActiveChange: (acti
 
     return () => {
       disposed = true;
+      redraw.current = null;
       off();
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
@@ -406,5 +461,11 @@ export function LiquidGlassCanvas(props: { radius: number; onActiveChange: (acti
     };
   }, []);
 
-  return <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" style={{ borderRadius: radius }} aria-hidden />;
+  // Frost slider / radius changes re-composite the frame already on the GPU.
+  useEffect(() => {
+    redraw.current?.();
+  }, [frost, radius]);
+
+  // The canvas covers the pill's border box (the pill border is transparent while glass is live).
+  return <canvas ref={canvasRef} className="pointer-events-none absolute h-full w-full" style={{ inset: -1, width: "calc(100% + 2px)", height: "calc(100% + 2px)", borderRadius: radius }} aria-hidden />;
 }

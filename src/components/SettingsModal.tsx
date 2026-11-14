@@ -20,21 +20,23 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { BrandGlyph } from "./ui";
+import { LANGUAGES, useI18n, type TranslationKey } from "../i18n";
 import { useHub } from "../engine/DataHub";
-import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/ThemeEngine";
+import { FROST_ORDER, SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/ThemeEngine";
 import { patchSettings, useSettings } from "../lib/hooks";
+import { formatPercent } from "../lib/format";
 import { broadcast, errorMessage, ipc, subscribe } from "../lib/ipc";
-import type { AutomationSettings, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
+import type { AutomationSettings, GlassFrost, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
 
 type Tab = "general" | "accounts" | "calendar" | "integrations" | "automations" | "advanced";
 
-const TABS: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
-  { id: "general", label: "Appearance & Dock", icon: Palette },
-  { id: "accounts", label: "Accounts & Keys", icon: KeyRound },
-  { id: "calendar", label: "Calendar", icon: CalendarDays },
-  { id: "integrations", label: "Integrations", icon: Plug },
-  { id: "automations", label: "Automations", icon: Zap },
-  { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
+const TABS: Array<{ id: Tab; label: TranslationKey; icon: LucideIcon }> = [
+  { id: "general", label: "settings.tab.general", icon: Palette },
+  { id: "accounts", label: "settings.tab.accounts", icon: KeyRound },
+  { id: "calendar", label: "settings.tab.calendar", icon: CalendarDays },
+  { id: "integrations", label: "settings.tab.integrations", icon: Plug },
+  { id: "automations", label: "settings.tab.automations", icon: Zap },
+  { id: "advanced", label: "settings.tab.advanced", icon: SlidersHorizontal },
 ];
 
 // ---------------------------------------------------------------- form primitives
@@ -53,7 +55,7 @@ function Row(props: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="flex items-center gap-4 rounded-xl px-3.5 py-2.5" style={{ background: "var(--lb-card)" }}>
       <div className="min-w-0 flex-1">
-        <div className="text-[12.5px]">{props.label}</div>
+        <div className="text-[12.5px]" style={{ overflowWrap: "anywhere" }}>{props.label}</div>
         {props.hint && <div className="text-[11px] lb-muted">{props.hint}</div>}
       </div>
       <div className="flex shrink-0 items-center gap-2">{props.children}</div>
@@ -85,7 +87,7 @@ function Segmented<T extends string>(props: { value: T; options: Array<{ value: 
       {props.options.map((o) => (
         <button
           key={o.value}
-          className="lb-focus rounded-md border-none px-2.5 py-1 text-[12px]"
+          className="lb-focus whitespace-nowrap rounded-md border-none px-2.5 py-1 text-[12px]"
           style={{ background: props.value === o.value ? "var(--lb-card-hover)" : "transparent", fontWeight: props.value === o.value ? 600 : 400 }}
           onClick={() => props.onChange(o.value)}
         >
@@ -120,17 +122,24 @@ const update = (mutate: (s: Settings) => Settings) => void patchSettings(mutate)
 // ---------------------------------------------------------------- tabs
 
 function GeneralTab({ s }: { s: Settings }) {
+  const { t, lang } = useI18n();
+  const frostIndex = Math.max(0, FROST_ORDER.indexOf(s.glassFrost));
   const taskbarOptions: Array<{ value: TaskbarMode; label: string }> = [
-    { value: "auto_hide", label: "Auto-hide" },
-    { value: "completely_hidden", label: "Hidden" },
-    { value: "native", label: "Keep" },
+    { value: "auto_hide", label: t("settings.taskbar.autoHide") },
+    { value: "completely_hidden", label: t("settings.taskbar.hidden") },
+    { value: "native", label: t("settings.taskbar.keep") },
   ];
   return (
     <>
-      <Section title="Surface" description="Liquid Glass refracts the live desktop behind the dock using a GPU shader.">
+      <Section title={t("settings.language")}>
+        <Row label={t("settings.language")} hint={t("settings.languageHint")}>
+          <Segmented<Language> value={lang} options={LANGUAGES.map((l) => ({ value: l.id, label: l.label }))} onChange={(language) => update((x) => ({ ...x, language }))} />
+        </Row>
+      </Section>
+      <Section title={t("settings.surface")} description={t("settings.surfaceDesc")}>
         <div className="grid grid-cols-5 gap-2">
           {THEME_ORDER.map((id) => {
-            const t = THEMES[id];
+            const tokens = THEMES[id];
             const active = s.theme === id;
             return (
               <button
@@ -142,49 +151,75 @@ function GeneralTab({ s }: { s: Settings }) {
                 <div
                   className="flex h-10 items-center gap-1 rounded-[12px] px-1.5"
                   style={{
-                    background: id === "liquid-glass" ? "linear-gradient(120deg, rgba(120,160,255,0.55), rgba(255,140,190,0.45))" : t.surface,
-                    border: t.border,
+                    background: id === "liquid-glass" ? "linear-gradient(120deg, rgba(120,160,255,0.55), rgba(255,140,190,0.45))" : tokens.surface,
+                    border: tokens.border,
                   }}
                 >
                   {[0, 1, 2].map((i) => (
-                    <div key={i} className="h-6 flex-1 rounded-[7px]" style={{ background: t.card }} />
+                    <div key={i} className="h-6 flex-1 rounded-[7px]" style={{ background: tokens.card }} />
                   ))}
                 </div>
-                <div className="text-[12px] font-semibold">{t.name}</div>
-                <div className="text-[10.5px] lb-muted">{t.description}</div>
+                <div className="text-[12px] font-semibold">{t(`theme.${id}.name`)}</div>
+                <div className="text-[10.5px] lb-muted">{t(`theme.${id}.desc`)}</div>
               </button>
             );
           })}
         </div>
-      </Section>
-      <Section title="Size">
-        <Row label="Dock height" hint={`${SIZES[s.size].height}px`}>
-          <Segmented value={s.size} options={SIZE_ORDER.map((id) => ({ value: id, label: SIZES[id].name }))} onChange={(size) => update((x) => ({ ...x, size }))} />
+        <Row label={t("settings.frost")} hint={s.theme === "liquid-glass" ? t(`frost.${FROST_ORDER[frostIndex]}`) : t("settings.frostHint")}>
+          <div className="flex flex-col items-stretch gap-0.5" style={{ width: 230, opacity: s.theme === "liquid-glass" ? 1 : 0.5 }}>
+            <input
+              type="range"
+              min={0}
+              max={FROST_ORDER.length - 1}
+              step={1}
+              value={frostIndex}
+              disabled={s.theme !== "liquid-glass"}
+              aria-label={t("settings.frost")}
+              aria-valuetext={t(`frost.${FROST_ORDER[frostIndex]}`)}
+              onChange={(e) => {
+                const glassFrost: GlassFrost = FROST_ORDER[Number(e.target.value)] ?? "balanced";
+                update((x) => ({ ...x, glassFrost }));
+              }}
+              style={{ accentColor: "var(--lb-accent)" }}
+            />
+            <div className="flex justify-between text-[10.5px] lb-muted">
+              {FROST_ORDER.map((id, i) => (
+                <span key={id} className="whitespace-nowrap" style={{ fontWeight: i === frostIndex ? 600 : 400, color: i === frostIndex ? "var(--lb-text)" : undefined }}>
+                  {t(`frost.${id}`)}
+                </span>
+              ))}
+            </div>
+          </div>
         </Row>
-        <Row label="Accent color">
+      </Section>
+      <Section title={t("settings.size")}>
+        <Row label={t("settings.dockHeight")} hint={`${SIZES[s.size].height}px`}>
+          <Segmented value={s.size} options={SIZE_ORDER.map((id) => ({ value: id, label: t(`size.${id}`) }))} onChange={(size) => update((x) => ({ ...x, size }))} />
+        </Row>
+        <Row label={t("settings.accent")}>
           <input type="color" value={s.accent} onChange={(e) => update((x) => ({ ...x, accent: e.target.value }))} className="h-7 w-10 cursor-pointer rounded border-none bg-transparent" />
         </Row>
       </Section>
-      <Section title="Dock" description="You can also drag the dock vertically to snap it to the top or bottom edge.">
-        <Row label="Position">
+      <Section title={t("settings.dock")} description={t("settings.dockDesc")}>
+        <Row label={t("settings.position")}>
           <Segmented
             value={s.position}
             options={[
-              { value: "bottom", label: "Bottom" },
-              { value: "top", label: "Top" },
+              { value: "bottom", label: t("menu.bottom") },
+              { value: "top", label: t("menu.top") },
             ]}
             onChange={(position) => void ipc.setDockPosition(position)}
           />
         </Row>
-        <Row label="Hide during fullscreen games & video" hint="Slides away when a fullscreen app is in front">
+        <Row label={t("settings.hideFullscreen")} hint={t("settings.hideFullscreenHint")}>
           <Toggle checked={s.hideOnFullscreen} onChange={(v) => update((x) => ({ ...x, hideOnFullscreen: v }))} />
         </Row>
-        <Row label="Launch at sign-in">
+        <Row label={t("settings.launchAtLogin")}>
           <Toggle checked={s.launchAtLogin} onChange={(v) => update((x) => ({ ...x, launchAtLogin: v }))} />
         </Row>
       </Section>
-      <Section title="Windows taskbar" description="lumabar always restores the original taskbar on exit, crash or sign-out. Emergency hotkey: Ctrl + Alt + Shift + R.">
-        <Row label="Native taskbar" hint={s.taskbarMode === "completely_hidden" ? "Hidden on every monitor" : s.taskbarMode === "auto_hide" ? "Collapses off-screen until you hover the edge" : "Left untouched"}>
+      <Section title={t("settings.taskbar")} description={t("settings.taskbarDesc")}>
+        <Row label={t("settings.nativeTaskbar")} hint={s.taskbarMode === "completely_hidden" ? t("settings.taskbar.hintHidden") : s.taskbarMode === "auto_hide" ? t("settings.taskbar.hintAutoHide") : t("settings.taskbar.hintKeep")}>
           <Segmented value={s.taskbarMode} options={taskbarOptions} onChange={(mode) => void ipc.setTaskbarMode(mode)} />
         </Row>
       </Section>
@@ -194,7 +229,7 @@ function GeneralTab({ s }: { s: Settings }) {
 
 interface SecretField {
   name: string;
-  label: string;
+  label: TranslationKey;
   hint?: string;
 }
 
@@ -202,7 +237,7 @@ interface AccountSpec {
   id: ProviderId;
   name: string;
   fields: SecretField[];
-  note?: string;
+  note?: TranslationKey;
 }
 
 const AI_ACCOUNTS: AccountSpec[] = [
@@ -210,46 +245,47 @@ const AI_ACCOUNTS: AccountSpec[] = [
     id: "claude",
     name: "Claude",
     fields: [
-      { name: "claude_session_key", label: "claude.ai sessionKey cookie", hint: "sk-ant-sid…" },
-      { name: "claude_oauth_token", label: "or Claude Code OAuth token" },
+      { name: "claude_session_key", label: "account.claude.session", hint: "sk-ant-sid…" },
+      { name: "claude_oauth_token", label: "account.claude.oauth" },
     ],
-    note: "Usage limits come from Claude's own usage endpoint (not an official public API).",
+    note: "account.claude.note",
   },
   {
     id: "chatgpt",
     name: "ChatGPT",
     fields: [
-      { name: "chatgpt_access_token", label: "ChatGPT / Codex access token" },
-      { name: "chatgpt_account_id", label: "ChatGPT account id (optional)" },
+      { name: "chatgpt_access_token", label: "account.chatgpt.token" },
+      { name: "chatgpt_account_id", label: "account.chatgpt.account" },
     ],
-    note: "Reads 5-hour and weekly limits from the endpoint Codex uses (unofficial).",
+    note: "account.chatgpt.note",
   },
   {
     id: "gemini",
     name: "Gemini",
     fields: [
-      { name: "gemini_oauth_token", label: "Gemini CLI OAuth access token" },
-      { name: "gemini_project_id", label: "Code Assist project id (optional)" },
+      { name: "gemini_oauth_token", label: "account.gemini.token" },
+      { name: "gemini_project_id", label: "account.gemini.project" },
     ],
   },
-  { id: "grok", name: "Grok (xAI)", fields: [{ name: "xai_management_key", label: "Management API key" }, { name: "xai_team_id", label: "Team id" }] },
-  { id: "deepseek", name: "DeepSeek", fields: [{ name: "deepseek_api_key", label: "API key" }] },
-  { id: "glm", name: "GLM (Z.ai)", fields: [{ name: "glm_api_key", label: "Coding Plan API key" }] },
+  { id: "grok", name: "Grok (xAI)", fields: [{ name: "xai_management_key", label: "account.grok.key" }, { name: "xai_team_id", label: "account.grok.team" }] },
+  { id: "deepseek", name: "DeepSeek", fields: [{ name: "deepseek_api_key", label: "account.apiKey" }] },
+  { id: "glm", name: "GLM (Z.ai)", fields: [{ name: "glm_api_key", label: "account.glm.key" }] },
 ];
 
 const OTHER_ACCOUNTS: AccountSpec[] = [
-  { id: "stripe", name: "Stripe", fields: [{ name: "stripe_api_key", label: "Restricted key (read balance transactions)", hint: "rk_live_…" }] },
-  { id: "polar", name: "Polar", fields: [{ name: "polar_access_token", label: "Organization access token (metrics:read)" }] },
-  { id: "dodo", name: "Dodo Payments", fields: [{ name: "dodo_api_key", label: "API key" }] },
-  { id: "datafast", name: "DataFast", fields: [{ name: "datafast_api_key", label: "Website API key", hint: "df_…" }] },
-  { id: "gmail", name: "Gmail", fields: [{ name: "gmail_oauth_token", label: "OAuth access token (gmail.readonly)" }, { name: "gmail_app_password", label: "or App password (with address in Integrations)" }] },
-  { id: "x", name: "X", fields: [{ name: "x_bearer_token", label: "API bearer token" }] },
-  { id: "youtube", name: "YouTube", fields: [{ name: "youtube_api_key", label: "Data API v3 key" }] },
-  { id: "instagram", name: "Instagram", fields: [{ name: "instagram_access_token", label: "Graph API access token" }] },
-  { id: "github", name: "GitHub", fields: [{ name: "github_token", label: "Personal access token (read:user, notifications)" }] },
+  { id: "stripe", name: "Stripe", fields: [{ name: "stripe_api_key", label: "account.stripe.key", hint: "rk_live_…" }] },
+  { id: "polar", name: "Polar", fields: [{ name: "polar_access_token", label: "account.polar.token" }] },
+  { id: "dodo", name: "Dodo Payments", fields: [{ name: "dodo_api_key", label: "account.apiKey" }] },
+  { id: "datafast", name: "DataFast", fields: [{ name: "datafast_api_key", label: "account.datafast.key", hint: "df_…" }] },
+  { id: "gmail", name: "Gmail", fields: [{ name: "gmail_oauth_token", label: "account.gmail.oauth" }, { name: "gmail_app_password", label: "account.gmail.appPassword" }] },
+  { id: "x", name: "X", fields: [{ name: "x_bearer_token", label: "account.x.token" }] },
+  { id: "youtube", name: "YouTube", fields: [{ name: "youtube_api_key", label: "account.youtube.key" }] },
+  { id: "instagram", name: "Instagram", fields: [{ name: "instagram_access_token", label: "account.instagram.token" }] },
+  { id: "github", name: "GitHub", fields: [{ name: "github_token", label: "account.github.token" }] },
 ];
 
 function SecretInput({ field, isSet, onSaved }: { field: SecretField; isSet: boolean; onSaved: (names: string[]) => void }) {
+  const { t } = useI18n();
   const [value, setValue] = useState("");
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -268,11 +304,11 @@ function SecretInput({ field, isSet, onSaved }: { field: SecretField; isSet: boo
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
-        <span className="w-[230px] shrink-0 truncate text-[12px] lb-muted">{field.label}</span>
+        <span className="w-[230px] shrink-0 truncate text-[12px] lb-muted" title={t(field.label)}>{t(field.label)}</span>
         <input
           type="password"
           value={value}
-          placeholder={isSet ? "•••••••• (stored encrypted)" : field.hint ?? "Paste value"}
+          placeholder={isSet ? t("settings.secret.stored") : field.hint ?? t("settings.secret.paste")}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && value && void save(value)}
           className="lb-focus min-w-0 flex-1 rounded-lg border-none px-2.5 py-1.5 text-[12px] outline-none"
@@ -284,10 +320,10 @@ function SecretInput({ field, isSet, onSaved }: { field: SecretField; isSet: boo
           disabled={!value || status === "saving"}
           onClick={() => void save(value)}
         >
-          {status === "saved" ? <Check size={13} /> : "Save"}
+          {status === "saved" ? <Check size={13} /> : t("common.save")}
         </button>
         {isSet && (
-          <button className="lb-icon-btn h-7 w-7" title="Remove" onClick={() => void save("")}>
+          <button className="lb-icon-btn h-7 w-7" title={t("common.remove")} onClick={() => void save("")}>
             <X size={13} />
           </button>
         )}
@@ -298,11 +334,12 @@ function SecretInput({ field, isSet, onSaved }: { field: SecretField; isSet: boo
 }
 
 function ProviderBadge({ id }: { id: ProviderId }) {
+  const { t } = useI18n();
   const result = useHub((s) => s.providers[id]);
   const [busy, setBusy] = useState(false);
   const status = result?.status ?? "loading";
   const color = status === "ok" ? "var(--lb-green)" : status === "error" ? "var(--lb-amber)" : status === "simulated" ? "var(--lb-purple)" : "var(--lb-faint)";
-  const label = { ok: "Connected", error: "Error", simulated: "Simulated", unconfigured: "Not set up", loading: "…" }[status];
+  const label = status === "loading" ? "…" : t(`settings.status.${status}`);
   return (
     <div className="flex items-center gap-1.5">
       <span className="flex items-center gap-1 text-[11px]" style={{ color }} title={result?.error ?? undefined}>
@@ -311,7 +348,7 @@ function ProviderBadge({ id }: { id: ProviderId }) {
       </span>
       <button
         className="lb-icon-btn h-6 w-6"
-        title="Refresh now"
+        title={t("settings.refreshNow")}
         onClick={() => {
           setBusy(true);
           void ipc.refreshProvider(id).finally(() => setBusy(false));
@@ -324,6 +361,7 @@ function ProviderBadge({ id }: { id: ProviderId }) {
 }
 
 function AccountCard({ spec, names, setNames }: { spec: AccountSpec; names: string[]; setNames: (n: string[]) => void }) {
+  const { t } = useI18n();
   const error = useHub((s) => s.providers[spec.id]?.error);
   const status = useHub((s) => s.providers[spec.id]?.status);
   return (
@@ -337,29 +375,30 @@ function AccountCard({ spec, names, setNames }: { spec: AccountSpec; names: stri
         <SecretInput key={f.name} field={f} isSet={names.includes(f.name)} onSaved={setNames} />
       ))}
       {status === "error" && error && <div className="text-[11px]" style={{ color: "var(--lb-amber)" }}>{error}</div>}
-      {spec.note && <div className="text-[11px] lb-faint">{spec.note}</div>}
+      {spec.note && <div className="text-[11px] lb-faint">{t(spec.note)}</div>}
     </div>
   );
 }
 
 function AccountsTab({ s }: { s: Settings }) {
+  const { t } = useI18n();
   const [names, setNames] = useState<string[]>([]);
   useEffect(() => void ipc.getSecretNames().then(setNames), []);
   return (
     <>
       <div className="mb-4 flex items-center gap-2 rounded-xl px-3 py-2 text-[12px]" style={{ background: "rgba(48,209,88,0.12)" }}>
-        <Lock size={14} style={{ color: "var(--lb-green)" }} />
-        Keys are encrypted with Windows DPAPI for your user account and never leave this PC except to the provider you configure.
+        <Lock size={14} className="shrink-0" style={{ color: "var(--lb-green)" }} />
+        {t("settings.keysNotice")}
       </div>
-      <Section title="AI usage limits">
-        <Row label="Use local CLI credentials" hint="Read tokens from ~/.codex/auth.json and ~/.gemini/oauth_creds.json when no key is set">
+      <Section title={t("settings.aiLimits")}>
+        <Row label={t("settings.localCli")} hint={t("settings.localCliHint")}>
           <Toggle checked={s.providers.useLocalCliCredentials} onChange={(v) => update((x) => ({ ...x, providers: { ...x.providers, useLocalCliCredentials: v } }))} />
         </Row>
         {AI_ACCOUNTS.map((a) => (
           <AccountCard key={a.id} spec={a} names={names} setNames={setNames} />
         ))}
       </Section>
-      <Section title="Revenue, mail, social & developer">
+      <Section title={t("settings.otherAccounts")}>
         {OTHER_ACCOUNTS.map((a) => (
           <AccountCard key={a.id} spec={a} names={names} setNames={setNames} />
         ))}
@@ -369,6 +408,7 @@ function AccountsTab({ s }: { s: Settings }) {
 }
 
 function CalendarTab() {
+  const { t } = useI18n();
   const [names, setNames] = useState<string[]>([]);
   const [value, setValue] = useState("");
   const [saved, setSaved] = useState(false);
@@ -390,28 +430,28 @@ function CalendarTab() {
   const count = (result?.data as { events?: unknown[] } | null)?.events?.length ?? 0;
   return (
     <Section
-      title="Private ICS / iCal feeds"
-      description="Google Calendar: Settings › your calendar › Secret address in iCal format. Outlook: Publish calendar › ICS. iCloud: Share › Public calendar (webcal:// is fine). One URL per line."
+      title={t("settings.ics")}
+      description={t("settings.icsDesc")}
     >
       <textarea
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder={configured ? "Feeds are stored encrypted. Paste new URLs to replace them." : "https://calendar.google.com/calendar/ical/…/basic.ics"}
+        placeholder={configured ? t("settings.icsStored") : "https://calendar.google.com/calendar/ical/…/basic.ics"}
         className="lb-focus lb-thin-scroll h-28 w-full resize-none rounded-xl border-none p-3 text-[12px] outline-none"
         style={{ background: "var(--lb-card)" }}
       />
       <div className="flex items-center gap-2">
         <button className="lb-focus rounded-lg border-none px-3 py-1.5 text-[12px] font-semibold" style={{ background: "var(--lb-accent)", color: "#fff" }} disabled={!value.trim()} onClick={() => void save(value)}>
-          {saved ? "Saved" : "Save feeds"}
+          {saved ? t("common.saved") : t("settings.saveFeeds")}
         </button>
         {configured && (
           <button className="lb-focus rounded-lg border-none px-3 py-1.5 text-[12px]" style={{ background: "var(--lb-card)" }} onClick={() => void save("")}>
-            Remove feeds
+            {t("settings.removeFeeds")}
           </button>
         )}
         <span className="ml-auto text-[12px] lb-muted">
-          {result?.status === "ok" && `${count} upcoming events`}
-          {result?.status === "simulated" && "Simulation mode"}
+          {result?.status === "ok" && t("settings.upcomingEvents", { count })}
+          {result?.status === "simulated" && t("settings.simulationMode")}
           {result?.status === "error" && <span style={{ color: "var(--lb-amber)" }}>{result.error}</span>}
         </span>
         <ProviderBadge id="calendar" />
@@ -422,6 +462,7 @@ function CalendarTab() {
 }
 
 function IntegrationsTab({ s }: { s: Settings }) {
+  const { t } = useI18n();
   const p = s.providers;
   const [names, setNames] = useState<string[]>([]);
   useEffect(() => void ipc.getSecretNames().then(setNames), []);
@@ -429,47 +470,47 @@ function IntegrationsTab({ s }: { s: Settings }) {
   const num = (v: string, fallback: number) => (Number.isFinite(Number(v)) && v.trim() !== "" ? Number(v) : fallback);
   return (
     <>
-      <Section title="Accounts & handles">
-        <Row label="LeetCode username"><CommitInput value={p.leetcodeUsername} onCommit={(v) => setP({ leetcodeUsername: v.trim() })} /></Row>
-        <Row label="GitHub username" hint="Leave empty to use the token's own account"><CommitInput value={p.githubUsername} onCommit={(v) => setP({ githubUsername: v.trim() })} /></Row>
-        <Row label="X handle"><CommitInput value={p.xUsername} placeholder="@handle" onCommit={(v) => setP({ xUsername: v.trim() })} /></Row>
-        <Row label="YouTube channel" hint="Channel id (UC…) or @handle"><CommitInput value={p.youtubeChannelId} onCommit={(v) => setP({ youtubeChannelId: v.trim() })} /></Row>
-        <Row label="Instagram user id" hint="Instagram business account id"><CommitInput value={p.instagramUserId} onCommit={(v) => setP({ instagramUserId: v.trim() })} /></Row>
-        <Row label="Gmail address" hint="Needed for the app-password (Atom feed) method"><CommitInput value={p.gmailAddress} onCommit={(v) => setP({ gmailAddress: v.trim() })} /></Row>
+      <Section title={t("settings.handles")}>
+        <Row label={t("settings.leetcodeUser")}><CommitInput value={p.leetcodeUsername} onCommit={(v) => setP({ leetcodeUsername: v.trim() })} /></Row>
+        <Row label={t("settings.githubUser")} hint={t("settings.githubUserHint")}><CommitInput value={p.githubUsername} onCommit={(v) => setP({ githubUsername: v.trim() })} /></Row>
+        <Row label={t("settings.xHandle")}><CommitInput value={p.xUsername} placeholder="@handle" onCommit={(v) => setP({ xUsername: v.trim() })} /></Row>
+        <Row label={t("settings.youtubeChannel")} hint={t("settings.youtubeChannelHint")}><CommitInput value={p.youtubeChannelId} onCommit={(v) => setP({ youtubeChannelId: v.trim() })} /></Row>
+        <Row label={t("settings.instagramId")} hint={t("settings.instagramIdHint")}><CommitInput value={p.instagramUserId} onCommit={(v) => setP({ instagramUserId: v.trim() })} /></Row>
+        <Row label={t("settings.gmailAddress")} hint={t("settings.gmailAddressHint")}><CommitInput value={p.gmailAddress} onCommit={(v) => setP({ gmailAddress: v.trim() })} /></Row>
       </Section>
-      <Section title="API counter" description="Any HTTPS endpoint returning JSON. The path selects the number, e.g. data.count or /stats/0/value.">
-        <Row label="Endpoint URL"><CommitInput width={280} value={p.apiCounterUrl} placeholder="https://api.example.com/stats" onCommit={(v) => setP({ apiCounterUrl: v.trim() })} /></Row>
-        <Row label="JSON path"><CommitInput value={p.apiCounterJsonPath} placeholder="data.count" onCommit={(v) => setP({ apiCounterJsonPath: v.trim() })} /></Row>
-        <Row label="Label"><CommitInput value={p.apiCounterLabel} onCommit={(v) => setP({ apiCounterLabel: v })} /></Row>
+      <Section title={t("settings.apiCounter")} description={t("settings.apiCounterDesc")}>
+        <Row label={t("settings.endpointUrl")}><CommitInput width={280} value={p.apiCounterUrl} placeholder="https://api.example.com/stats" onCommit={(v) => setP({ apiCounterUrl: v.trim() })} /></Row>
+        <Row label={t("settings.jsonPath")}><CommitInput value={p.apiCounterJsonPath} placeholder="data.count" onCommit={(v) => setP({ apiCounterJsonPath: v.trim() })} /></Row>
+        <Row label={t("settings.label")}><CommitInput value={p.apiCounterLabel} onCommit={(v) => setP({ apiCounterLabel: v })} /></Row>
         <div className="rounded-xl p-3" style={{ background: "var(--lb-card)" }}>
-          <SecretInput field={{ name: "api_counter_token", label: "Bearer token (optional)" }} isSet={names.includes("api_counter_token")} onSaved={setNames} />
+          <SecretInput field={{ name: "api_counter_token", label: "settings.bearerToken" }} isSet={names.includes("api_counter_token")} onSaved={setNames} />
         </div>
       </Section>
-      <Section title="Weather" description="Forecast from Open-Meteo — no account or API key required.">
-        <Row label="City label"><CommitInput value={p.weatherCity} onCommit={(v) => setP({ weatherCity: v })} /></Row>
-        <Row label="Latitude / longitude">
+      <Section title={t("settings.weather")} description={t("settings.weatherDesc")}>
+        <Row label={t("settings.cityLabel")}><CommitInput value={p.weatherCity} onCommit={(v) => setP({ weatherCity: v })} /></Row>
+        <Row label={t("settings.latLon")}>
           <CommitInput type="number" width={95} value={p.weatherLatitude} onCommit={(v) => setP({ weatherLatitude: num(v, p.weatherLatitude) })} />
           <CommitInput type="number" width={95} value={p.weatherLongitude} onCommit={(v) => setP({ weatherLongitude: num(v, p.weatherLongitude) })} />
         </Row>
-        <Row label="Units">
+        <Row label={t("settings.units")}>
           <Segmented value={p.weatherFahrenheit ? "f" : "c"} options={[{ value: "f", label: "°F" }, { value: "c", label: "°C" }]} onChange={(v) => setP({ weatherFahrenheit: v === "f" })} />
         </Row>
       </Section>
-      <Section title="Goals & budgets">
-        <Row label="30-day revenue goal" hint="Drives the goal ring"><CommitInput type="number" width={110} value={p.revenueGoal} onCommit={(v) => setP({ revenueGoal: num(v, p.revenueGoal) })} /></Row>
-        <Row label="DeepSeek budget" hint="Balance shown as % of this amount"><CommitInput type="number" width={110} value={p.deepseekBudget} onCommit={(v) => setP({ deepseekBudget: num(v, p.deepseekBudget) })} /></Row>
-        <Row label="Grok budget"><CommitInput type="number" width={110} value={p.grokBudget} onCommit={(v) => setP({ grokBudget: num(v, p.grokBudget) })} /></Row>
+      <Section title={t("settings.goals")}>
+        <Row label={t("settings.revenueGoal")} hint={t("settings.revenueGoalHint")}><CommitInput type="number" width={110} value={p.revenueGoal} onCommit={(v) => setP({ revenueGoal: num(v, p.revenueGoal) })} /></Row>
+        <Row label={t("settings.deepseekBudget")} hint={t("settings.deepseekBudgetHint")}><CommitInput type="number" width={110} value={p.deepseekBudget} onCommit={(v) => setP({ deepseekBudget: num(v, p.deepseekBudget) })} /></Row>
+        <Row label={t("settings.grokBudget")}><CommitInput type="number" width={110} value={p.grokBudget} onCommit={(v) => setP({ grokBudget: num(v, p.grokBudget) })} /></Row>
       </Section>
-      <Section title="World clocks" description="IANA time zones, e.g. America/New_York, Europe/Paris, Asia/Tokyo.">
+      <Section title={t("settings.worldClocks")} description={t("settings.worldClocksDesc")}>
         {s.worldClocks.map((c, i) => (
-          <Row key={i} label={`Clock ${i + 1}`}>
+          <Row key={i} label={t("settings.clockN", { n: i + 1 })}>
             <CommitInput width={70} value={c.label} onCommit={(v) => update((x) => ({ ...x, worldClocks: x.worldClocks.map((w, j) => (j === i ? { ...w, label: v.slice(0, 4).toUpperCase() } : w)) }))} />
             <CommitInput width={170} value={c.timeZone} onCommit={(v) => update((x) => ({ ...x, worldClocks: x.worldClocks.map((w, j) => (j === i ? { ...w, timeZone: v.trim() } : w)) }))} />
           </Row>
         ))}
       </Section>
-      <Section title="Pomodoro">
-        <Row label="Focus / break minutes">
+      <Section title={t("settings.pomodoro")}>
+        <Row label={t("settings.pomodoroMinutes")}>
           <CommitInput type="number" width={70} value={s.pomodoroFocusMinutes} onCommit={(v) => update((x) => ({ ...x, pomodoroFocusMinutes: Math.max(1, Math.round(num(v, 25))) }))} />
           <CommitInput type="number" width={70} value={s.pomodoroBreakMinutes} onCommit={(v) => update((x) => ({ ...x, pomodoroBreakMinutes: Math.max(1, Math.round(num(v, 5))) }))} />
         </Row>
@@ -479,6 +520,7 @@ function IntegrationsTab({ s }: { s: Settings }) {
 }
 
 function TestButton({ rule }: { rule: keyof AutomationSettings }) {
+  const { t } = useI18n();
   const [result, setResult] = useState<string | null>(null);
   useEffect(
     () =>
@@ -494,32 +536,33 @@ function TestButton({ rule }: { rule: keyof AutomationSettings }) {
     <div className="flex items-center gap-2">
       {result && <span className="text-[11px] lb-muted">{result}</span>}
       <button className="lb-focus rounded-lg border-none px-2.5 py-1 text-[12px]" style={{ background: "var(--lb-track)" }} onClick={() => void broadcast("automation:test", { rule })}>
-        Test
+        {t("common.test")}
       </button>
     </div>
   );
 }
 
 function AutomationsTab({ s }: { s: Settings }) {
+  const { t } = useI18n();
   const a = s.automations;
   const setA = (patch: Partial<AutomationSettings>) => update((x) => ({ ...x, automations: { ...x.automations, ...patch } }));
   return (
     <>
-      <Section title="Pre-meeting music auto-pause" description="Pauses whatever is playing and shows the meeting when an event is about to start.">
-        <Row label="Enabled">
+      <Section title={t("settings.rule1")} description={t("settings.rule1Desc")}>
+        <Row label={t("common.enabled")}>
           <TestButton rule="preMeetingPause" />
           <Toggle checked={a.preMeetingPause.enabled} onChange={(v) => setA({ preMeetingPause: { ...a.preMeetingPause, enabled: v } })} />
         </Row>
-        <Row label="Minutes before start">
+        <Row label={t("settings.minutesBefore")}>
           <CommitInput type="number" width={70} value={a.preMeetingPause.minutes} onCommit={(v) => setA({ preMeetingPause: { ...a.preMeetingPause, minutes: Math.max(1, Math.min(60, Math.round(Number(v) || 5))) } })} />
         </Row>
       </Section>
-      <Section title="AI limit early warning" description="Warns when any AI tier crosses the threshold, or when its burn rate would exhaust it within the horizon.">
-        <Row label="Enabled">
+      <Section title={t("settings.rule2")} description={t("settings.rule2Desc")}>
+        <Row label={t("common.enabled")}>
           <TestButton rule="aiLimitWarning" />
           <Toggle checked={a.aiLimitWarning.enabled} onChange={(v) => setA({ aiLimitWarning: { ...a.aiLimitWarning, enabled: v } })} />
         </Row>
-        <Row label="Utilization threshold" hint={`${a.aiLimitWarning.thresholdPercent}%`}>
+        <Row label={t("settings.threshold")} hint={formatPercent(a.aiLimitWarning.thresholdPercent)}>
           <input
             type="range"
             min={50}
@@ -529,16 +572,16 @@ function AutomationsTab({ s }: { s: Settings }) {
             style={{ accentColor: "var(--lb-accent)" }}
           />
         </Row>
-        <Row label="Projected depletion within (hours)">
+        <Row label={t("settings.horizon")}>
           <CommitInput type="number" width={70} value={a.aiLimitWarning.horizonHours} onCommit={(v) => setA({ aiLimitWarning: { ...a.aiLimitWarning, horizonHours: Math.max(1, Number(v) || 24) } })} />
         </Row>
       </Section>
-      <Section title="Revenue milestone alert" description="Celebrates when 30-day revenue in Stripe, Polar or Dodo Payments crosses a milestone.">
-        <Row label="Enabled">
+      <Section title={t("settings.rule3")} description={t("settings.rule3Desc")}>
+        <Row label={t("common.enabled")}>
           <TestButton rule="revenueMilestone" />
           <Toggle checked={a.revenueMilestone.enabled} onChange={(v) => setA({ revenueMilestone: { ...a.revenueMilestone, enabled: v } })} />
         </Row>
-        <Row label="Milestones" hint="Comma separated, in your currency">
+        <Row label={t("settings.milestones")} hint={t("settings.milestonesHint")}>
           <CommitInput
             width={240}
             value={a.revenueMilestone.milestones.join(", ")}
@@ -557,15 +600,15 @@ function AutomationsTab({ s }: { s: Settings }) {
           />
         </Row>
       </Section>
-      <Section title="Subscription renewal reminder" description="Flags calendar events that look like renewals or billing dates.">
-        <Row label="Enabled">
+      <Section title={t("settings.rule4")} description={t("settings.rule4Desc")}>
+        <Row label={t("common.enabled")}>
           <TestButton rule="renewalReminder" />
           <Toggle checked={a.renewalReminder.enabled} onChange={(v) => setA({ renewalReminder: { ...a.renewalReminder, enabled: v } })} />
         </Row>
-        <Row label="Look-ahead (hours)">
+        <Row label={t("settings.lookAhead")}>
           <CommitInput type="number" width={70} value={a.renewalReminder.hours} onCommit={(v) => setA({ renewalReminder: { ...a.renewalReminder, hours: Math.max(1, Number(v) || 24) } })} />
         </Row>
-        <Row label="Keywords">
+        <Row label={t("settings.keywords")}>
           <CommitInput
             width={240}
             value={a.renewalReminder.keywords.join(", ")}
@@ -573,9 +616,9 @@ function AutomationsTab({ s }: { s: Settings }) {
           />
         </Row>
       </Section>
-      <Row label="Reset automation history" hint="Lets already-fired reminders and milestones fire again">
+      <Row label={t("settings.resetHistory")} hint={t("settings.resetHistoryHint")}>
         <button className="lb-focus rounded-lg border-none px-2.5 py-1 text-[12px]" style={{ background: "var(--lb-track)" }} onClick={() => void broadcast("automation:reset", null)}>
-          Reset
+          {t("common.reset")}
         </button>
       </Row>
     </>
@@ -583,6 +626,7 @@ function AutomationsTab({ s }: { s: Settings }) {
 }
 
 function AdvancedTab({ s }: { s: Settings }) {
+  const { t } = useI18n();
   const [glass, setGlass] = useState("");
   useEffect(() => {
     const load = () => void ipc.getGlassStatus().then(setGlass);
@@ -592,34 +636,34 @@ function AdvancedTab({ s }: { s: Settings }) {
   }, []);
   return (
     <>
-      <Section title="Testing">
-        <Row label="Simulation mode" hint="Every external widget uses realistic local data — no network, no keys. Values drift so automations fire.">
+      <Section title={t("settings.testing")}>
+        <Row label={t("settings.simulation")} hint={t("settings.simulationHint")}>
           <Toggle checked={s.simulation} onChange={(v) => update((x) => ({ ...x, simulation: v }))} />
         </Row>
-        <Row label="Focus / Do Not Disturb" hint="Silences lumabar toasts (system notices still show)">
+        <Row label={t("settings.dnd")} hint={t("settings.dndHint")}>
           <Toggle checked={s.doNotDisturb} onChange={(v) => update((x) => ({ ...x, doNotDisturb: v }))} />
         </Row>
       </Section>
-      <Section title="Data">
-        <Row label="Refresh providers every (minutes)">
+      <Section title={t("settings.data")}>
+        <Row label={t("settings.pollMinutes")}>
           <CommitInput type="number" width={70} value={s.providers.pollMinutes} onCommit={(v) => update((x) => ({ ...x, providers: { ...x.providers, pollMinutes: Math.max(1, Math.min(120, Math.round(Number(v) || 5))) } }))} />
         </Row>
-        <Row label="Storage" hint="Layout, notes, todos, screen time and encrypted keys">
+        <Row label={t("settings.storage")} hint={t("settings.storageHint")}>
           <span className="text-[11.5px] lb-muted">%APPDATA%\lumabar\lumabar.db</span>
         </Row>
-        <Row label="Liquid glass capture" hint="DXGI desktop duplication status">
+        <Row label={t("settings.glassCapture")} hint={t("settings.glassCaptureHint")}>
           <span className="max-w-[260px] truncate text-[11.5px] lb-muted" title={glass}>{glass || "—"}</span>
         </Row>
       </Section>
-      <Section title="Safety">
-        <Row label="Restore the Windows taskbar now" hint="Keeps lumabar running · same as Ctrl + Alt + Shift + R">
+      <Section title={t("settings.safety")}>
+        <Row label={t("settings.restoreNow")} hint={t("settings.restoreNowHint")}>
           <button className="lb-focus flex items-center gap-1 rounded-lg border-none px-2.5 py-1 text-[12px]" style={{ background: "var(--lb-track)" }} onClick={() => void ipc.setTaskbarMode("native")}>
-            <Monitor size={12} /> Restore
+            <Monitor size={12} /> {t("common.restore")}
           </button>
         </Row>
-        <Row label="Restore Windows taskbar & quit">
+        <Row label={t("settings.restoreQuit")}>
           <button className="lb-focus flex items-center gap-1 rounded-lg border-none px-2.5 py-1 text-[12px] font-semibold" style={{ background: "var(--lb-red)", color: "#fff" }} onClick={() => void ipc.restoreTaskbarAndQuit()}>
-            <Power size={12} /> Quit
+            <Power size={12} /> {t("common.quit")}
           </button>
         </Row>
       </Section>
@@ -629,13 +673,18 @@ function AdvancedTab({ s }: { s: Settings }) {
 
 export function SettingsModal() {
   const settings = useSettings();
-  const [tab, setTab] = useState<Tab>("general");
+  const { t } = useI18n();
+  // The window is created on demand; the tab to open arrives in its URL.
+  const [tab, setTab] = useState<Tab>(() => {
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    return TABS.some((x) => x.id === requested) ? (requested as Tab) : "general";
+  });
 
   useEffect(() => {
     const off = subscribe("settings:navigate", (t) => {
       if (TABS.some((x) => x.id === t)) setTab(t as Tab);
     });
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && void ipc.hideWindow("settings");
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && void ipc.closeWindow("settings");
     window.addEventListener("keydown", onKey);
     return () => {
       off();
@@ -648,7 +697,7 @@ export function SettingsModal() {
       <div className="lb-menu flex h-full w-full overflow-hidden rounded-[26px]" style={{ color: "var(--lb-text)" }}>
         <nav data-tauri-drag-region className="flex w-[200px] shrink-0 flex-col gap-0.5 p-3" style={{ background: "var(--lb-card)" }}>
           <div data-tauri-drag-region className="mb-3 px-2 pt-1 text-[17px] font-semibold">
-            Settings
+            {t("settings.title")}
           </div>
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
@@ -658,22 +707,22 @@ export function SettingsModal() {
               onClick={() => setTab(id)}
             >
               <Icon size={14} className="lb-muted" />
-              {label}
+              <span className="truncate">{t(label)}</span>
             </button>
           ))}
         </nav>
         <div className="flex min-w-0 flex-1 flex-col">
           <div data-tauri-drag-region className="flex items-center justify-between px-6 pb-2 pt-4">
             <h2 data-tauri-drag-region className="m-0 text-[15px] font-semibold">
-              {TABS.find((t) => t.id === tab)?.label}
+              {t(TABS.find((x) => x.id === tab)?.label ?? "settings.title")}
             </h2>
-            <button className="lb-icon-btn h-8 w-8" onClick={() => void ipc.hideWindow("settings")} aria-label="Close">
+            <button className="lb-icon-btn h-8 w-8" onClick={() => void ipc.closeWindow("settings")} aria-label={t("common.close")}>
               <X size={16} />
             </button>
           </div>
           <div className="lb-thin-scroll flex-1 overflow-y-auto px-6 pb-6">
             {!settings ? (
-              <div className="py-10 text-center lb-muted">Loading…</div>
+              <div className="py-10 text-center lb-muted">{t("common.loading")}</div>
             ) : tab === "general" ? (
               <GeneralTab s={settings} />
             ) : tab === "accounts" ? (

@@ -3,6 +3,7 @@
 import { Hourglass } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Popover, WidgetCard } from "../components/ui";
+import { useI18n } from "../i18n";
 import { formatDuration } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
@@ -21,6 +22,7 @@ const SAMPLE: ScreenTimeDay = {
 
 export function ScreenTimeWidget({ span }: WidgetProps) {
   const preview = usePreview();
+  const { t, lang } = useI18n();
   const [data, setData] = useState<ScreenTimeDay | null>(preview ? SAMPLE : null);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -46,15 +48,16 @@ export function ScreenTimeWidget({ span }: WidgetProps) {
   const offset = span === "3x1" ? 0 : Math.max(0, currentHour - 11);
   const visible = span === "3x1" ? hourly : hourly.slice(offset, offset + 12);
   const max = Math.max(3600, ...visible);
+  const hourSuffix = lang === "fr" ? " h" : ":00";
 
   return (
     <>
-      <WidgetCard span={span} cardRef={ref} onClick={() => !preview && setOpen((o) => !o)}>
+      <WidgetCard span={span} cardRef={ref} title={t("widget.screen-time.name")} onClick={() => !preview && setOpen((o) => !o)}>
         <div className="flex h-full w-full items-center gap-2">
           <Hourglass size={18} className="shrink-0" style={{ color: "var(--lb-accent)" }} />
-          <div className="shrink-0 leading-tight">
-            <div className="lb-muted" style={{ fontSize: "var(--lb-small)" }}>
-              Screen Time
+          <div className="min-w-0 shrink-0 leading-tight">
+            <div className="whitespace-nowrap lb-muted" style={{ fontSize: "var(--lb-small)" }}>
+              {span === "1x1" ? t("screenTime.short") : t("screenTime.label")}
             </div>
             <div className="font-semibold tabular-nums" style={{ fontSize: "var(--lb-large)" }}>
               {data ? formatDuration(data.totalSeconds) : "—"}
@@ -66,7 +69,7 @@ export function ScreenTimeWidget({ span }: WidgetProps) {
                 <div
                   key={i}
                   className="flex-1 rounded-[2px]"
-                  title={`${i + offset}:00 · ${formatDuration(v)}`}
+                  title={`${i + offset}${hourSuffix} · ${formatDuration(v)}`}
                   style={{
                     height: `${Math.max(6, (v / max) * 100)}%`,
                     background: i + offset === currentHour ? "var(--lb-accent)" : v > 0 ? "var(--lb-muted)" : "var(--lb-track)",
@@ -80,7 +83,7 @@ export function ScreenTimeWidget({ span }: WidgetProps) {
       </WidgetCard>
       <Popover anchor={ref} open={open} onClose={() => setOpen(false)} width={280}>
         <div className="mb-2 flex items-baseline justify-between">
-          <span className="font-semibold">Today</span>
+          <span className="font-semibold">{t("common.today")}</span>
           <span className="tabular-nums lb-muted">{data ? formatDuration(data.totalSeconds) : "—"}</span>
         </div>
         {data && data.topApps.length > 0 ? (
@@ -98,10 +101,10 @@ export function ScreenTimeWidget({ span }: WidgetProps) {
             ))}
           </div>
         ) : (
-          <div className="lb-muted">No activity recorded yet today.</div>
+          <div className="lb-muted">{t("screenTime.empty")}</div>
         )}
         <div className="mt-2 lb-faint" style={{ fontSize: "var(--lb-small)" }}>
-          Tracked locally · never leaves this PC
+          {t("screenTime.local")}
         </div>
       </Popover>
     </>

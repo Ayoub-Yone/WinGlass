@@ -9,15 +9,17 @@ export type ThemeId = "liquid-glass" | "ios-glass" | "white" | "black" | "midnig
 export type SizePreset = "compact" | "medium" | "large";
 export type DockPosition = "bottom" | "top";
 export type TaskbarMode = "native" | "auto_hide" | "completely_hidden";
+export type Language = "fr" | "en";
+export type GlassFrost = "subtle" | "balanced" | "deep";
 
 export interface ThemeTokens {
   id: ThemeId;
-  name: string;
-  description: string;
   scheme: "dark" | "light";
   surface: string;
   border: string;
   card: string;
+  /** Hairline drawn inside every widget card. */
+  cardBorder: string;
   cardHover: string;
   text: string;
   muted: string;
@@ -31,7 +33,6 @@ export interface ThemeTokens {
 
 export interface SizeTokens {
   id: SizePreset;
-  name: string;
   height: number;
   padding: number;
   gap: number;
@@ -90,6 +91,8 @@ export interface Settings {
   doNotDisturb: boolean;
   launchAtLogin: boolean;
   accent: string;
+  language: Language;
+  glassFrost: GlassFrost;
   pomodoroFocusMinutes: number;
   pomodoroBreakMinutes: number;
   worldClocks: WorldClock[];
@@ -303,6 +306,7 @@ export interface MediaState {
   album: string;
   status: "Playing" | "Paused" | "Stopped" | "Closed" | "Opened" | "Changing" | "Unknown" | "";
   sourceApp: string;
+  isLiner: boolean;
   thumbnail: string | null;
   canNext: boolean;
   canPrevious: boolean;

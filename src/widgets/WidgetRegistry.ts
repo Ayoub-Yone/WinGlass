@@ -30,6 +30,7 @@ import {
   Watch,
   CloudSun,
 } from "lucide-react";
+import type { I18n } from "../i18n";
 import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/lumabar";
 import { ChatGptWidget, ClaudeWidget, DeepSeekWidget, GeminiWidget, GlmWidget, GrokWidget } from "./AiUsageWidgets";
 import { CalendarWidget } from "./CalendarWidget";
@@ -123,12 +124,32 @@ export function getWidget(id: string): WidgetDefinition | undefined {
   return BY_ID.get(id);
 }
 
-export function searchWidgets(query: string, category: WidgetCategory | "All"): WidgetDefinition[] {
-  const q = query.trim().toLowerCase();
+/** Localized display name; the registry's English `name` is the fallback. */
+export function widgetName(def: WidgetDefinition, i18n: I18n): string {
+  return i18n.td(`widget.${def.id}.name`, def.name);
+}
+
+export function widgetDescription(def: WidgetDefinition, i18n: I18n): string {
+  return i18n.td(`widget.${def.id}.desc`, def.description);
+}
+
+export function categoryLabel(category: WidgetCategory | "All", i18n: I18n): string {
+  return i18n.td(`category.${category}`, category);
+}
+
+/** Case- and accent-insensitive ("meteo" finds "Météo"). */
+function fold(text: string): string {
+  return text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+/** Matches the localized name / description / category as well as the English ones and keywords. */
+export function searchWidgets(query: string, category: WidgetCategory | "All", i18n: I18n): WidgetDefinition[] {
+  const q = fold(query.trim());
   return WIDGETS.filter((w) => {
     if (category !== "All" && w.category !== category) return false;
     if (!q) return true;
-    return [w.name, w.description, w.category, ...w.keywords].some((s) => s.toLowerCase().includes(q));
+    const haystack = [widgetName(w, i18n), widgetDescription(w, i18n), categoryLabel(w.category, i18n), w.name, w.description, w.category, ...w.keywords];
+    return haystack.some((s) => fold(s).includes(q));
   });
 }
 

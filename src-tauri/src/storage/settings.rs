@@ -136,6 +136,10 @@ pub struct Settings {
     pub do_not_disturb: bool,
     pub launch_at_login: bool,
     pub accent: String,
+    /// UI language: "fr" (default) | "en".
+    pub language: String,
+    /// Liquid-glass frost intensity: "subtle" | "balanced" (default) | "deep".
+    pub glass_frost: String,
     pub pomodoro_focus_minutes: u32,
     pub pomodoro_break_minutes: u32,
     pub world_clocks: Vec<WorldClock>,
@@ -162,6 +166,8 @@ impl Default for Settings {
             do_not_disturb: false,
             launch_at_login: false,
             accent: "#0A84FF".into(),
+            language: "fr".into(),
+            glass_frost: "balanced".into(),
             pomodoro_focus_minutes: 25,
             pomodoro_break_minutes: 5,
             world_clocks: vec![
@@ -194,5 +200,50 @@ impl Settings {
             "large" => 70.0,
             _ => 58.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn first_launch_is_french_matte_glass_with_auto_hidden_taskbar() {
+        let s = Settings::default();
+        assert_eq!(s.language, "fr");
+        assert_eq!(s.theme, "liquid-glass");
+        assert_eq!(s.glass_frost, "balanced");
+        assert_eq!(s.taskbar_mode, "auto_hide");
+        assert_eq!(s.position, "bottom");
+    }
+
+    #[test]
+    fn documents_from_v1_gain_the_new_defaults() {
+        let v1 = r#"{"theme":"midnight","size":"large","position":"top","taskbarMode":"native"}"#;
+        let s: Settings = serde_json::from_str(v1).expect("v1 settings parse");
+        assert_eq!(s.theme, "midnight");
+        assert_eq!(s.dock_height(), 70.0);
+        assert_eq!(s.language, "fr");
+        assert_eq!(s.glass_frost, "balanced");
+    }
+
+    #[test]
+    fn size_presets_map_to_dock_heights() {
+        let mut s = Settings::default();
+        for (size, height) in [("compact", 46.0), ("medium", 58.0), ("large", 70.0)] {
+            s.size = size.into();
+            assert_eq!(s.dock_height(), height);
+        }
+    }
+
+    #[test]
+    fn language_round_trips_in_camel_case() {
+        let mut s = Settings::default();
+        s.language = "en".into();
+        s.glass_frost = "deep".into();
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains(r#""language":"en""#) && json.contains(r#""glassFrost":"deep""#));
+        let back: Settings = serde_json::from_str(&json).expect("parse");
+        assert_eq!((back.language.as_str(), back.glass_frost.as_str()), ("en", "deep"));
     }
 }

@@ -1,4 +1,6 @@
 // Window router: ?window=dock | toast | picker | settings
+// `dock` and `toast` live for the whole session; `picker` and `settings` are created on demand
+// by the backend and destroyed when closed (see window_manager::open_modal).
 
 import { useEffect } from "react";
 import { DockContainer } from "./components/DockContainer";
@@ -8,6 +10,7 @@ import { WidgetPickerModal } from "./components/WidgetPickerModal";
 import { AutomationEngine } from "./engine/AutomationEngine";
 import { startHub } from "./engine/DataHub";
 import { applyTheme } from "./engine/ThemeEngine";
+import { I18nProvider, normalizeLang } from "./i18n";
 import { useSettings } from "./lib/hooks";
 import { broadcast, subscribe } from "./lib/ipc";
 
@@ -49,19 +52,7 @@ function PlainWindow(props: { children: React.ReactNode }) {
   return <>{props.children}</>;
 }
 
-export default function App() {
-  useThemeSync();
-  const kind = currentWindow();
-  useEffect(() => {
-    document.documentElement.dataset.window = kind;
-    // Native context menu would look foreign in every lumabar window.
-    const block = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest("input, textarea")) e.preventDefault();
-    };
-    window.addEventListener("contextmenu", block);
-    return () => window.removeEventListener("contextmenu", block);
-  }, [kind]);
-
+function WindowContent({ kind }: { kind: WindowKind }) {
   switch (kind) {
     case "toast":
       return (
@@ -84,4 +75,26 @@ export default function App() {
     default:
       return <DockWindow />;
   }
+}
+
+export default function App() {
+  useThemeSync();
+  const settings = useSettings();
+  const kind = currentWindow();
+  useEffect(() => {
+    document.documentElement.dataset.window = kind;
+    // Native context menu would look foreign in every lumabar window.
+    const block = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("input, textarea")) e.preventDefault();
+    };
+    window.addEventListener("contextmenu", block);
+    return () => window.removeEventListener("contextmenu", block);
+  }, [kind]);
+
+  // French until settings arrive (it is the first-launch default); switches live afterwards.
+  return (
+    <I18nProvider lang={normalizeLang(settings?.language)}>
+      <WindowContent kind={kind} />
+    </I18nProvider>
+  );
 }

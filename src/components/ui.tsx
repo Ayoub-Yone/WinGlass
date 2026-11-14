@@ -4,7 +4,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { createPortal } from "react-dom";
 import { AlertTriangle, Settings2 } from "lucide-react";
 import { useHitRegion } from "../lib/hitRegions";
-import { broadcast, ipc } from "../lib/ipc";
+import { ipc } from "../lib/ipc";
+import { useI18n } from "../i18n";
 import { usePreview } from "../lib/hooks";
 import { useHub } from "../engine/DataHub";
 import { clamp } from "../lib/format";
@@ -111,9 +112,10 @@ export function Ring(props: { value: number; size: number; stroke?: number; colo
   );
 }
 
+/** Open Settings on `tab`. The window is created on demand, so the tab travels in its URL; an
+ *  already-open window is told to switch by the backend. */
 export function openSettings(tab = "general"): void {
-  void broadcast("settings:navigate", tab);
-  void ipc.openWindow("settings");
+  void ipc.openWindow("settings", tab);
 }
 
 /** Unconfigured / error states shared by every provider widget. */
@@ -128,6 +130,7 @@ export function ProviderState(props: {
 }) {
   const { span, glyph, name, status, error, tab = "accounts" } = props;
   const preview = usePreview();
+  const { t } = useI18n();
   const loading = status === "loading";
   return (
     <WidgetCard span={span} onClick={preview || loading ? undefined : () => openSettings(tab)} title={error ?? undefined}>
@@ -137,16 +140,16 @@ export function ProviderState(props: {
           <div className="truncate font-semibold">{name}</div>
           <div className="flex items-center gap-1 truncate lb-muted" style={{ fontSize: "var(--lb-small)" }}>
             {loading ? (
-              <span style={{ animation: "lb-pulse 1.4s ease-in-out infinite" }}>Loading…</span>
+              <span style={{ animation: "lb-pulse 1.4s ease-in-out infinite" }}>{t("common.loading")}</span>
             ) : status === "error" ? (
               <>
                 <AlertTriangle size={10} className="shrink-0" style={{ color: "var(--lb-amber)" }} />
-                <span className="truncate">{error ?? "Error"}</span>
+                <span className="truncate">{error ?? t("common.error")}</span>
               </>
             ) : (
               <>
                 <Settings2 size={10} className="shrink-0" />
-                <span className="truncate">Set up</span>
+                <span className="truncate">{t("common.setup")}</span>
               </>
             )}
           </div>

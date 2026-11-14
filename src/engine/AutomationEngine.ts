@@ -6,7 +6,8 @@
 import { bus } from "./EventBus";
 import { getHub } from "./DataHub";
 import { broadcast, ipc } from "../lib/ipc";
-import { formatDayTime, formatMoney, formatTime, relativeDayWord, startTimeFormatted } from "../lib/format";
+import { formatDayTime, formatMoney, formatRelativeDay, formatTime } from "../lib/format";
+import { getLang, t, translateDynamic } from "../i18n";
 import type {
   AiUsageData,
   AutomationSettings,
@@ -122,9 +123,9 @@ class AutomationEngineImpl {
     this.toast({
       id: `meeting-${up.event.uid}`,
       kind: "calendar",
-      title: `${up.event.title} in ${minutes} min`,
-      subtitle: `At ${formatTime(new Date(up.event.start))}`,
-      actionLabel: "Calendar",
+      title: t("toast.meeting.title", { title: up.event.title, minutes }),
+      subtitle: t("toast.meeting.subtitle", { time: formatTime(new Date(up.event.start)) }),
+      actionLabel: t("toast.meeting.action"),
       action: { kind: "open", target: up.event.url ?? "calendar-app" },
       durationMs: 12_000,
     });
@@ -134,13 +135,12 @@ class AutomationEngineImpl {
 
   private fireRenewal(up: UpcomingEvent): void {
     const start = new Date(up.event.start);
-    const day = relativeDayWord(start) ?? `on ${start.toLocaleDateString("en-US", { weekday: "long" })}`;
     this.toast({
       id: `renewal-${up.event.uid}`,
       kind: "renewal",
-      title: `${up.event.title} renews ${day}`,
-      subtitle: up.startTimeFormatted,
-      actionLabel: "Review",
+      title: t("toast.renewal.title", { title: up.event.title, day: formatRelativeDay(start) }),
+      subtitle: up.event.allDay ? up.startTimeFormatted : t("toast.renewal.subtitle", { time: formatTime(start) }),
+      actionLabel: t("toast.renewal.action"),
       action: { kind: "open", target: up.event.url ?? "calendar-app" },
       durationMs: 12_000,
     });
@@ -185,26 +185,23 @@ class AutomationEngineImpl {
       const projected = hoursLeft !== null && hoursLeft < rule.horizonHours && runsOutBeforeReset;
       if (tier.percent < rule.thresholdPercent && !projected) continue;
       if (!this.once(`ai:${key}:${tier.resetsAt ?? "none"}`)) continue;
-      this.fireAiWarning(data.provider, tier.label, tier.percent, depletion, tier.resetsAt);
+      this.fireAiWarning(data.provider, tier.key, tier.label, tier.percent, depletion, tier.resetsAt);
     }
   }
 
-  private fireAiWarning(provider: string, tier: string, percent: number, depletion: number | null, resetsAt: string | null): void {
-    let relative: string;
-    if (depletion !== null) {
-      relative = ` ${formatDayTime(new Date(depletion))}`;
-    } else if (percent >= 100) {
-      relative = "";
-    } else {
-      relative = " soon";
-    }
-    const title = percent >= 100 ? `${provider} ${tier} limit reached` : `${provider} ${tier} limit runs out${relative}`;
-    const resetText = resetsAt ? formatDayTime(new Date(resetsAt)) : "on its next cycle";
+  private fireAiWarning(provider: string, tierKey: string, tierLabel: string, percent: number, depletion: number | null, resetsAt: string | null): void {
+    // Tier names come from the backend in English; known tiers are localized by key.
+    const tier = translateDynamic(getLang(), `tier.${tierKey}`, tierLabel);
+    let title: string;
+    if (percent >= 100) title = t("toast.ai.reached", { provider, tier });
+    else if (depletion !== null) title = t("toast.ai.title", { provider, tier, when: formatDayTime(new Date(depletion)) });
+    else title = t("toast.ai.titleSoon", { provider, tier });
+    const reset = resetsAt ? formatDayTime(new Date(resetsAt)) : t("toast.ai.nextCycle");
     this.toast({
-      id: `ai-${provider}-${tier}`,
+      id: `ai-${provider}-${tierKey}`,
       kind: "ai",
       title,
-      subtitle: `At this pace · It resets ${resetText}`,
+      subtitle: t("toast.ai.subtitle", { reset }),
       durationMs: 14_000,
     });
   }
@@ -228,8 +225,8 @@ class AutomationEngineImpl {
     this.toast({
       id: `revenue-${providerId}-${crossed}`,
       kind: "revenue",
-      title: `${formatMoney(crossed, data.currency)} in 30 days`,
-      subtitle: `Milestone reached · ${data.provider}`,
+      title: t("toast.revenue.title", { amount: formatMoney(crossed, data.currency) }),
+      subtitle: `${t("toast.revenue.subtitle")} · ${data.provider}`,
       durationMs: 12_000,
     });
   }
@@ -243,12 +240,12 @@ class AutomationEngineImpl {
       case "preMeetingPause": {
         const start = new Date(now + 5 * 60_000);
         const up: UpcomingEvent = {
-          event: { uid: `test-${now}`, title: "Design review", start: start.toISOString(), end: new Date(now + 35 * 60_000).toISOString(), allDay: false, location: null, url: null, calendar: null },
+          event: { uid: `test-${now}`, title: t("toast.test.sampleMeeting"), start: start.toISOString(), end: new Date(now + 35 * 60_000).toISOString(), allDay: false, location: null, url: null, calendar: null },
           minutesUntil: 5,
           startTimeFormatted: formatTime(start),
         };
         this.firePreMeeting(up, this.rules?.preMeetingPause.minutes ?? 5);
-        return { ok: true, message: this.media?.status === "Playing" ? "Toast shown and music paused" : "Toast shown (nothing was playing to pause)" };
+        return { ok: true, message: this.media?.status === "Playing" ? t("toast.test.meetingPaused") : t("toast.test.meeting") };
       }
       case "aiLimitWarning": {
         const tomorrow4pm = new Date();
@@ -256,20 +253,20 @@ class AutomationEngineImpl {
         tomorrow4pm.setHours(16, 0, 0, 0);
         const reset = new Date(tomorrow4pm.getTime() + 41 * 3_600_000);
         reset.setHours(9, 0, 0, 0);
-        this.fireAiWarning("Claude", "weekly", 88, tomorrow4pm.getTime(), reset.toISOString());
-        return { ok: true, message: "AI limit toast shown" };
+        this.fireAiWarning("Claude", "seven_day", "Weekly", 88, tomorrow4pm.getTime(), reset.toISOString());
+        return { ok: true, message: t("toast.test.ai") };
       }
       case "revenueMilestone":
-        this.toast({ id: `revenue-test-${now}`, kind: "revenue", title: `${formatMoney(3000)} in 30 days`, subtitle: "Milestone reached", durationMs: 10_000 });
-        return { ok: true, message: "Revenue toast shown" };
+        this.toast({ id: `revenue-test-${now}`, kind: "revenue", title: t("toast.revenue.title", { amount: formatMoney(3000) }), subtitle: t("toast.revenue.subtitle"), durationMs: 10_000 });
+        return { ok: true, message: t("toast.test.revenue") };
       case "renewalReminder": {
         const start = new Date(now + 20 * 3_600_000);
         this.fireRenewal({
-          event: { uid: `test-renewal-${now}`, title: "Figma subscription", start: start.toISOString(), end: start.toISOString(), allDay: false, location: null, url: null, calendar: null },
+          event: { uid: `test-renewal-${now}`, title: t("toast.test.sampleRenewal"), start: start.toISOString(), end: start.toISOString(), allDay: false, location: null, url: null, calendar: null },
           minutesUntil: 20 * 60,
-          startTimeFormatted: startTimeFormatted(start, false),
+          startTimeFormatted: formatTime(start),
         });
-        return { ok: true, message: "Renewal toast shown" };
+        return { ok: true, message: t("toast.test.renewal") };
       }
     }
   }

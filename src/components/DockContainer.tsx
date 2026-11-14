@@ -3,6 +3,7 @@
 // screen edges, fullscreen slide-away, liquid-glass backdrop, and the right-click menu.
 
 import {
+  Languages,
   Layers,
   LayoutGrid,
   Maximize2,
@@ -10,6 +11,7 @@ import {
   PanelBottom,
   PanelTop,
   Power,
+  Ruler,
   Settings as SettingsIcon,
   Trash2,
   Zap,
@@ -18,13 +20,14 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Poin
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { LiquidGlassCanvas } from "./LiquidGlassCanvas";
 import { openSettings } from "./ui";
-import { useHub } from "../engine/DataHub";
-import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/ThemeEngine";
+import { getHub, useHub } from "../engine/DataHub";
+import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER, frostPreset } from "../engine/ThemeEngine";
+import { LANGUAGES, useI18n } from "../i18n";
 import { pushCapture, useHitRegion } from "../lib/hitRegions";
 import { patchSettings, useSettings } from "../lib/hooks";
 import { ipc, subscribe } from "../lib/ipc";
 import { clamp } from "../lib/format";
-import { getWidget, sanitizeLayout } from "../widgets/WidgetRegistry";
+import { getWidget, sanitizeLayout, widgetName } from "../widgets/WidgetRegistry";
 import type { LayoutItem, Span } from "../types/lumabar";
 
 const SPRING = "transform 280ms cubic-bezier(0.2, 0.9, 0.3, 1.15)";
@@ -68,6 +71,8 @@ function swallowNextClick(): void {
 
 export function DockContainer() {
   const settings = useSettings();
+  const i18n = useI18n();
+  const { t } = i18n;
   const position = useHub((s) => s.position);
   const fullscreen = useHub((s) => s.fullscreen);
   const [layout, setLayout] = useState<LayoutItem[] | null>(null);
@@ -115,6 +120,8 @@ export function DockContainer() {
     const report = () => {
       const dpr = window.devicePixelRatio || 1;
       const r = pill.getBoundingClientRect();
+      // Nothing is captured while hidden behind a fullscreen app.
+      if (getHub().fullscreen) return;
       void ipc.setGlassRect([r.left * dpr, r.top * dpr, r.width * dpr, r.height * dpr]).catch(() => undefined);
     };
     const ro = new ResizeObserver(report);
@@ -271,10 +278,11 @@ export function DockContainer() {
     const inst = instanceId ? layout?.find((l) => l.instanceId === instanceId) : undefined;
     const def = inst ? getWidget(inst.widgetId) : undefined;
     if (inst && def && layout) {
+      const name = widgetName(def, i18n);
       if (def.sizes.length > 1) {
         items.push({
           id: "size",
-          label: `${def.name} size`,
+          label: t("menu.widgetSize", { name }),
           icon: Maximize2,
           submenu: def.sizes.map((s: Span) => ({
             id: `size-${s}`,
@@ -286,46 +294,59 @@ export function DockContainer() {
       }
       items.push({
         id: "remove",
-        label: `Remove ${def.name}`,
+        label: t("menu.removeWidget", { name }),
         icon: Trash2,
         danger: true,
         onSelect: () => persist(layout.filter((l) => l.instanceId !== inst.instanceId)),
       });
     }
     items.push(
-      { id: "add", label: "Add Widgets…", icon: LayoutGrid, separatorBefore: items.length > 0, onSelect: () => void ipc.openWindow("picker") },
+      { id: "add", label: t("menu.addWidgets"), icon: LayoutGrid, separatorBefore: items.length > 0, onSelect: () => void ipc.openWindow("picker") },
       {
         id: "style",
-        label: "Style",
+        label: t("menu.style"),
         icon: Palette,
-        submenu: [
-          ...THEME_ORDER.map((t) => ({
-            id: `theme-${t}`,
-            label: THEMES[t].name,
-            checked: settings?.theme === t,
-            onSelect: () => void patchSettings((s) => ({ ...s, theme: t })),
-          })),
-          ...SIZE_ORDER.map((sz, i) => ({
-            id: `size-${sz}`,
-            label: SIZES[sz].name,
-            checked: settings?.size === sz,
-            separatorBefore: i === 0,
-            onSelect: () => void patchSettings((s) => ({ ...s, size: sz })),
-          })),
-        ],
+        submenu: THEME_ORDER.map((id) => ({
+          id: `theme-${id}`,
+          label: t(`theme.${id}.name`),
+          checked: settings?.theme === id,
+          onSelect: () => void patchSettings((s) => ({ ...s, theme: id })),
+        })),
+      },
+      {
+        id: "dock-size",
+        label: t("menu.size"),
+        icon: Ruler,
+        submenu: SIZE_ORDER.map((sz) => ({
+          id: `dock-size-${sz}`,
+          label: t(`size.${sz}`),
+          checked: settings?.size === sz,
+          onSelect: () => void patchSettings((s) => ({ ...s, size: sz })),
+        })),
       },
       {
         id: "position",
-        label: "Position",
+        label: t("menu.position"),
         icon: Layers,
         submenu: [
-          { id: "pos-bottom", label: "Bottom", icon: PanelBottom, checked: position === "bottom", onSelect: () => void ipc.setDockPosition("bottom") },
-          { id: "pos-top", label: "Top", icon: PanelTop, checked: position === "top", onSelect: () => void ipc.setDockPosition("top") },
+          { id: "pos-bottom", label: t("menu.bottom"), icon: PanelBottom, checked: position === "bottom", onSelect: () => void ipc.setDockPosition("bottom") },
+          { id: "pos-top", label: t("menu.top"), icon: PanelTop, checked: position === "top", onSelect: () => void ipc.setDockPosition("top") },
         ],
       },
-      { id: "automations", label: "Automations", icon: Zap, onSelect: () => openSettings("automations") },
-      { id: "settings", label: "Settings", icon: SettingsIcon, onSelect: () => openSettings("general") },
-      { id: "quit", label: "Restore Windows Taskbar & Quit", icon: Power, danger: true, separatorBefore: true, onSelect: () => void ipc.restoreTaskbarAndQuit() },
+      {
+        id: "language",
+        label: t("menu.language"),
+        icon: Languages,
+        submenu: LANGUAGES.map((l) => ({
+          id: `lang-${l.id}`,
+          label: l.label,
+          checked: i18n.lang === l.id,
+          onSelect: () => void patchSettings((s) => ({ ...s, language: l.id })),
+        })),
+      },
+      { id: "automations", label: t("menu.automations"), icon: Zap, onSelect: () => openSettings("automations") },
+      { id: "settings", label: t("menu.settings"), icon: SettingsIcon, onSelect: () => openSettings("general") },
+      { id: "quit", label: t("menu.quit"), icon: Power, danger: true, separatorBefore: true, onSelect: () => void ipc.restoreTaskbarAndQuit() },
     );
     return items;
   };
@@ -348,6 +369,8 @@ export function DockContainer() {
     opacity: hidden ? 0 : 1,
     transition: drag?.kind === "snap" ? "none" : "transform 320ms cubic-bezier(0.3, 0.9, 0.3, 1), opacity 240ms ease",
     background: theme.usesGlassShader ? (glassActive ? "transparent" : "rgba(22, 22, 26, 0.72)") : undefined,
+    // The shader paints its own rim light; the CSS border is only for the fallback surface.
+    borderColor: theme.usesGlassShader && glassActive ? "transparent" : undefined,
     backdropFilter: theme.usesGlassShader ? "none" : undefined,
   };
 
@@ -373,7 +396,7 @@ export function DockContainer() {
         onPointerCancel={finishPointer}
         onContextMenu={onContextMenu}
       >
-        {theme.usesGlassShader && <LiquidGlassCanvas radius={size.radius} onActiveChange={setGlassActive} />}
+        {theme.usesGlassShader && <LiquidGlassCanvas radius={size.radius} frost={frostPreset(settings?.glassFrost)} onActiveChange={setGlassActive} />}
         <div ref={scrollRef} className="lb-noscroll relative flex h-full min-w-0 items-center overflow-x-auto" style={{ gap: "var(--lb-gap)" }}>
           {(layout ?? []).map((item, index) => {
             const def = getWidget(item.widgetId);
@@ -396,7 +419,7 @@ export function DockContainer() {
           })}
           {layout && layout.length === 0 && (
             <button className="lb-card flex h-full items-center gap-2 border-none px-4" onClick={() => void ipc.openWindow("picker")}>
-              <LayoutGrid size={15} /> Add widgets
+              <LayoutGrid size={15} /> {t("dock.addWidgets")}
             </button>
           )}
         </div>
@@ -405,7 +428,7 @@ export function DockContainer() {
             className="lb-menu pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap px-3 py-1.5"
             style={position === "bottom" ? { bottom: "calc(100% + 10px)" } : { top: "calc(100% + 10px)" }}
           >
-            Release to dock at the {snapTarget}
+            {snapTarget === "top" ? t("dock.releaseTop") : t("dock.releaseBottom")}
           </div>
         )}
       </div>

@@ -17,6 +17,12 @@ export interface MenuItem {
   onSelect?: () => void;
 }
 
+/** Menu width that fits its longest label (French labels run longer than English ones). */
+function menuWidth(items: MenuItem[], min: number): number {
+  const longest = items.reduce((n, item) => Math.max(n, item.label.length), 0);
+  return Math.min(340, Math.max(min, Math.round(longest * 6.4) + 62));
+}
+
 function MenuList(props: { items: MenuItem[]; onClose: () => void; style: CSSProperties; listRef?: React.RefObject<HTMLDivElement | null> }) {
   const { items, onClose, style, listRef } = props;
   const [openSub, setOpenSub] = useState<string | null>(null);
@@ -27,7 +33,7 @@ function MenuList(props: { items: MenuItem[]; onClose: () => void; style: CSSPro
     const row = rowRefs.current.get(item.id);
     if (!row || !item.submenu) return;
     const r = row.getBoundingClientRect();
-    const width = 210;
+    const width = menuWidth(item.submenu, 190);
     const height = item.submenu.length * 30 + 12;
     const left = r.right + width + 4 > window.innerWidth ? r.left - width - 4 : r.right + 4;
     const top = Math.min(Math.max(8, r.top - 6), window.innerHeight - height - 8);
@@ -75,7 +81,7 @@ function MenuList(props: { items: MenuItem[]; onClose: () => void; style: CSSPro
               <span className="flex w-4 shrink-0 justify-center">
                 {item.checked ? <Check size={13} /> : item.icon ? <item.icon size={14} className="opacity-80" /> : null}
               </span>
-              <span className="flex-1 truncate">{item.label}</span>
+              <span className="flex-1 truncate" title={item.label}>{item.label}</span>
               {item.submenu && <ChevronRight size={13} className="opacity-60" />}
             </button>
           </div>
@@ -95,18 +101,19 @@ function MenuList(props: { items: MenuItem[]; onClose: () => void; style: CSSPro
 export function ContextMenu(props: { x: number; y: number; items: MenuItem[]; onClose: () => void; preferUp: boolean }) {
   const { x, y, items, onClose, preferUp } = props;
   const ref = useRef<HTMLDivElement | null>(null);
-  const [style, setStyle] = useState<CSSProperties>({ left: x, top: y, width: 230, visibility: "hidden" });
+  const width = menuWidth(items, 230);
+  const [style, setStyle] = useState<CSSProperties>({ left: x, top: y, width, visibility: "hidden" });
   useCapture(true);
 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const h = el.offsetHeight;
-    const w = 230;
+    const w = width;
     const left = Math.min(Math.max(8, x), window.innerWidth - w - 8);
     const top = preferUp ? Math.max(8, y - h - 4) : Math.min(window.innerHeight - h - 8, y + 4);
     setStyle({ left, top, width: w });
-  }, [x, y, preferUp, items]);
+  }, [x, y, preferUp, items, width]);
 
   useEffect(() => {
     const onDown = (e: PointerEvent) => {

@@ -2,19 +2,24 @@
 //!
 //! * Only the dock's bounding rectangle is copied (CopySubresourceRegion into a small staging
 //!   texture), never the full desktop.
+//! * Zero per-frame heap allocations: one staging `ID3D11Texture2D` and one pixel buffer are
+//!   allocated up front and reused; they are only re-created when the dock rect changes size.
+//!   Rows are copied as-is (BGRA) — the WebGL shader swizzles, so there is no per-pixel CPU work.
 //! * Idle gating: frames whose `AccumulatedFrames` is zero, that only moved the cursor, or whose
 //!   dirty/move rects do not intersect the dock rect are released without any readback, so a
 //!   static desktop costs no GPU copies and no IPC.
+//! * Full pause: while the theme is not liquid glass, or the dock is hidden behind a fullscreen
+//!   app, the duplication and D3D device are released and the thread parks on a condition
+//!   variable (0% CPU, 0% GPU) until something changes.
 //! * The dock window is excluded from capture (WDA_EXCLUDEFROMCAPTURE) while liquid glass is on,
 //!   so the shader sees what is *behind* the dock rather than the dock itself.
 //! * Frames are served to WebGL through the `glass://capture?t=<seq>` URI scheme.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use windows::Win32::Foundation::{HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
@@ -31,24 +36,37 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE};
 use windows::core::Interface;
 
-pub struct Frame {
+/// The most recent capture. `seq == 0` means "no frame". The pixel buffer is reused across
+/// frames and only grows when the dock rect does.
+pub struct FrameBuffer {
     pub seq: u64,
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    /// Tightly packed BGRA rows, `width * height * 4` bytes.
+    pub bgra: Vec<u8>,
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Dock hidden behind a fullscreen app: nothing to composite, so nothing to capture.
+static PAUSED: AtomicBool = AtomicBool::new(false);
 static FORCE_FULL: AtomicBool = AtomicBool::new(true);
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static CAPTURE_RECT: Lazy<Mutex<Option<RECT>>> = Lazy::new(|| Mutex::new(None));
-static LATEST: Lazy<Mutex<Option<Arc<Frame>>>> = Lazy::new(|| Mutex::new(None));
+static LATEST: Lazy<Mutex<FrameBuffer>> = Lazy::new(|| Mutex::new(FrameBuffer { seq: 0, width: 0, height: 0, bgra: Vec::new() }));
 static STATUS: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new("idle".into()));
+/// Parks the capture thread while there is nothing to do.
+static WAKE: Lazy<(Mutex<()>, Condvar)> = Lazy::new(|| (Mutex::new(()), Condvar::new()));
 
 const MAX_FPS: u64 = 30;
+/// Safety net for the parked thread; every state change also notifies it explicitly.
+const PARK_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long AcquireNextFrame blocks (in the kernel) waiting for the desktop to change.
+const ACQUIRE_TIMEOUT_MS: u32 = 250;
 
-pub fn latest() -> Option<Arc<Frame>> {
-    LATEST.lock().clone()
+/// Run `f` on the latest frame, if there is one.
+pub fn with_latest<T>(f: impl FnOnce(&FrameBuffer) -> T) -> Option<T> {
+    let frame = LATEST.lock();
+    (frame.seq != 0).then(|| f(&frame))
 }
 
 pub fn status() -> String {
@@ -62,12 +80,35 @@ fn set_status(s: &str) {
     }
 }
 
+fn wake() {
+    let _guard = WAKE.0.lock();
+    WAKE.1.notify_all();
+}
+
+/// Capture runs only for the liquid-glass theme with a known dock rect and a visible dock.
+fn should_capture() -> Option<RECT> {
+    if !ENABLED.load(Ordering::SeqCst) || PAUSED.load(Ordering::SeqCst) {
+        return None;
+    }
+    *CAPTURE_RECT.lock()
+}
+
 /// Screen-space physical rect behind the dock pill.
 pub fn set_rect(rect: RECT) {
     let mut current = CAPTURE_RECT.lock();
     if *current != Some(rect) {
         *current = Some(rect);
         FORCE_FULL.store(true, Ordering::SeqCst);
+        drop(current);
+        wake();
+    }
+}
+
+/// Pause while the dock is hidden behind a fullscreen app; resume with a fresh full frame.
+pub fn set_paused(paused: bool) {
+    if PAUSED.swap(paused, Ordering::SeqCst) != paused {
+        FORCE_FULL.store(true, Ordering::SeqCst);
+        wake();
     }
 }
 
@@ -87,8 +128,12 @@ pub fn set_enabled(app: &AppHandle, enabled: bool) {
         }
     }
     if !enabled {
-        *LATEST.lock() = None;
+        // Leaving liquid glass: drop the frame and give its memory back.
+        let mut frame = LATEST.lock();
+        frame.seq = 0;
+        frame.bgra = Vec::new();
     }
+    wake();
 }
 
 struct Capture {
@@ -230,7 +275,8 @@ impl Capture {
         Ok(tex)
     }
 
-    fn read_region(&mut self, frame_tex: &ID3D11Texture2D, local: &RECT) -> Result<Frame, String> {
+    /// Copy the dock region into the shared, reused frame buffer. Returns the new sequence number.
+    fn read_region(&mut self, frame_tex: &ID3D11Texture2D, local: &RECT) -> Result<u64, String> {
         let w = (local.right - local.left) as u32;
         let h = (local.bottom - local.top) as u32;
         let staging = self.staging_for(w, h)?;
@@ -246,20 +292,19 @@ impl Capture {
             self.context.CopySubresourceRegion(&staging, 0, 0, 0, 0, frame_tex, 0, Some(&region));
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).map_err(|e| format!("Map: {e}"))?;
-            let mut rgba = vec![0u8; (w * h * 4) as usize];
+            let row_bytes = w as usize * 4;
+            let mut frame = LATEST.lock();
+            // No-op (no allocation) unless the dock rect changed size.
+            frame.bgra.resize(row_bytes * h as usize, 0);
             let src = mapped.pData as *const u8;
-            for y in 0..h as usize {
-                let row = std::slice::from_raw_parts(src.add(y * mapped.RowPitch as usize), w as usize * 4);
-                let out = &mut rgba[y * w as usize * 4..(y + 1) * w as usize * 4];
-                for (dst, px) in out.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
-                    dst[0] = px[2];
-                    dst[1] = px[1];
-                    dst[2] = px[0];
-                    dst[3] = 255;
-                }
+            for (y, out) in frame.bgra.chunks_exact_mut(row_bytes).enumerate() {
+                out.copy_from_slice(std::slice::from_raw_parts(src.add(y * mapped.RowPitch as usize), row_bytes));
             }
             self.context.Unmap(&staging, 0);
-            Ok(Frame { seq: SEQ.fetch_add(1, Ordering::SeqCst) + 1, width: w, height: h, rgba })
+            frame.width = w;
+            frame.height = h;
+            frame.seq = SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(frame.seq)
         }
     }
 }
@@ -271,11 +316,14 @@ pub fn start(app: AppHandle) {
             let mut capture: Option<Capture> = None;
             let frame_budget = Duration::from_millis(1000 / MAX_FPS);
             loop {
-                let rect = *CAPTURE_RECT.lock();
-                let Some(rect) = rect.filter(|_| ENABLED.load(Ordering::SeqCst)) else {
+                let Some(rect) = should_capture() else {
+                    // Fully paused: release the duplication + device and park until woken.
                     capture = None;
-                    set_status("idle");
-                    std::thread::sleep(Duration::from_millis(200));
+                    set_status(if PAUSED.load(Ordering::SeqCst) && ENABLED.load(Ordering::SeqCst) { "paused (fullscreen)" } else { "idle" });
+                    let mut guard = WAKE.0.lock();
+                    if should_capture().is_none() {
+                        WAKE.1.wait_for(&mut guard, PARK_TIMEOUT);
+                    }
                     continue;
                 };
 
@@ -309,9 +357,20 @@ pub fn start(app: AppHandle) {
                 let started = Instant::now();
                 let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
                 let mut resource: Option<IDXGIResource> = None;
-                match unsafe { cap.duplication.AcquireNextFrame(100, &mut info, &mut resource) } {
+                // A forced refresh (new rect, resume) cannot wait for the desktop to change: a static
+                // desktop never presents again, so the duplication is re-created below — its first
+                // AcquireNextFrame always returns the complete current image.
+                let forced = FORCE_FULL.load(Ordering::SeqCst);
+                let timeout = if forced { 100 } else { ACQUIRE_TIMEOUT_MS };
+                match unsafe { cap.duplication.AcquireNextFrame(timeout, &mut info, &mut resource) } {
                     Ok(()) => {}
-                    Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => continue,
+                    Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                        if forced {
+                            capture = None;
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        continue;
+                    }
                     Err(_) => {
                         // DXGI_ERROR_ACCESS_LOST (mode change, secure desktop, UAC) or similar.
                         capture = None;
@@ -328,9 +387,7 @@ pub fn start(app: AppHandle) {
                     let texture = resource.as_ref().and_then(|r| r.cast::<ID3D11Texture2D>().ok());
                     if let Some(texture) = texture {
                         match cap.read_region(&texture, &local) {
-                            Ok(frame) => {
-                                let seq = frame.seq;
-                                *LATEST.lock() = Some(Arc::new(frame));
+                            Ok(seq) => {
                                 FORCE_FULL.store(false, Ordering::SeqCst);
                                 let _ = app.emit_to("dock", "glass:frame", seq);
                             }
@@ -342,11 +399,12 @@ pub fn start(app: AppHandle) {
                 unsafe {
                     let _ = cap.duplication.ReleaseFrame();
                 }
-                if changed {
-                    let spent = started.elapsed();
-                    if spent < frame_budget {
-                        std::thread::sleep(frame_budget - spent);
-                    }
+                // Cap the loop at MAX_FPS whether or not the dock region changed: changes elsewhere
+                // on screen (video, scrolling) would otherwise wake this thread at the refresh rate.
+                // DXGI accumulates dirty rects across the frames skipped meanwhile.
+                let spent = started.elapsed();
+                if spent < frame_budget {
+                    std::thread::sleep(frame_budget - spent);
                 }
             }
         })

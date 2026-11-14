@@ -1,12 +1,14 @@
 // Gmail unread + today delta; X, YouTube and Instagram follower / subscriber counters.
 
 import { BrandGlyph, ProviderState, WidgetCard } from "../components/ui";
+import { useI18n } from "../i18n";
 import { formatCount, formatSigned } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { usePreview, useProvider } from "../lib/hooks";
 import type { GmailData, ProviderId, SocialData, WidgetProps } from "../types/lumabar";
 
 export function GmailWidget({ span }: WidgetProps) {
+  const { t } = useI18n();
   const view = useProvider<GmailData>("gmail");
   const preview = usePreview();
   const glyph = <BrandGlyph id="gmail" size={22} />;
@@ -14,8 +16,8 @@ export function GmailWidget({ span }: WidgetProps) {
   const d = view.data;
   return (
     <WidgetCard span={span} title={view.error ?? d.account} onClick={() => !preview && void ipc.openTarget("https://mail.google.com/mail/u/0/#inbox")}>
-      <div className="flex items-center gap-2">
-        <div className="relative">
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="relative shrink-0">
           {glyph}
           {d.unread > 0 && span === "1x1" && (
             <span
@@ -27,12 +29,12 @@ export function GmailWidget({ span }: WidgetProps) {
           )}
         </div>
         {span !== "1x1" ? (
-          <div className="leading-tight">
-            <div className="font-semibold">
-              <span className="tabular-nums">{formatCount(d.unread)}</span> Unread
+          <div className="min-w-0 leading-tight">
+            <div className="truncate font-semibold">
+              <span className="tabular-nums">{formatCount(d.unread)}</span> {t("gmail.unread")}
             </div>
-            <div className="lb-muted tabular-nums" style={{ fontSize: "var(--lb-small)" }}>
-              {formatSigned(d.today)} today
+            <div className="truncate lb-muted tabular-nums" style={{ fontSize: "var(--lb-small)" }}>
+              {t("social.today", { delta: formatSigned(d.today) })}
             </div>
           </div>
         ) : (
@@ -47,6 +49,7 @@ export function GmailWidget({ span }: WidgetProps) {
 
 function SocialWidget(props: WidgetProps & { providerId: ProviderId; name: string; url: (d: SocialData) => string }) {
   const { span, providerId, name, url } = props;
+  const { t } = useI18n();
   const view = useProvider<SocialData>(providerId);
   const preview = usePreview();
   const glyph = <BrandGlyph id={providerId} size={22} />;
@@ -65,8 +68,8 @@ function SocialWidget(props: WidgetProps & { providerId: ProviderId; name: strin
               <span style={{ color: d.deltaToday >= 0 ? "var(--lb-green)" : "var(--lb-red)" }}>{formatSigned(d.deltaToday)}</span>
             ) : (
               <>
-                <span className="lb-muted">{d.metric} · </span>
-                <span style={{ color: d.deltaToday >= 0 ? "var(--lb-green)" : "var(--lb-red)" }}>{formatSigned(d.deltaToday)} today</span>
+                <span className="lb-muted">{d.metric === "subscribers" ? t("social.subscribers") : t("social.followers")} · </span>
+                <span style={{ color: d.deltaToday >= 0 ? "var(--lb-green)" : "var(--lb-red)" }}>{t("social.today", { delta: formatSigned(d.deltaToday) })}</span>
               </>
             )}
           </div>

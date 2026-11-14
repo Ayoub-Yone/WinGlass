@@ -1,6 +1,5 @@
 //! Live top-level windows (EnumWindows) + taskbar pinned shortcuts + HICON -> PNG icons.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -38,6 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PCWSTR, w};
 
 use super::{from_wide, sentinel, wide};
+use crate::lru::LruCache;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,8 +73,10 @@ struct PinnedShortcut {
     target: Option<String>,
 }
 
-/// Successful icon extractions only — failures are retried on the next request.
-static ICON_CACHE: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+/// Successful icon extractions only — failures are retried on the next request. Bounded: a long
+/// session sees many short-lived windows, and each PNG data URL is several KB.
+pub const ICON_CACHE_CAPACITY: usize = 64;
+static ICON_CACHE: Lazy<Mutex<LruCache<String>>> = Lazy::new(|| Mutex::new(LruCache::new(ICON_CACHE_CAPACITY)));
 static PINNED_CACHE: Lazy<Mutex<Option<(Instant, Vec<(String, String, Option<String>)>)>>> =
     Lazy::new(|| Mutex::new(None));
 
@@ -505,10 +507,10 @@ fn window_icon(hwnd: HWND) -> Option<HICON> {
     }
 }
 
-/// Data URL for an icon key (file path, or `hwnd:<n>`). Cached for the process lifetime.
+/// Data URL for an icon key (file path, or `hwnd:<n>`), served from the bounded LRU cache.
 pub fn icon_data_url(key: &str) -> Option<String> {
     if let Some(hit) = ICON_CACHE.lock().get(key) {
-        return Some(hit.clone());
+        return Some(hit);
     }
     let png = if let Some(raw) = key.strip_prefix("hwnd:") {
         raw.parse::<i64>().ok().and_then(|h| {
@@ -557,7 +559,7 @@ pub fn activate_window(hwnd_raw: i64) -> Result<(), String> {
     Ok(())
 }
 
-fn focus(hwnd: HWND) {
+pub fn focus(hwnd: HWND) {
     unsafe {
         if !SetForegroundWindow(hwnd).as_bool() {
             SwitchToThisWindow(hwnd, true);

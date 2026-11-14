@@ -4,7 +4,8 @@
 
 import { AlertTriangle } from "lucide-react";
 import { BrandGlyph, ProgressBar, ProviderState, WidgetCard, usageColor } from "../components/ui";
-import { formatMoney, formatResetIn } from "../lib/format";
+import { useI18n, type I18n } from "../i18n";
+import { formatMoney, formatPercent, formatResetIn, formatTime, formatWeekdayShort } from "../lib/format";
 import { useNow, useProvider } from "../lib/hooks";
 import type { AiUsageData, ProviderId, UsageTier, WidgetProps } from "../types/lumabar";
 
@@ -30,37 +31,41 @@ export function aheadOfPace(tier: UsageTier, now: number): boolean {
   return tier.percent - elapsed * 100 >= 15;
 }
 
-function resetLabel(tier: UsageTier, now: number, long: boolean): string {
+function resetLabel(tier: UsageTier, now: number, long: boolean, i18n: I18n): string {
   if (!tier.resetsAt) return "";
   if (!long) return formatResetIn(tier.resetsAt, now);
   const d = new Date(tier.resetsAt);
   const hours = (d.getTime() - now) / 3_600_000;
-  if (hours < 24) return `in ${formatResetIn(tier.resetsAt, now)}`;
-  return d.toLocaleDateString("en-US", { weekday: "short" }) + " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  if (hours < 24) return i18n.t("ai.resetIn", { time: formatResetIn(tier.resetsAt, now) });
+  return `${formatWeekdayShort(d)} ${formatTime(d)}`;
 }
 
 function TierRow(props: { tier: UsageTier; now: number; long: boolean; balance?: string }) {
   const { tier, now, long, balance } = props;
+  const i18n = useI18n();
+  // Tier labels arrive from the backend in English; known tiers are localized by key.
+  const label = i18n.td(`tier.${tier.key}`, tier.label);
   const color = usageColor(tier.percent, TIER_BASE[tier.key] ?? "var(--lb-green)");
   const pace = aheadOfPace(tier, now);
-  const reset = balance ?? resetLabel(tier, now, long);
+  const reset = balance ?? resetLabel(tier, now, long, i18n);
   return (
     <div className="flex min-w-0 items-center gap-1.5" style={{ fontSize: "var(--lb-small)", lineHeight: 1.1 }}>
-      <span className="w-[42px] shrink-0 truncate lb-muted">{tier.label}</span>
+      <span className="w-[42px] shrink-0 truncate lb-muted">{label}</span>
       <ProgressBar value={tier.percent} color={color} height={4} className="min-w-[30px] flex-1" />
       {pace && (
-        <span title="At this pace the limit runs out before it resets">
+        <span title={i18n.t("ai.pace")}>
           <AlertTriangle size={9} style={{ color: "var(--lb-amber)" }} />
         </span>
       )}
       {reset && <span className="shrink-0 tabular-nums lb-faint">{reset}</span>}
-      <span className="w-[28px] shrink-0 text-right font-semibold tabular-nums">{Math.round(tier.percent)}%</span>
+      <span className="w-[32px] shrink-0 whitespace-nowrap text-right font-semibold tabular-nums">{formatPercent(tier.percent)}</span>
     </div>
   );
 }
 
 function AiUsageWidget(props: WidgetProps & { providerId: ProviderId; name: string }) {
   const { span, providerId, name } = props;
+  const { t, td } = useI18n();
   const view = useProvider<AiUsageData>(providerId);
   const now = useNow(30_000);
   const glyph = <BrandGlyph id={providerId} size={span === "1x1" ? 26 : 22} />;
@@ -70,20 +75,25 @@ function AiUsageWidget(props: WidgetProps & { providerId: ProviderId; name: stri
   }
   const data = view.data;
   const balance =
-    data.balance !== undefined && data.budget !== undefined ? `${formatMoney(data.balance, data.currency ?? "USD")} left` : undefined;
+    data.balance === undefined || data.budget === undefined
+      ? undefined
+      : // The word only fits on the wide card; the amount alone is unambiguous next to the bar.
+        span === "3x1"
+        ? t("ai.left", { amount: formatMoney(data.balance, data.currency ?? "USD") })
+        : formatMoney(data.balance, data.currency ?? "USD");
 
   if (span === "1x1") {
     const top = [...data.tiers].sort((a, b) => b.percent - a.percent)[0];
     return (
-      <WidgetCard span={span} title={view.error ?? `${name} usage`}>
+      <WidgetCard span={span} title={view.error ?? t("ai.usage", { name })}>
         <div className="flex w-full items-center gap-2">
           {glyph}
           <div className="min-w-0 flex-1 leading-tight">
             <div className="font-semibold tabular-nums" style={{ fontSize: "var(--lb-large)", color: top ? usageColor(top.percent, "var(--lb-text)") : undefined }}>
-              {top ? `${Math.round(top.percent)}%` : "—"}
+              {top ? formatPercent(top.percent) : "—"}
             </div>
             <div className="truncate lb-muted" style={{ fontSize: "var(--lb-small)" }}>
-              {top?.label ?? name}
+              {top ? td(`tier.${top.key}`, top.label) : name}
             </div>
           </div>
         </div>
@@ -93,12 +103,12 @@ function AiUsageWidget(props: WidgetProps & { providerId: ProviderId; name: stri
 
   const tiers = data.tiers.slice(0, 3);
   return (
-    <WidgetCard span={span} title={view.error ?? undefined}>
+    <WidgetCard span={span} title={view.error ?? t("ai.usage", { name })}>
       <div className="flex w-full min-w-0 items-center gap-2">
         {glyph}
-        <div className="flex min-w-0 flex-1 flex-col justify-center gap-[3px]">
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-[2px]">
           {tiers.length < 3 && (
-            <div className="flex items-baseline gap-1 truncate font-semibold" style={{ fontSize: "var(--lb-small)" }}>
+            <div className="flex items-baseline gap-1 truncate font-semibold" style={{ fontSize: "var(--lb-small)", lineHeight: 1.1 }}>
               {name}
               {data.plan && <span className="lb-faint font-normal capitalize">{data.plan}</span>}
             </div>

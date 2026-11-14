@@ -2,7 +2,7 @@
 //! readable error instead of a rejected promise with an opaque payload.
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
@@ -13,6 +13,7 @@ use crate::storage::db::{ScreenTimeDay, Todo};
 use crate::storage::secrets;
 use crate::storage::settings::Settings;
 use crate::win32::apps_enum::{self, AppEntry};
+use crate::win32::liner;
 use crate::win32::media_smtc::{self, MediaCommand, MediaState};
 use crate::win32::taskbar::{self, TaskbarMode};
 use crate::win32::telemetry;
@@ -46,6 +47,9 @@ pub fn update_settings(app: AppHandle, state: State<'_, AppState>, settings: Set
     }
     if previous.launch_at_login != settings.launch_at_login {
         crate::win32::set_launch_at_login(settings.launch_at_login)?;
+    }
+    if previous.language != settings.language {
+        crate::refresh_tray_language(&app, &settings.language);
     }
     if previous.theme != settings.theme {
         dxgi_capture::set_enabled(&app, settings.theme == "liquid-glass");
@@ -115,21 +119,17 @@ pub fn restore_taskbar_and_quit(app: AppHandle) {
     crate::restore_and_quit(&app);
 }
 
+/// Show the picker / settings window, creating it on demand. Async on purpose: creating a window
+/// from a synchronous command deadlocks on Windows.
 #[tauri::command]
-pub fn open_window(app: AppHandle, label: String) -> Result<(), String> {
-    match label.as_str() {
-        "picker" | "settings" => {
-            window_manager::show_centered(&app, &label);
-            Ok(())
-        }
-        _ => Err(format!("window '{label}' cannot be opened")),
-    }
+pub async fn open_window(app: AppHandle, label: String, tab: Option<String>) -> Result<(), String> {
+    window_manager::open_modal(&app, &label, tab.as_deref())
 }
 
+/// Destroy the picker / settings window so its WebView2 renderer does not linger in memory.
 #[tauri::command]
-pub fn hide_window(app: AppHandle, label: String) -> Result<(), String> {
-    let window = app.get_webview_window(&label).ok_or_else(|| format!("no window '{label}'"))?;
-    window.hide().map_err(|e| e.to_string())
+pub async fn close_window(app: AppHandle, label: String) -> Result<(), String> {
+    window_manager::close_modal(&app, &label)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -235,6 +235,23 @@ pub async fn media_command(action: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn media_pause() -> Result<(), String> {
     blocking(|| media_smtc::send(MediaCommand::Pause)).await
+}
+
+/// Artwork click: focus the running Liner window, or launch Liner. Other sources have no
+/// reliable window to target, so they are left alone.
+#[tauri::command]
+pub async fn media_open_source() -> Result<String, String> {
+    blocking(|| {
+        let state = media_smtc::latest();
+        if state.available && !state.is_liner {
+            return Err("only the Liner player can be focused from the dock".into());
+        }
+        liner::focus_or_launch().map(|outcome| match outcome {
+            liner::OpenOutcome::Focused => "focused".to_string(),
+            liner::OpenOutcome::Launched => "launched".to_string(),
+        })
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------------------------

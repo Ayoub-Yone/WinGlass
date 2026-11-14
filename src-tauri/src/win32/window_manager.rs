@@ -13,7 +13,7 @@ use std::time::Duration;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
 use windows::Win32::System::Threading::GetCurrentProcessId;
@@ -26,8 +26,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW,
 };
 
-use super::{from_wide, taskbar};
+use super::{from_wide, memory, taskbar};
 use crate::AppState;
+use crate::graphics::dxgi_capture;
+use crate::i18n::{Lang, Text, tr};
 
 /// Logical px reserved above (bottom dock) or below (top dock) the pill for popovers & menus.
 pub const POPOVER_SPACE: f64 = 470.0;
@@ -67,6 +69,47 @@ pub struct DockLayout {
     pub monitor_name: Option<String>,
 }
 
+/// Physical-pixel rectangle (monitor bounds or a window placement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Dock window placement: centered, 96% of the work-area width, flush with the chosen edge and
+/// tall enough for the pill plus its popover space.
+pub fn dock_geometry(monitor: MonitorRect, work_width: u32, scale: f64, dock_height: f64, edge: DockEdge) -> MonitorRect {
+    let width = (work_width as f64 * MAX_WIDTH_RATIO).round();
+    let height = ((POPOVER_SPACE + dock_height + EDGE_MARGIN) * scale).round();
+    let x = monitor.x as f64 + (monitor.width as f64 - width) / 2.0;
+    let y = match edge {
+        DockEdge::Bottom => monitor.y as f64 + monitor.height as f64 - height,
+        DockEdge::Top => monitor.y as f64,
+    };
+    MonitorRect { x: x.round() as i32, y: y.round() as i32, width: width as u32, height: height as u32 }
+}
+
+/// Toast window placement: `TOAST_GAP` above a bottom dock (toasts stack upward) or below a top
+/// dock (toasts stack downward).
+pub fn toast_geometry(monitor: MonitorRect, scale: f64, dock_height: f64, edge: DockEdge) -> MonitorRect {
+    let width = (TOAST_WIDTH * scale).round();
+    let height = (TOAST_HEIGHT * scale).round();
+    let x = monitor.x as f64 + (monitor.width as f64 - width) / 2.0;
+    let pill_extent = (EDGE_MARGIN + dock_height + TOAST_GAP) * scale;
+    let y = match edge {
+        DockEdge::Bottom => monitor.y as f64 + monitor.height as f64 - pill_extent - height,
+        DockEdge::Top => monitor.y as f64 + pill_extent,
+    };
+    MonitorRect { x: x.round() as i32, y: y.round() as i32, width: width as u32, height: height as u32 }
+}
+
+/// Edge a vertical drag snaps to: the half of the monitor the cursor is released in.
+pub fn edge_for_cursor(cursor_y: f64, monitor: MonitorRect) -> DockEdge {
+    if cursor_y < monitor.y as f64 + monitor.height as f64 / 2.0 { DockEdge::Top } else { DockEdge::Bottom }
+}
+
 fn pick_monitor(app: &AppHandle, preferred: Option<&str>) -> Option<Monitor> {
     let monitors = app.available_monitors().unwrap_or_default();
     if let Some(name) = preferred {
@@ -89,30 +132,18 @@ pub fn layout_windows(app: &AppHandle) -> Option<DockLayout> {
     let edge = DockEdge::parse(&settings.position);
     let dock_h = settings.dock_height();
 
-    let win_w = (work.size.width as f64 * MAX_WIDTH_RATIO).round();
-    let win_h = ((POPOVER_SPACE + dock_h + EDGE_MARGIN) * scale).round();
-    let x = mon_pos.x as f64 + (mon_size.width as f64 - win_w) / 2.0;
-    let y = match edge {
-        DockEdge::Bottom => mon_pos.y as f64 + mon_size.height as f64 - win_h,
-        DockEdge::Top => mon_pos.y as f64,
-    };
+    let monitor_rect = MonitorRect { x: mon_pos.x, y: mon_pos.y, width: mon_size.width, height: mon_size.height };
 
     if let Some(dock) = app.get_webview_window("dock") {
-        let _ = dock.set_size(PhysicalSize::new(win_w as u32, win_h as u32));
-        let _ = dock.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+        let g = dock_geometry(monitor_rect, work.size.width, scale, dock_h, edge);
+        let _ = dock.set_size(PhysicalSize::new(g.width, g.height));
+        let _ = dock.set_position(PhysicalPosition::new(g.x, g.y));
     }
 
     if let Some(toast) = app.get_webview_window("toast") {
-        let tw = (TOAST_WIDTH * scale).round();
-        let th = (TOAST_HEIGHT * scale).round();
-        let tx = mon_pos.x as f64 + (mon_size.width as f64 - tw) / 2.0;
-        let pill_extent = (EDGE_MARGIN + dock_h + TOAST_GAP) * scale;
-        let ty = match edge {
-            DockEdge::Bottom => mon_pos.y as f64 + mon_size.height as f64 - pill_extent - th,
-            DockEdge::Top => mon_pos.y as f64 + pill_extent,
-        };
-        let _ = toast.set_size(PhysicalSize::new(tw as u32, th as u32));
-        let _ = toast.set_position(PhysicalPosition::new(tx.round() as i32, ty.round() as i32));
+        let g = toast_geometry(monitor_rect, scale, dock_h, edge);
+        let _ = toast.set_size(PhysicalSize::new(g.width, g.height));
+        let _ = toast.set_position(PhysicalPosition::new(g.x, g.y));
     }
 
     Some(DockLayout {
@@ -137,8 +168,8 @@ pub fn relayout_and_broadcast(app: &AppHandle) {
 pub fn snap_to_cursor(app: &AppHandle) -> Option<DockEdge> {
     let cursor = app.cursor_position().ok()?;
     let monitor = app.monitor_from_point(cursor.x, cursor.y).ok().flatten()?;
-    let mid = monitor.position().y as f64 + monitor.size().height as f64 / 2.0;
-    let edge = if cursor.y < mid { DockEdge::Top } else { DockEdge::Bottom };
+    let rect = MonitorRect { x: monitor.position().x, y: monitor.position().y, width: monitor.size().width, height: monitor.size().height };
+    let edge = edge_for_cursor(cursor.y, rect);
     {
         let state = app.state::<AppState>();
         let mut settings = state.settings.write();
@@ -150,9 +181,36 @@ pub fn snap_to_cursor(app: &AppHandle) -> Option<DockEdge> {
     Some(edge)
 }
 
-/// Center a modal window (picker / settings) on the dock's monitor and show it.
-pub fn show_centered(app: &AppHandle, label: &str) {
-    let Some(window) = app.get_webview_window(label) else { return };
+// ---------------------------------------------------------------------------------------------
+// Lazy modal windows (picker / settings)
+// ---------------------------------------------------------------------------------------------
+
+/// Logical size and localized title of a lazily created modal window.
+pub fn modal_spec(label: &str, lang: Lang) -> Option<(f64, f64, &'static str)> {
+    match label {
+        "picker" => Some((920.0, 640.0, tr(lang, Text::PickerTitle))),
+        "settings" => Some((860.0, 640.0, tr(lang, Text::SettingsTitle))),
+        _ => None,
+    }
+}
+
+/// App URL of a modal window; `tab` (settings only) is restricted to a plain identifier.
+pub fn modal_url(label: &str, tab: Option<&str>) -> String {
+    let mut url = format!("index.html?window={label}");
+    if let Some(tab) = tab.filter(|t| !t.is_empty() && t.len() <= 32 && t.chars().all(|c| c.is_ascii_alphanumeric())) {
+        url.push_str("&tab=");
+        url.push_str(tab);
+    }
+    url
+}
+
+/// WebView2 refuses to create a webview whose browser arguments differ from the ones its
+/// user-data folder was first opened with, so runtime-created windows reuse the dock's verbatim.
+fn shared_browser_args(app: &AppHandle) -> Option<String> {
+    app.config().app.windows.iter().find_map(|w| w.additional_browser_args.clone())
+}
+
+fn center_and_show(app: &AppHandle, window: &WebviewWindow) {
     let preferred = app.state::<AppState>().settings.read().monitor.clone();
     if let Some(monitor) = pick_monitor(app, preferred.as_deref()) {
         if let Ok(size) = window.outer_size() {
@@ -165,6 +223,58 @@ pub fn show_centered(app: &AppHandle, label: &str) {
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+}
+
+/// Show the picker / settings window, creating it on demand. Neither window exists while closed:
+/// each WebView2 instance costs tens of MB, so they are destroyed on close (`close_modal`) and
+/// only `dock` + `toast` stay resident.
+///
+/// Must not be called from a synchronous command: creating a window from the IPC thread
+/// deadlocks on Windows. Async commands and the main thread (tray menu) are fine.
+pub fn open_modal(app: &AppHandle, label: &str, tab: Option<&str>) -> Result<(), String> {
+    let lang = Lang::parse(&app.state::<AppState>().settings.read().language);
+    let (width, height, title) = modal_spec(label, lang).ok_or_else(|| format!("window '{label}' cannot be opened"))?;
+    if let Some(window) = app.get_webview_window(label) {
+        if let Some(tab) = tab {
+            let _ = app.emit_to(label, "settings:navigate", tab);
+        }
+        center_and_show(app, &window);
+        return Ok(());
+    }
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(modal_url(label, tab).into()))
+        .title(title)
+        .inner_size(width, height)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .maximizable(false)
+        .visible(false);
+    if let Some(args) = shared_browser_args(app) {
+        builder = builder.additional_browser_args(&args);
+    }
+    let window = builder.build().map_err(|e| format!("could not create the {label} window: {e}"))?;
+    center_and_show(app, &window);
+    Ok(())
+}
+
+/// Destroy a modal window (its webview and renderer go with it).
+pub fn close_modal(app: &AppHandle, label: &str) -> Result<(), String> {
+    if modal_spec(label, Lang::Fr).is_none() {
+        return Err(format!("window '{label}' cannot be closed"));
+    }
+    match app.get_webview_window(label) {
+        Some(window) => window.destroy().map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// Bookkeeping once a modal window is gone: forget its hit regions and return its memory.
+pub fn on_modal_destroyed(label: &str) {
+    HIT_REGIONS.lock().remove(label);
+    memory::request_trim(memory::WINDOW_CLOSE_TRIM_DELAY);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -386,6 +496,8 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                 }
                 if fullscreen != hidden {
                     hidden = fullscreen;
+                    // Nothing is composited while the dock is hidden: stop the desktop capture.
+                    dxgi_capture::set_paused(fullscreen);
                     let _ = app.emit("dock:fullscreen", fullscreen);
                     let toast = app.get_webview_window("toast");
                     if fullscreen {
@@ -406,4 +518,96 @@ pub fn start_fullscreen_watch(app: AppHandle) {
             }
         })
         .expect("spawn fullscreen watcher");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_picker_and_settings_are_lazy_modals() {
+        assert_eq!(modal_spec("picker", Lang::En).map(|s| (s.0, s.1)), Some((920.0, 640.0)));
+        assert_eq!(modal_spec("settings", Lang::En).map(|s| (s.0, s.1)), Some((860.0, 640.0)));
+        assert!(modal_spec("dock", Lang::En).is_none());
+        assert!(modal_spec("toast", Lang::Fr).is_none());
+    }
+
+    #[test]
+    fn modal_titles_follow_the_language() {
+        assert_eq!(modal_spec("picker", Lang::Fr).map(|s| s.2), Some("Ajouter des widgets"));
+        assert_eq!(modal_spec("picker", Lang::En).map(|s| s.2), Some("Add Widgets"));
+    }
+
+    #[test]
+    fn modal_url_carries_a_sanitized_tab() {
+        assert_eq!(modal_url("settings", Some("automations")), "index.html?window=settings&tab=automations");
+        assert_eq!(modal_url("settings", None), "index.html?window=settings");
+        assert_eq!(modal_url("settings", Some("a&window=dock")), "index.html?window=settings");
+        assert_eq!(modal_url("picker", Some("")), "index.html?window=picker");
+    }
+
+    const FHD: MonitorRect = MonitorRect { x: 0, y: 0, width: 1920, height: 1080 };
+
+    #[test]
+    fn size_presets_resize_the_dock_window() {
+        // compact 46 / medium 58 / large 70 logical px of pill + popover space + edge margin.
+        for (dock_h, expected) in [(46.0, 526), (58.0, 538), (70.0, 550)] {
+            let bottom = dock_geometry(FHD, 1920, 1.0, dock_h, DockEdge::Bottom);
+            assert_eq!(bottom.height, expected);
+            assert_eq!(bottom.width, 1843);
+            // Bottom edge of the window always sits on the bottom edge of the monitor.
+            assert_eq!(bottom.y + bottom.height as i32, 1080);
+            // Horizontally centered.
+            assert!((bottom.x * 2 + bottom.width as i32 - 1920).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn dock_snaps_to_top_and_bottom_edges() {
+        let top = dock_geometry(FHD, 1920, 1.0, 58.0, DockEdge::Top);
+        let bottom = dock_geometry(FHD, 1920, 1.0, 58.0, DockEdge::Bottom);
+        assert_eq!(top.y, 0);
+        assert_eq!(bottom.y, 1080 - 538);
+        // Secondary monitor to the left, 150% scaling.
+        let second = MonitorRect { x: -2560, y: 200, width: 2560, height: 1440 };
+        let g = dock_geometry(second, 2560, 1.5, 58.0, DockEdge::Top);
+        assert_eq!((g.y, g.height), (200, 807));
+        assert!(g.x >= -2560 && g.x + g.width as i32 <= 0);
+    }
+
+    #[test]
+    fn toasts_stack_upward_from_a_bottom_dock_and_downward_from_a_top_dock() {
+        let pill_extent = (EDGE_MARGIN + 58.0 + TOAST_GAP) as i32; // 80
+        let above = toast_geometry(FHD, 1.0, 58.0, DockEdge::Bottom);
+        // Window ends exactly TOAST_GAP above the pill.
+        assert_eq!(above.y + above.height as i32, 1080 - pill_extent);
+        let below = toast_geometry(FHD, 1.0, 58.0, DockEdge::Top);
+        // Window starts exactly TOAST_GAP below the pill.
+        assert_eq!(below.y, pill_extent);
+        assert_eq!((above.width, above.height), (440, 380));
+        // The toast window never overlaps the pill for any size preset.
+        for dock_h in [46.0, 58.0, 70.0] {
+            let t = toast_geometry(FHD, 1.0, dock_h, DockEdge::Bottom);
+            assert!(t.y + t.height as i32 <= 1080 - (EDGE_MARGIN + dock_h) as i32);
+        }
+    }
+
+    #[test]
+    fn drag_release_picks_the_nearest_edge() {
+        assert_eq!(edge_for_cursor(100.0, FHD), DockEdge::Top);
+        assert_eq!(edge_for_cursor(539.0, FHD), DockEdge::Top);
+        assert_eq!(edge_for_cursor(540.0, FHD), DockEdge::Bottom);
+        assert_eq!(edge_for_cursor(1079.0, FHD), DockEdge::Bottom);
+        let second = MonitorRect { x: 0, y: -1080, width: 1920, height: 1080 };
+        assert_eq!(edge_for_cursor(-900.0, second), DockEdge::Top);
+        assert_eq!(edge_for_cursor(-100.0, second), DockEdge::Bottom);
+    }
+
+    #[test]
+    fn dock_edge_round_trips() {
+        assert_eq!(DockEdge::parse("top"), DockEdge::Top);
+        assert_eq!(DockEdge::parse("bottom"), DockEdge::Bottom);
+        assert_eq!(DockEdge::parse("sideways"), DockEdge::Bottom);
+        assert_eq!(DockEdge::Top.as_str(), "top");
+    }
 }

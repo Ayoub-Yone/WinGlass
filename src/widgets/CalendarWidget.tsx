@@ -2,19 +2,22 @@
 
 import { useRef, useState } from "react";
 import { Popover, WidgetCard, openSettings } from "../components/ui";
-import { formatCountdown, startTimeFormatted } from "../lib/format";
+import { useI18n } from "../i18n";
+import { formatCountdown, formatDayBadge, formatLongDate, startTimeFormatted } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { useNow, usePreview, useProvider } from "../lib/hooks";
 import type { CalendarData, CalendarEvent, WidgetProps } from "../types/lumabar";
 
+/** Weekday over day number: `LUN` / `20` in French, `MON` / `20` in English. */
 function DayBadge({ now }: { now: Date }) {
+  const badge = formatDayBadge(now);
   return (
     <div className="flex h-[calc(100%-8px)] aspect-square shrink-0 flex-col items-center justify-center overflow-hidden rounded-[9px]" style={{ background: "var(--lb-card-hover)" }}>
       <div className="font-bold uppercase leading-none" style={{ fontSize: "calc(var(--lb-small) - 1px)", color: "var(--lb-red)" }}>
-        {now.toLocaleDateString("en-US", { weekday: "short" })}
+        {badge.weekday}
       </div>
       <div className="font-semibold leading-none tabular-nums" style={{ fontSize: "var(--lb-large)" }}>
-        {now.getDate()}
+        {badge.day}
       </div>
     </div>
   );
@@ -25,6 +28,7 @@ function openEvent(event: CalendarEvent) {
 }
 
 export function CalendarWidget({ span }: WidgetProps) {
+  const { t } = useI18n();
   const view = useProvider<CalendarData>("calendar");
   const preview = usePreview();
   const nowMs = useNow(1000);
@@ -38,18 +42,18 @@ export function CalendarWidget({ span }: WidgetProps) {
   let body;
   if (!view.data) {
     body = (
-      <div className="min-w-0 leading-tight">
-        <div className="truncate font-semibold">{now.toLocaleDateString("en-US", { month: "long", day: "numeric" })}</div>
+      <div className="min-w-0 flex-1 leading-tight">
+        <div className="truncate font-semibold">{formatLongDate(now)}</div>
         <div className="truncate lb-muted" style={{ fontSize: "var(--lb-small)" }} title={view.error ?? undefined}>
-          {view.status === "loading" ? "Loading…" : view.status === "error" ? view.error : "Add calendar feed"}
+          {view.status === "loading" ? t("common.loading") : view.status === "error" ? view.error : t("calendar.addFeed")}
         </div>
       </div>
     );
   } else if (!next) {
     body = (
-      <div className="min-w-0 leading-tight">
-        <div className="truncate font-semibold">No more events</div>
-        <div className="truncate lb-muted" style={{ fontSize: "var(--lb-small)" }}>Enjoy the free time</div>
+      <div className="min-w-0 flex-1 leading-tight">
+        <div className="truncate font-semibold">{t("calendar.noMore")}</div>
+        <div className="truncate lb-muted" style={{ fontSize: "var(--lb-small)" }}>{t("calendar.free")}</div>
       </div>
     );
   } else {
@@ -58,13 +62,13 @@ export function CalendarWidget({ span }: WidgetProps) {
     const soon = minutes > 0 && minutes <= 10;
     body = (
       <div className="min-w-0 flex-1 leading-tight">
-        <div className="truncate font-semibold">{next.title}</div>
-        <div className="flex gap-1 truncate" style={{ fontSize: "var(--lb-small)" }}>
+        <div className="truncate font-semibold">{view.isSample ? t("toast.test.sampleMeeting") : next.title}</div>
+        <div className="flex min-w-0 gap-1" style={{ fontSize: "var(--lb-small)" }}>
           {span !== "1x1" && <span className="lb-muted truncate">{startTimeFormatted(start, next.allDay, now)}</span>}
           {!next.allDay && (
-            <span className="shrink-0 font-semibold" style={{ color: soon ? "var(--lb-red)" : "var(--lb-accent)" }}>
+            <span className={`font-semibold ${span === "1x1" ? "truncate" : "shrink-0"}`} style={{ color: soon ? "var(--lb-red)" : "var(--lb-accent)" }}>
               {span !== "1x1" && "· "}
-              {formatCountdown(minutes)}
+              {formatCountdown(minutes, span === "1x1")}
             </span>
           )}
         </div>
@@ -79,6 +83,7 @@ export function CalendarWidget({ span }: WidgetProps) {
         cardRef={ref}
         padded={false}
         className="gap-2 pl-1 pr-2.5"
+        title={next ? `${t("calendar.nextEvent")} · ${next.title}` : undefined}
         onClick={() => {
           if (preview) return;
           if (!view.data) openSettings("calendar");
@@ -89,9 +94,9 @@ export function CalendarWidget({ span }: WidgetProps) {
         {body}
       </WidgetCard>
       <Popover anchor={ref} open={open} onClose={() => setOpen(false)} width={300}>
-        <div className="mb-2 font-semibold">Upcoming</div>
+        <div className="mb-2 font-semibold">{t("calendar.upcoming")}</div>
         <div className="lb-thin-scroll flex max-h-[300px] flex-col gap-1 overflow-y-auto">
-          {events.length === 0 && <div className="lb-muted">Nothing in the next two weeks.</div>}
+          {events.length === 0 && <div className="lb-muted">{t("calendar.nothing")}</div>}
           {events.slice(0, 20).map((e) => {
             const start = new Date(e.start);
             return (

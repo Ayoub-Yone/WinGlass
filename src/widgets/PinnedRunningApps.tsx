@@ -5,6 +5,8 @@
 import { AppWindow as AppWindowIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "../components/ui";
+import { getHub } from "../engine/DataHub";
+import { useI18n } from "../i18n";
 import { errorMessage, ipc, subscribe } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
 import type { AppEntry, WidgetProps } from "../types/lumabar";
@@ -12,6 +14,18 @@ import type { AppEntry, WidgetProps } from "../types/lumabar";
 /** Successful icons only; misses are retried (the backend may be busy or the file still loading). */
 const iconCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
+/** Mirrors the backend LRU bound so a long session cannot accumulate icon data URLs. */
+const ICON_CACHE_LIMIT = 64;
+
+function rememberIcon(key: string, url: string): void {
+  iconCache.delete(key);
+  iconCache.set(key, url);
+  while (iconCache.size > ICON_CACHE_LIMIT) {
+    const oldest = iconCache.keys().next().value;
+    if (oldest === undefined) break;
+    iconCache.delete(oldest);
+  }
+}
 
 function fetchIcon(key: string): Promise<string | null> {
   let p = inflight.get(key);
@@ -21,7 +35,7 @@ function fetchIcon(key: string): Promise<string | null> {
       .catch(() => null)
       .then((url) => {
         inflight.delete(key);
-        if (url) iconCache.set(key, url);
+        if (url) rememberIcon(key, url);
         return url;
       });
     inflight.set(key, p);
@@ -58,6 +72,7 @@ function useIcon(key: string): string | null {
 }
 
 function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => void }) {
+  const { t } = useI18n();
   const icon = useIcon(app.iconKey);
   const [menu, setMenu] = useState(false);
   const ref = useRef<HTMLButtonElement | null>(null);
@@ -126,7 +141,7 @@ function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => 
           </button>
         ))}
         <button className="lb-card mt-1 w-full rounded-lg border-none px-2 py-1.5 text-left lb-muted" onClick={() => { setMenu(false); launch(); }}>
-          New window
+          {t("apps.newWindow")}
         </button>
       </Popover>
     </>
@@ -135,6 +150,7 @@ function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => 
 
 export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
   const preview = usePreview() || Boolean(previewProp);
+  const { t } = useI18n();
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,7 +158,8 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
     let alive = true;
     let pending = false;
     const load = () => {
-      if (pending) return;
+      // No 1.5 s window enumeration while hidden behind a fullscreen app.
+      if (pending || getHub().fullscreen) return;
       pending = true;
       ipc
         .listApps()
@@ -166,7 +183,7 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
         {apps.map((app) => (
           <AppButton key={app.id} app={app} onError={setError} />
         ))}
-        {apps.length === 0 && <div className="px-2 lb-muted">No apps</div>}
+        {apps.length === 0 && <div className="whitespace-nowrap px-2 lb-muted">{t("apps.none")}</div>}
       </div>
       <div className="mx-[calc(var(--lb-gap)+2px)] h-[55%] w-px shrink-0" style={{ background: "var(--lb-track)" }} aria-hidden />
     </div>

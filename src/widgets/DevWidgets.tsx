@@ -2,6 +2,7 @@
 
 import { Activity } from "lucide-react";
 import { BrandGlyph, ProviderState, WidgetCard } from "../components/ui";
+import { useI18n } from "../i18n";
 import { formatCount, formatSigned } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { usePreview, useProvider } from "../lib/hooks";
@@ -19,6 +20,7 @@ function level(count: number, max: number): number {
 }
 
 export function GithubWidget({ span }: WidgetProps) {
+  const { t } = useI18n();
   const view = useProvider<GithubData>("github");
   const preview = usePreview();
   const glyph = <BrandGlyph id="github" size={22} />;
@@ -29,7 +31,7 @@ export function GithubWidget({ span }: WidgetProps) {
   return (
     <WidgetCard
       span={span}
-      title={view.error ?? `${formatCount(d.total)} contributions in the last year`}
+      title={view.error ?? t("github.contributions", { count: formatCount(d.total) })}
       onClick={() => !preview && void ipc.openTarget(d.notifications > 0 ? "https://github.com/notifications" : `https://github.com/${d.login}`)}
     >
       <div className="flex h-full w-full items-center gap-2">
@@ -64,6 +66,7 @@ export function GithubWidget({ span }: WidgetProps) {
 }
 
 export function LeetcodeWidget({ span }: WidgetProps) {
+  const { t } = useI18n();
   const view = useProvider<LeetcodeData>("leetcode");
   const preview = usePreview();
   const glyph = <BrandGlyph id="leetcode" size={22} />;
@@ -73,19 +76,19 @@ export function LeetcodeWidget({ span }: WidgetProps) {
   const d = view.data;
   const total = Math.max(1, d.easy + d.medium + d.hard);
   return (
-    <WidgetCard span={span} title={view.error ?? d.username} onClick={() => !preview && void ipc.openTarget(`https://leetcode.com/u/${d.username}/`)}>
+    <WidgetCard span={span} title={view.error ?? `${d.username} · ${formatCount(d.solved)} ${t("leetcode.solved")} · ${t("leetcode.streak", { count: d.streak })}`} onClick={() => !preview && void ipc.openTarget(`https://leetcode.com/u/${d.username}/`)}>
       <div className="flex w-full min-w-0 items-center gap-2">
         {glyph}
         <div className="min-w-0 flex-1 leading-tight">
           <div className="truncate font-semibold tabular-nums">
-            {formatCount(d.solved)} <span className="font-normal lb-muted">solved</span>
+            {formatCount(d.solved)}{span !== "1x1" && <span className="font-normal lb-muted"> {t("leetcode.solved")}</span>}
           </div>
-          <div className="tabular-nums" style={{ fontSize: "var(--lb-small)", color: "#FFA116" }}>
-            🔥 {d.streak} streak
+          <div className="truncate tabular-nums" style={{ fontSize: "var(--lb-small)", color: "#FFA116" }}>
+            🔥 {span === "1x1" ? d.streak : t("leetcode.streak", { count: d.streak })}
           </div>
         </div>
         {span !== "1x1" && (
-          <div className="flex h-[5px] w-[64px] shrink-0 overflow-hidden rounded-full" title={`Easy ${d.easy} · Medium ${d.medium} · Hard ${d.hard}`}>
+          <div className="flex h-[5px] w-[44px] shrink-0 overflow-hidden rounded-full" title={t("leetcode.breakdown", { easy: d.easy, medium: d.medium, hard: d.hard })}>
             <div style={{ width: `${(d.easy / total) * 100}%`, background: "#00B8A3" }} />
             <div style={{ width: `${(d.medium / total) * 100}%`, background: "#FFC01E" }} />
             <div style={{ width: `${(d.hard / total) * 100}%`, background: "#FF375F" }} />
@@ -97,6 +100,7 @@ export function LeetcodeWidget({ span }: WidgetProps) {
 }
 
 export function ApiCounterWidget({ span }: WidgetProps) {
+  const { t } = useI18n();
   const view = useProvider<ApiCounterData>("api_counter");
   const glyph = (
     <div className="flex h-[22px] w-[22px] items-center justify-center rounded-[7px]" style={{ background: "var(--lb-accent)" }}>
@@ -104,7 +108,7 @@ export function ApiCounterWidget({ span }: WidgetProps) {
     </div>
   );
   if (!view.data) {
-    return <ProviderState span={span} providerId="api_counter" glyph={glyph} name="API Counter" status={view.status} error={view.error} tab="integrations" />;
+    return <ProviderState span={span} providerId="api_counter" glyph={glyph} name={t("widget.api-counter.name")} status={view.status} error={view.error} tab="integrations" />;
   }
   const d = view.data;
   return (
