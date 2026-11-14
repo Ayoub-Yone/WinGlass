@@ -275,8 +275,14 @@ impl Capture {
         Ok(tex)
     }
 
-    /// Copy the dock region into the shared, reused frame buffer. Returns the new sequence number.
-    fn read_region(&mut self, frame_tex: &ID3D11Texture2D, local: &RECT) -> Result<u64, String> {
+    /// Copy the dock region into the shared, reused frame buffer. Returns the new sequence number,
+    /// or `None` when the pixels are identical to the frame already published.
+    ///
+    /// The identity check is what keeps the capture idle: the dock repainting its own glass makes
+    /// DWM report the dock rect as dirty even though the dock is excluded from the captured image,
+    /// so without it every published frame would trigger a repaint, which triggers a "changed"
+    /// frame, and so on at `MAX_FPS` forever.
+    fn read_region(&mut self, frame_tex: &ID3D11Texture2D, local: &RECT) -> Result<Option<u64>, String> {
         let w = (local.right - local.left) as u32;
         let h = (local.bottom - local.top) as u32;
         let staging = self.staging_for(w, h)?;
@@ -294,17 +300,23 @@ impl Capture {
             self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).map_err(|e| format!("Map: {e}"))?;
             let row_bytes = w as usize * 4;
             let mut frame = LATEST.lock();
+            let src = mapped.pData as *const u8;
+            let row = |y: usize| std::slice::from_raw_parts(src.add(y * mapped.RowPitch as usize), row_bytes);
+            let same_size = frame.seq != 0 && frame.width == w && frame.height == h && frame.bgra.len() == row_bytes * h as usize;
+            if same_size && frame.bgra.chunks_exact(row_bytes).enumerate().all(|(y, old)| old == row(y)) {
+                self.context.Unmap(&staging, 0);
+                return Ok(None);
+            }
             // No-op (no allocation) unless the dock rect changed size.
             frame.bgra.resize(row_bytes * h as usize, 0);
-            let src = mapped.pData as *const u8;
             for (y, out) in frame.bgra.chunks_exact_mut(row_bytes).enumerate() {
-                out.copy_from_slice(std::slice::from_raw_parts(src.add(y * mapped.RowPitch as usize), row_bytes));
+                out.copy_from_slice(row(y));
             }
             self.context.Unmap(&staging, 0);
             frame.width = w;
             frame.height = h;
             frame.seq = SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-            Ok(frame.seq)
+            Ok(Some(frame.seq))
         }
     }
 }
@@ -389,7 +401,9 @@ pub fn start(app: AppHandle) {
                         match cap.read_region(&texture, &local) {
                             Ok(seq) => {
                                 FORCE_FULL.store(false, Ordering::SeqCst);
-                                let _ = app.emit_to("dock", "glass:frame", seq);
+                                if let Some(seq) = seq {
+                                    let _ = app.emit_to("dock", "glass:frame", seq);
+                                }
                             }
                             Err(err) => set_status(&format!("error: {err}")),
                         }
