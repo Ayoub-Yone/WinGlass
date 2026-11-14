@@ -5,9 +5,12 @@
 //   upload  glass://capture BGRA  ->  source texture (swizzled to RGB in the first pass)
 //           The live capture includes a margin around the pill (X-Inner says where the pill is),
 //           so the blur pulls in real colour from outside instead of smearing its edge pixels.
-//   pass 1  dual-Kawase blur pyramid: 4–6 downsample + matching upsample passes with wide sample
-//           offsets (~60–120px effective radius). Deep enough that windows, text and bright
+//   pass 1  dual-Kawase blur pyramid: 5–6 downsample + matching upsample passes with wide sample
+//           offsets (~80–160px effective radius). Deep enough that windows, text and bright
 //           elements melt into smooth, creamy colour gradients — no shapes bleed through.
+//   pass 1b separable 25-tap Gaussian (horizontal + vertical) at half resolution on top of the
+//           pyramid: irons out the faint diamond / blocky Kawase artefacts so live windows behind
+//           the dock diffuse into one soft, continuous frost.
 //   pass 2  composite:
 //             · SDF rounded-box lens — UVs bend along the outer 10px perimeter with a circular
 //               bevel profile, ±0.0015 R/B chromatic dispersion at the rim
@@ -69,6 +72,27 @@ void main() {
   sum += texture(u_tex, v_uv + vec2(0.0, -hp.y * 2.0));
   sum += texture(u_tex, v_uv + vec2(-hp.x, -hp.y)) * 2.0;
   o = sum / 12.0;
+}`;
+
+// Separable Gaussian over 1 + 2×12 taps; `u_dir` = texel step along one axis (bilinear taps).
+const GAUSS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 o;
+uniform sampler2D u_tex;
+uniform vec2 u_dir;
+uniform float u_sigma;  // in taps
+void main() {
+  vec4 sum = texture(u_tex, v_uv);
+  float wsum = 1.0;
+  float k = -0.5 / (u_sigma * u_sigma);
+  for (int i = 1; i <= 12; i++) {
+    float x = float(i);
+    float w = exp(k * x * x);
+    sum += (texture(u_tex, v_uv + u_dir * x) + texture(u_tex, v_uv - u_dir * x)) * w;
+    wsum += 2.0 * w;
+  }
+  o = sum / wsum;
 }`;
 
 const COMPOSITE = `#version 300 es
@@ -212,6 +236,7 @@ class GlassRenderer {
   private gl: WebGL2RenderingContext;
   private down: WebGLProgram;
   private up: WebGLProgram;
+  private gauss: WebGLProgram;
   private comp: WebGLProgram;
   private vao: WebGLVertexArrayObject;
   private source: WebGLTexture | null = null;
@@ -219,7 +244,7 @@ class GlassRenderer {
   private srcH = 0;
   /** Pill rect inside the source frame, in source pixels (top-left origin). */
   private inner: [number, number, number, number] = [0, 0, 0, 0];
-  /** `levels` downsample targets followed by `levels - 1` upsample targets. */
+  /** `levels` downsample targets, `levels - 1` upsample targets, then two half-res Gaussian targets. */
   private chain: Target[] = [];
   private chainKey = "";
   private uniformCache = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
@@ -230,6 +255,7 @@ class GlassRenderer {
     this.gl = gl;
     this.down = program(gl, KAWASE_DOWN);
     this.up = program(gl, KAWASE_UP);
+    this.gauss = program(gl, GAUSS);
     this.comp = program(gl, COMPOSITE);
     const vao = gl.createVertexArray();
     const vbo = gl.createBuffer();
@@ -279,7 +305,8 @@ class GlassRenderer {
     const size = (level: number) => [Math.max(1, Math.round(this.srcW / 2 ** level)), Math.max(1, Math.round(this.srcH / 2 ** level))];
     const downs = Array.from({ length: levels }, (_, i) => size(i + 1));
     const ups = Array.from({ length: levels - 1 }, (_, i) => size(levels - 1 - i));
-    this.chain = [...downs, ...ups].map(([w, h]) => makeTarget(this.gl, w, h));
+    const half = size(1);
+    this.chain = [...downs, ...ups, half, half].map(([w, h]) => makeTarget(this.gl, w, h));
     this.chainKey = key;
   }
 
@@ -321,12 +348,32 @@ class GlassRenderer {
       inH = target.h;
     }
     // …and back up to half resolution.
-    for (let i = levels; i < this.chain.length; i++) {
+    const pyramid = 2 * levels - 1;
+    for (let i = levels; i < pyramid; i++) {
       const target = this.chain[i];
       this.pass(this.up, input, inW, inH, target, frost.offset);
       input = target.tex;
       inW = target.w;
       inH = target.h;
+    }
+    // Separable Gaussian smoothing (horizontal, then vertical) at half resolution.
+    if (frost.gauss > 0) {
+      const stride = 1.5;
+      for (const [k, horizontal] of [[pyramid, true], [pyramid + 1, false]] as const) {
+        const target = this.chain[k];
+        gl.useProgram(this.gauss);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+        gl.viewport(0, 0, target.w, target.h);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, input);
+        gl.uniform1i(this.loc(this.gauss, "u_tex"), 0);
+        gl.uniform2f(this.loc(this.gauss, "u_dir"), horizontal ? stride / inW : 0, horizontal ? 0 : stride / inH);
+        gl.uniform1f(this.loc(this.gauss, "u_sigma"), frost.gauss);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        input = target.tex;
+        inW = target.w;
+        inH = target.h;
+      }
     }
 
     gl.useProgram(this.comp);
@@ -364,6 +411,7 @@ class GlassRenderer {
     this.source = null;
     gl.deleteProgram(this.down);
     gl.deleteProgram(this.up);
+    gl.deleteProgram(this.gauss);
     gl.deleteProgram(this.comp);
     gl.deleteVertexArray(this.vao);
   }

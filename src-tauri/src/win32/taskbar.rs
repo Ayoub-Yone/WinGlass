@@ -50,6 +50,9 @@ static ORIGINAL_STATE: AtomicU32 = AtomicU32::new(u32::MAX);
 static MODIFIED: AtomicBool = AtomicBool::new(false);
 /// 0 = native, 1 = auto_hide, 2 = completely_hidden
 static CURRENT_MODE: AtomicI64 = AtomicI64::new(0);
+/// Latched by `restore_for_exit`: once lumabar is quitting nothing may hide the taskbar again
+/// (the state file is already gone, so a later hard kill could not repair it).
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 fn state_file() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("lumabar").join("taskbar_state.json"))
@@ -180,6 +183,9 @@ fn capture_original_once() -> u32 {
 }
 
 pub fn apply(mode: TaskbarMode) {
+    if QUITTING.load(Ordering::SeqCst) && mode != TaskbarMode::Native {
+        return;
+    }
     match mode {
         TaskbarMode::Native => {
             restore();
@@ -215,7 +221,7 @@ pub fn reapply() {
 
 /// In `completely_hidden` mode Windows re-shows the tray when Start opens; hide it again.
 pub fn enforce_hidden() {
-    if CURRENT_MODE.load(Ordering::SeqCst) != 2 {
+    if QUITTING.load(Ordering::SeqCst) || CURRENT_MODE.load(Ordering::SeqCst) != 2 {
         return;
     }
     for hwnd in find_taskbars() {
@@ -225,6 +231,12 @@ pub fn enforce_hidden() {
             }
         }
     }
+}
+
+/// Restore for good: the process is exiting.
+pub fn restore_for_exit() {
+    QUITTING.store(true, Ordering::SeqCst);
+    restore();
 }
 
 /// Unconditional, idempotent restoration of the native taskbar.

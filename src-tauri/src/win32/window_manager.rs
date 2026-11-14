@@ -8,10 +8,10 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
@@ -452,51 +452,131 @@ fn class_name(hwnd: HWND) -> String {
     from_wide(&buf[..len.max(0) as usize])
 }
 
-/// True when the foreground window (not the desktop / shell / lumabar) covers its whole monitor
-/// and that monitor is the dock's monitor.
-fn foreground_covers_monitor(dock_hwnd: HWND) -> bool {
+/// Shell surfaces that can be foreground (and may even span the monitor) but are never a
+/// "fullscreen app": the desktop, the taskbar, Alt+Tab / Task View, Start / Search hosts.
+pub const SHELL_CLASSES: &[&str] = &[
+    "Progman",
+    "WorkerW",
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+    "XamlExplorerHostIslandWindow",
+    "MultitaskingViewFrame",
+    "TaskSwitcherWnd",
+    "TaskSwitcherOverlayWnd",
+    "ForegroundStaging",
+    "Windows.UI.Core.CoreWindow",
+    "NotifyIconOverflowWindow",
+    "TopLevelWindowForOverflowXamlIsland",
+];
+
+/// Everything the hide decision needs to know about the foreground window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForegroundInfo {
+    pub class: String,
+    pub own_process: bool,
+    pub zoomed: bool,
+    pub has_caption: bool,
+    pub rect: RECT,
+    pub monitor: RECT,
+}
+
+/// Pure decision: hide the dock **only** while the *current* foreground window is a fullscreen
+/// (exclusive or borderless) app on the dock's monitor. A game running in the background never
+/// keeps the dock hidden: the moment Alt+Tab / Win / a click moves the foreground elsewhere this
+/// returns false. `d3d_fullscreen` (SHQueryUserNotificationState) only vouches for a foreground
+/// window that already covers the dock's monitor.
+pub fn should_hide_for(fg: Option<&ForegroundInfo>, dock_monitor: RECT, d3d_fullscreen: bool) -> bool {
+    let Some(fg) = fg else { return false };
+    if fg.own_process || SHELL_CLASSES.contains(&fg.class.as_str()) || fg.monitor != dock_monitor {
+        return false;
+    }
+    let covers = fg.rect.left <= fg.monitor.left
+        && fg.rect.top <= fg.monitor.top
+        && fg.rect.right >= fg.monitor.right
+        && fg.rect.bottom >= fg.monitor.bottom;
+    // With a hidden taskbar a *maximized* window also covers the whole monitor, even while a
+    // game elsewhere keeps SHQueryUserNotificationState at D3D-fullscreen. Real fullscreen
+    // (games, video players, F11 browsers) is never zoomed.
+    if !covers || fg.zoomed {
+        return false;
+    }
+    // Exclusive fullscreen may keep a caption style; then D3D state must vouch for it.
+    !fg.has_caption || d3d_fullscreen
+}
+
+/// Inspect a window for `should_hide_for`. `None` when it is gone or has no monitor.
+pub fn foreground_info(hwnd: HWND) -> Option<ForegroundInfo> {
+    if hwnd.is_invalid() {
+        return None;
+    }
     unsafe {
-        let fg = GetForegroundWindow();
-        if fg.is_invalid() {
-            return false;
-        }
         let mut pid = 0u32;
-        GetWindowThreadProcessId(fg, Some(&mut pid));
-        if pid == GetCurrentProcessId() {
-            return false;
-        }
-        let class = class_name(fg);
-        if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
-            return false;
-        }
-        // With an auto-hide taskbar a *maximized* window also covers the whole monitor. Real
-        // fullscreen (games, video players, F11 browsers) is borderless and not zoomed.
-        let style = GetWindowLongPtrW(fg, GWL_STYLE) as u32;
-        if IsZoomed(fg).as_bool() || style & WS_CAPTION.0 == WS_CAPTION.0 {
-            return false;
-        }
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
         let mut rect = RECT::default();
-        if GetWindowRect(fg, &mut rect).is_err() {
-            return false;
-        }
-        let (Some(fg_mon), Some(dock_mon)) = (monitor_rect_of(fg), monitor_rect_of(dock_hwnd)) else {
-            return false;
-        };
-        if fg_mon != dock_mon {
-            return false;
-        }
-        rect.left <= fg_mon.left && rect.top <= fg_mon.top && rect.right >= fg_mon.right && rect.bottom >= fg_mon.bottom
+        GetWindowRect(hwnd, &mut rect).ok()?;
+        Some(ForegroundInfo {
+            class: class_name(hwnd),
+            own_process: pid == GetCurrentProcessId(),
+            zoomed: IsZoomed(hwnd).as_bool(),
+            has_caption: style & WS_CAPTION.0 == WS_CAPTION.0,
+            rect,
+            monitor: monitor_rect_of(hwnd)?,
+        })
     }
 }
 
-fn notification_state_fullscreen() -> bool {
+fn d3d_fullscreen() -> bool {
     match unsafe { SHQueryUserNotificationState() } {
         Ok(state) => state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE,
         Err(_) => false,
     }
 }
 
-/// 500 ms watcher: fullscreen auto-hide, hidden-taskbar enforcement and display-change relayout.
+/// Should the dock be hidden right now? Decided from the *current* foreground window only.
+fn fullscreen_in_front(dock_hwnd: HWND) -> bool {
+    let Some(dock_monitor) = monitor_rect_of(dock_hwnd) else { return false };
+    let fg = foreground_info(unsafe { GetForegroundWindow() });
+    should_hide_for(fg.as_ref(), dock_monitor, d3d_fullscreen())
+}
+
+/// Foreground-change wake-up for the watcher (fed by the sentinel's EVENT_SYSTEM_FOREGROUND hook).
+static FG_WAKE: Lazy<(Mutex<bool>, Condvar)> = Lazy::new(|| (Mutex::new(false), Condvar::new()));
+
+/// Called from the WinEvent hook: re-evaluate fullscreen immediately instead of on the next tick.
+pub fn notify_foreground_changed() {
+    let (lock, cvar) = &*FG_WAKE;
+    *lock.lock() = true;
+    cvar.notify_one();
+}
+
+/// Wait up to `timeout` for a foreground change. Returns true when one arrived.
+fn wait_foreground_change(timeout: Duration) -> bool {
+    let (lock, cvar) = &*FG_WAKE;
+    let mut pending = lock.lock();
+    if !*pending {
+        let _ = cvar.wait_for(&mut pending, timeout);
+    }
+    std::mem::replace(&mut *pending, false)
+}
+
+/// Fallback poll when no foreground event arrives (exclusive-fullscreen transitions do not
+/// always raise one).
+const FULLSCREEN_POLL: Duration = Duration::from_millis(150);
+/// Taskbar enforcement / affinity / display-change checks keep their 500 ms cadence.
+const HOUSEKEEPING_EVERY: Duration = Duration::from_millis(500);
+/// Slide-out animation length before the dock is truly hidden.
+const SLIDE_OUT: Duration = Duration::from_millis(300);
+
+fn show_overlays(dock: &WebviewWindow, toast: Option<&WebviewWindow>) {
+    show_no_activate(dock);
+    if let Some(t) = toast {
+        show_no_activate(t);
+    }
+}
+
+/// Fullscreen watcher: event-driven foreground rule (+150 ms fallback poll), hidden-taskbar
+/// enforcement and display-change relayout.
 pub fn start_fullscreen_watch(app: AppHandle) {
     std::thread::Builder::new()
         .name("lumabar-fullscreen".into())
@@ -504,11 +584,10 @@ pub fn start_fullscreen_watch(app: AppHandle) {
             let mut hidden = false;
             let mut last_monitor: Option<(i32, i32, u32, u32, u64)> = None;
             let mut cached_hwnd: isize = 0;
-            let mut tick: u64 = 0;
+            let mut last_housekeeping = Instant::now() - HOUSEKEEPING_EVERY;
+            let mut last_broadcast = Instant::now();
             loop {
-                std::thread::sleep(Duration::from_millis(500));
-                taskbar::enforce_hidden();
-                graphics::dxgi_capture::verify_affinity();
+                let foreground_changed = wait_foreground_change(FULLSCREEN_POLL);
 
                 let Some(dock) = app.get_webview_window("dock") else { continue };
                 if cached_hwnd == 0 {
@@ -519,48 +598,68 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                 }
                 let dock_hwnd = HWND(cached_hwnd as *mut core::ffi::c_void);
 
-                // Display configuration changes (resolution / DPI / monitor unplugged).
-                if let Ok(Some(monitor)) = dock.current_monitor() {
-                    let key = (
-                        monitor.position().x,
-                        monitor.position().y,
-                        monitor.size().width,
-                        monitor.size().height,
-                        (monitor.scale_factor() * 1000.0) as u64,
-                    );
-                    if last_monitor.is_some_and(|prev| prev != key) {
-                        relayout_and_broadcast(&app);
+                if last_housekeeping.elapsed() >= HOUSEKEEPING_EVERY {
+                    last_housekeeping = Instant::now();
+                    taskbar::enforce_hidden();
+                    graphics::dxgi_capture::verify_affinity();
+                    // Display configuration changes (resolution / DPI / monitor unplugged).
+                    if let Ok(Some(monitor)) = dock.current_monitor() {
+                        let key = (
+                            monitor.position().x,
+                            monitor.position().y,
+                            monitor.size().width,
+                            monitor.size().height,
+                            (monitor.scale_factor() * 1000.0) as u64,
+                        );
+                        if last_monitor.is_some_and(|prev| prev != key) {
+                            relayout_and_broadcast(&app);
+                        }
+                        last_monitor = Some(key);
                     }
-                    last_monitor = Some(key);
+                }
+                if last_broadcast.elapsed() >= Duration::from_secs(5) {
+                    // Periodic re-broadcast so a reloaded webview resyncs its slide state.
+                    last_broadcast = Instant::now();
+                    let _ = app.emit("dock:fullscreen", hidden);
                 }
 
                 let enabled = app.state::<AppState>().settings.read().hide_on_fullscreen;
-                let fullscreen = enabled && (notification_state_fullscreen() || foreground_covers_monitor(dock_hwnd));
-                tick += 1;
-                if tick % 10 == 0 {
-                    // Periodic re-broadcast so a reloaded webview resyncs its slide state.
-                    let _ = app.emit("dock:fullscreen", hidden);
-                }
-                if fullscreen != hidden {
-                    hidden = fullscreen;
-                    // Nothing is composited while the dock is hidden: stop the desktop capture.
-                    graphics::set_paused(fullscreen);
-                    let _ = app.emit("dock:fullscreen", fullscreen);
-                    let toast = app.get_webview_window("toast");
-                    if fullscreen {
-                        // Let the slide-out animation finish, then truly hide so the topmost
-                        // transparent windows never interfere with exclusive fullscreen.
-                        std::thread::sleep(Duration::from_millis(320));
-                        hide_overlay(&dock);
-                        if let Some(t) = toast {
-                            hide_overlay(&t);
-                        }
-                    } else {
-                        show_no_activate(&dock);
-                        if let Some(t) = toast {
-                            show_no_activate(&t);
-                        }
+                let fullscreen = enabled && fullscreen_in_front(dock_hwnd);
+                let toast = app.get_webview_window("toast");
+
+                if fullscreen == hidden {
+                    if !hidden && foreground_changed {
+                        // The app that just lost the foreground may have been topmost: keep the
+                        // dock above whatever took over (raw Win32, never activates).
+                        show_overlays(&dock, toast.as_ref());
                     }
+                    continue;
+                }
+
+                if fullscreen {
+                    let _ = app.emit("dock:fullscreen", true);
+                    // Let the slide-out finish, but abort if the foreground moves on meanwhile
+                    // (Alt+Tab straight out of the game): hiding follows the current foreground only.
+                    let interrupted = wait_foreground_change(SLIDE_OUT);
+                    if interrupted && !(enabled && fullscreen_in_front(dock_hwnd)) {
+                        let _ = app.emit("dock:fullscreen", false);
+                        continue;
+                    }
+                    hidden = true;
+                    // Nothing is composited while the dock is hidden: stop the desktop capture.
+                    graphics::set_paused(true);
+                    // Truly hide so the topmost transparent windows never interfere with
+                    // exclusive fullscreen.
+                    hide_overlay(&dock);
+                    if let Some(t) = &toast {
+                        hide_overlay(t);
+                    }
+                } else {
+                    hidden = false;
+                    // Instant wake: Alt+Tab, Win key, desktop, any windowed app.
+                    show_overlays(&dock, toast.as_ref());
+                    graphics::set_paused(false);
+                    let _ = app.emit("dock:fullscreen", false);
                 }
             }
         })
@@ -668,6 +767,88 @@ mod tests {
         let second = MonitorRect { x: 0, y: -1080, width: 1920, height: 1080 };
         assert_eq!(edge_for_cursor(-900.0, second), DockEdge::Top);
         assert_eq!(edge_for_cursor(-100.0, second), DockEdge::Bottom);
+    }
+
+    const MON: RECT = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+    const MON2: RECT = RECT { left: 1920, top: 0, right: 4480, bottom: 1440 };
+
+    fn fg(class: &str, rect: RECT) -> ForegroundInfo {
+        ForegroundInfo { class: class.into(), own_process: false, zoomed: false, has_caption: false, rect, monitor: MON }
+    }
+
+    #[test]
+    fn borderless_fullscreen_game_in_front_hides_the_dock() {
+        let game = fg("UnrealWindow", MON);
+        assert!(should_hide_for(Some(&game), MON, false));
+        assert!(should_hide_for(Some(&game), MON, true));
+        // Exclusive fullscreen that kept a caption style still counts when D3D says so.
+        let captioned = ForegroundInfo { has_caption: true, ..fg("RiotWindowClass", MON) };
+        assert!(should_hide_for(Some(&captioned), MON, true));
+        assert!(!should_hide_for(Some(&captioned), MON, false));
+    }
+
+    #[test]
+    fn alt_tab_out_of_a_game_wakes_the_dock_immediately() {
+        // The game is still running (and D3D fullscreen may still be reported), but the foreground
+        // is now the task switcher / desktop / a normal app: the dock must be shown.
+        for class in SHELL_CLASSES {
+            assert!(!should_hide_for(Some(&fg(class, MON)), MON, true), "{class} must not hide the dock");
+        }
+        let browser = ForegroundInfo { has_caption: true, ..fg("Chrome_WidgetWin_1", RECT { left: 100, top: 100, right: 1500, bottom: 900 }) };
+        assert!(!should_hide_for(Some(&browser), MON, true));
+        let discord = fg("Chrome_WidgetWin_1", RECT { left: 0, top: 0, right: 1200, bottom: 800 });
+        assert!(!should_hide_for(Some(&discord), MON, true));
+        assert!(!should_hide_for(None, MON, true));
+    }
+
+    #[test]
+    fn maximized_windows_lumabar_and_other_monitors_never_hide_the_dock() {
+        let maximized = ForegroundInfo { zoomed: true, has_caption: true, ..fg("ConsoleWindowClass", MON) };
+        assert!(!should_hide_for(Some(&maximized), MON, false));
+        // Regression: a game left running keeps QUNS at D3D-fullscreen; a maximized window in
+        // front must still show the dock.
+        assert!(!should_hide_for(Some(&maximized), MON, true));
+        let own = ForegroundInfo { own_process: true, ..fg("Tauri Window", MON) };
+        assert!(!should_hide_for(Some(&own), MON, true));
+        let elsewhere = ForegroundInfo { monitor: MON2, ..fg("UnrealWindow", MON2) };
+        assert!(!should_hide_for(Some(&elsewhere), MON, true));
+    }
+
+    /// Real Win32 inspection path: a borderless popup covering the monitor is detected as
+    /// fullscreen, a captioned window of the same size is not. The windows are never shown.
+    #[test]
+    fn win32_window_inspection_feeds_the_rule() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW, WS_POPUP,
+        };
+        use windows::core::w;
+        unsafe {
+            let (w_, h_) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            let make = |style| {
+                CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!("lumabar-test"), style, 0, 0, w_, h_, None, None, None, None)
+                    .expect("create test window")
+            };
+            let popup = make(WS_POPUP);
+            let framed = make(WS_OVERLAPPEDWINDOW);
+            let p = foreground_info(popup).expect("popup info");
+            let f = foreground_info(framed).expect("framed info");
+            // Our own test process owns them: the own-process guard must reject both as-is…
+            assert!(p.own_process && !should_hide_for(Some(&p), p.monitor, true));
+            // …and with the guard lifted (as if another process) only the borderless one hides.
+            let foreign_popup = ForegroundInfo { own_process: false, ..p.clone() };
+            let foreign_framed = ForegroundInfo { own_process: false, ..f.clone() };
+            assert!(should_hide_for(Some(&foreign_popup), p.monitor, false));
+            assert!(!should_hide_for(Some(&foreign_framed), f.monitor, false));
+            let _ = DestroyWindow(popup);
+            let _ = DestroyWindow(framed);
+        }
+    }
+
+    #[test]
+    fn foreground_wake_is_consumed_once() {
+        notify_foreground_changed();
+        assert!(wait_foreground_change(Duration::from_millis(10)));
+        assert!(!wait_foreground_change(Duration::from_millis(10)));
     }
 
     #[test]

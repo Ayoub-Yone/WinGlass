@@ -301,6 +301,40 @@ export interface AppEntry {
   isActive: boolean;
 }
 
+export interface AudioDevice {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+/** Default playback endpoint (WASAPI), pushed as "audio:state" on every change. */
+export interface AudioState {
+  available: boolean;
+  /** 0–100 */
+  volume: number;
+  muted: boolean;
+  deviceId: string;
+  deviceName: string;
+  devices: AudioDevice[];
+}
+
+/** Integrated launcher result (Start Menu / Desktop / App Paths). */
+export interface AppHit {
+  name: string;
+  /** .lnk / .url / .exe — also the icon key. */
+  path: string;
+  kind: "shortcut" | "app";
+  folder: string | null;
+}
+
+export interface AccountStatus {
+  provider: "claude" | "chatgpt" | "gemini";
+  connected: boolean;
+  source: "cli" | "manual" | "none";
+  cliInstalled: boolean;
+  detail: string | null;
+}
+
 export interface MediaState {
   available: boolean;
   title: string;

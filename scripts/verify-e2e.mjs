@@ -40,6 +40,11 @@ const note = (line) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function psArgs(action, extra) {
+  return JSON.parse(
+    execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", helper, "-Action", action, ...extra], { encoding: "utf8" }).trim(),
+  );
+}
 function ps(action, pid = 0) {
   const out = execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", helper, "-Action", action, "-ProcessId", String(pid)], { encoding: "utf8" });
   return JSON.parse(out.trim().split(/\r?\n/).pop());
@@ -256,7 +261,11 @@ try {
   check("taskbar state persisted while modified", existsSync(stateFile));
   check("only dock + toast webviews exist at idle", (await targets()).length === 2, (await targets()).map((t) => t.url.split("?")[1]).join(", "));
 
-  const glass = await waitFor(async () => ((await dock.invoke("get_glass_status")) === "running" ? "running" : null), 8000);
+  // Whatever the user has in front (a fullscreen game…) must not slide the dock away mid-test;
+  // the fullscreen rule gets its own probe below.
+  await patchSettings(dock, { hideOnFullscreen: false });
+  await sleep(1500);
+  const glass = await waitFor(async () => (/running$/.test(await dock.invoke("get_glass_status")) ? "running" : null), 8000);
   check("liquid glass capture running", glass === "running", String(await dock.invoke("get_glass_status")));
   const canvas = await dock.eval("(() => { const c = document.querySelector('.lb-pill canvas'); return c ? { w: c.width, h: c.height, bg: getComputedStyle(document.querySelector('.lb-pill')).backgroundColor } : null; })()");
   check("glass shader composited (pill background handed to WebGL)", canvas && canvas.w > 0 && /rgba\(0, 0, 0, 0\)|transparent/.test(canvas.bg), JSON.stringify(canvas));
@@ -358,18 +367,109 @@ try {
   note(`idle: host working set ${idle.hostWorkingSetMb} MB (private ${idle.hostPrivateMb} MB), ${idle.webviewCount} WebView2 processes, ${idle.childWorkingSetMb} MB`);
   check("idle host working set < 40 MB (Get-Process lumabar)", idle.hostWorkingSetMb < 40, `${idle.hostWorkingSetMb} MB`);
 
+  // ---------------------------------------------------------------- integrated launcher (no Win+S)
+  const apps = await dock.invoke("search_installed_apps", { query: "a" });
+  check("search_installed_apps: Start Menu / Desktop / App Paths index answers", Array.isArray(apps) && apps.length > 0 && apps.every((a) => /\.(lnk|url|exe)$/i.test(a.path)), JSON.stringify(apps?.slice?.(0, 3)));
+  const typeSearch = (text) =>
+    dock.eval(`(() => {
+      const input = document.querySelector('[data-testid="search-input"]');
+      if (!input) return false;
+      input.focus();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, ${JSON.stringify(text)});
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`);
+  check("search widget present in the default layout", Boolean(await typeSearch("a")));
+  const flyout = await waitFor(
+    () =>
+      dock.eval(`(() => {
+        const list = document.querySelector('[data-testid="search-results"]');
+        const pill = document.querySelector('[data-testid="dock-pill"]') ?? document.querySelector(".lb-pill");
+        if (!list) return null;
+        const r = list.parentElement.getBoundingClientRect();
+        const p = pill ? pill.getBoundingClientRect() : null;
+        return { hits: list.querySelectorAll('[data-testid="search-hit"]').length, bottom: r.bottom, pillTop: p ? p.top : null };
+      })()`),
+    5000,
+  );
+  check("search flyout lists apps directly above the dock without overlapping it", flyout && flyout.hits > 0 && (flyout.pillTop === null || flyout.bottom <= flyout.pillTop), JSON.stringify(flyout));
+  const keyOnInput = (key) =>
+    dock.eval(`document.querySelector('[data-testid="search-input"]').dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(key)}, bubbles: true }))`);
+  await keyOnInput("ArrowDown");
+  await sleep(100);
+  const activeIndex = await dock.eval(`[...document.querySelectorAll('[data-testid="search-results"] button')].findIndex((b) => b.dataset.active === "true")`);
+  check("search flyout: ArrowDown moves the selection", activeIndex === 1, String(activeIndex));
+  await keyOnInput("Escape");
+  await sleep(200);
+  check("search flyout: Escape dismisses", (await dock.eval(`!document.querySelector('[data-testid="search-results"]')`)) === true);
+  const searchHost = execFileSync("powershell", ["-NoProfile", "-Command", "(Get-Process SearchHost -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }).Count"], { encoding: "utf8" }).trim();
+  check("Windows Search overlay never opened", searchHost === "" || searchHost === "0", searchHost);
+
+  // ---------------------------------------------------------------- system volume (WASAPI)
+  const audio0 = await dock.invoke("audio_state");
+  check("audio_state: default output endpoint bound", audio0.available === true && audio0.devices.some((d) => d.isDefault), JSON.stringify({ ...audio0, devices: audio0.devices?.length }));
+  const volumeCard = await dock.eval(`Boolean(document.querySelector('[data-testid="volume-widget"]'))`);
+  check("volume widget enabled by default in the dock", volumeCard === true);
+  if (audio0.available) {
+    const wheel = (deltaY) =>
+      dock.eval(`document.querySelector('[data-testid="volume-widget"]').dispatchEvent(new WheelEvent("wheel", { deltaY: ${deltaY}, bubbles: true }))`);
+    const down = audio0.volume >= 2 ? 100 : -100; // wheel down lowers; stay inside 0–100
+    await wheel(down);
+    const stepped = await waitFor(async () => {
+      const s = await dock.invoke("audio_state");
+      return s.volume !== audio0.volume ? s : null;
+    }, 3000);
+    check("mouse wheel over the volume widget steps the system volume by 2%", stepped && Math.abs(stepped.volume - audio0.volume) === 2, `${audio0.volume} -> ${stepped?.volume}`);
+    await sleep(300);
+    await wheel(-down);
+    const back = await waitFor(async () => {
+      const s = await dock.invoke("audio_state");
+      return s.volume === audio0.volume ? s : null;
+    }, 3000);
+    check("wheel back restores the original volume (callback-fed state)", Boolean(back), String(back?.volume));
+    const shownPct = await dock.eval(`document.querySelector('[data-testid="volume-widget"]').innerText`);
+    check("volume widget shows the live percentage", shownPct.includes(`${audio0.volume}%`) || (audio0.muted && shownPct.includes("0%")), shownPct);
+    await dock.eval(`document.querySelector('[data-testid="volume-widget"]').closest('.lb-card').click()`);
+    const pop = await waitFor(() => dock.eval(`(() => { const p = document.querySelector('[data-testid="volume-popover"]'); return p ? { slider: !!p.querySelector('[data-testid="volume-slider"]'), mute: !!p.querySelector('[data-testid="volume-mute"]'), devices: p.querySelectorAll('[data-testid="volume-device"]').length } : null; })()`), 3000);
+    check("volume flyout: mute button, slider and output devices", pop && pop.slider && pop.mute && pop.devices === audio0.devices.length, JSON.stringify(pop));
+    await dock.eval(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+    await sleep(200);
+    check("volume flyout closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="volume-popover"]')`)) === true);
+  }
+
+  // ---------------------------------------------------------------- accounts auto-detection
+  const claudeAccount = await dock.invoke("account_status", { provider: "claude" });
+  check("account_status answers for Claude / ChatGPT / Gemini", typeof claudeAccount.connected === "boolean" && ["cli", "manual", "none"].includes(claudeAccount.source), JSON.stringify(claudeAccount));
+
+  // ---------------------------------------------------------------- hover + fullscreen visibility (raw Win32)
+  const pillCenter = await dock.eval(`(() => {
+    const cards = [...document.querySelectorAll(".lb-card")];
+    const r = cards[Math.floor(cards.length / 2)].getBoundingClientRect();
+    return { x: Math.round(window.screenX + (r.left + r.width / 2) * devicePixelRatio), y: Math.round(window.screenY + (r.top + r.height / 2) * devicePixelRatio) };
+  })()`);
+  const hover = psArgs("hover", ["-ProcessId", String(pid), "-X", String(pillCenter.x), "-Y", String(pillCenter.y)]);
+  check("hover: IsWindowVisible stays true on lumabar, false on Shell_TrayWnd", hover.duringHover >= 1 && hover.afterHover >= 1 && hover.trayVisible === false, JSON.stringify(hover));
+  await patchSettings(dock, { hideOnFullscreen: true });
+  const fs = psArgs("fullscreen", ["-ProcessId", String(pid)]);
+  await patchSettings(dock, { hideOnFullscreen: false });
+  note(`fullscreen probe: ${JSON.stringify(fs)}`);
+  check("borderless fullscreen app in front hides the dock", fs.foregroundWasProbe && fs.inFullscreen === 0, JSON.stringify(fs));
+  check("Alt+Tab out of the fullscreen app wakes the dock immediately (< 400 ms)", fs.wakeMs >= 0 && fs.wakeMs < 400 && fs.afterAltTab >= 1, `wake ${fs.wakeMs} ms, switcher ${fs.switcherClass}, after ${fs.afterAltTab}`);
+
   // ---------------------------------------------------------------- layout audit (all widgets x spans x sizes x languages)
   await patchSettings(dock, { simulation: true });
   await sleep(1200);
   await dock.invoke("open_window", { label: "picker" });
   let picker = await Page.open("picker");
   await sleep(1500);
+  const fullCatalog = await waitFor(() => picker.eval("document.querySelectorAll('[data-widget-tile]').length >= 39"), 10000);
+  if (!fullCatalog) note(`picker state: ${JSON.stringify(await picker.eval("({ tiles: document.querySelectorAll('[data-widget-tile]').length, inputs: [...document.querySelectorAll('input')].map((i) => i.value), focus: document.hasFocus(), hidden: document.hidden })"))}`);
   for (const lang of ["fr", "en"]) {
     for (const size of ["compact", "medium", "large"]) {
       await patchSettings(dock, { language: lang, size });
       await sleep(500);
       const audit = await picker.eval(AUDIT);
-      check(`layout ${lang}/${size}: ${audit.tiles} widgets, ${audit.cards} variants, no clipping / wrapping / overflow`, audit.tiles === 38 && audit.problems.length === 0, audit.problems.slice(0, 12).join("\n        "));
+      check(`layout ${lang}/${size}: ${audit.tiles} widgets, ${audit.cards} variants, no clipping / wrapping / overflow`, audit.tiles === 39 && audit.problems.length === 0, audit.problems.slice(0, 12).join("\n        "));
       if (audit.ellipsis.length) note(`${lang}/${size} ellipsis-truncated (by design): ${audit.ellipsis.join("; ")}`);
     }
   }

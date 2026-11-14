@@ -1,4 +1,6 @@
+pub mod app_search;
 pub mod apps_enum;
+pub mod audio;
 pub mod dpapi;
 pub mod guardian;
 pub mod liner;
@@ -52,6 +54,26 @@ pub fn install_crash_guards() {
             eprintln!("[lumabar] SetConsoleCtrlHandler failed: {err}");
         }
     }
+}
+
+static EXIT_WATCHDOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Called once the taskbar has been restored for exit: if WebView2 / COM teardown stalls, end the
+/// process after `EXIT_GRACE` instead of lingering (a lingering lumabar holds the single-instance
+/// mutex and blocks the next launch). Safe because restoration already happened.
+pub fn arm_exit_watchdog() {
+    use std::sync::atomic::Ordering;
+    if EXIT_WATCHDOG.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("lumabar-exit-watchdog".into()).spawn(|| {
+        std::thread::sleep(EXIT_GRACE);
+        taskbar::restore();
+        unsafe {
+            let _ = windows::Win32::System::Threading::TerminateProcess(windows::Win32::System::Threading::GetCurrentProcess(), 0);
+        }
+    });
 }
 
 /// Add/remove lumabar from `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.

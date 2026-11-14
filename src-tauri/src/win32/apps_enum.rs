@@ -567,38 +567,6 @@ pub fn focus(hwnd: HWND) {
     }
 }
 
-/// Open Windows Search (Win+S) and, if given, type the query into it.
-pub fn open_windows_search(query: &str) -> Result<(), String> {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_LWIN,
-    };
-    fn key(vk: VIRTUAL_KEY, scan: u16, flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS) -> INPUT {
-        INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
-        }
-    }
-    let s = VIRTUAL_KEY(u16::from(b'S'));
-    let none = Default::default();
-    let open = [key(VK_LWIN, 0, none), key(s, 0, none), key(s, 0, KEYEVENTF_KEYUP), key(VK_LWIN, 0, KEYEVENTF_KEYUP)];
-    let sent = unsafe { SendInput(&open, std::mem::size_of::<INPUT>() as i32) };
-    if sent as usize != open.len() {
-        return Err("SendInput was blocked (is an elevated window focused?)".into());
-    }
-    let text = query.trim();
-    if !text.is_empty() {
-        // Give the search flyout time to take focus before typing.
-        std::thread::sleep(Duration::from_millis(450));
-        let mut inputs = Vec::with_capacity(text.len() * 2);
-        for unit in text.encode_utf16() {
-            inputs.push(key(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE));
-            inputs.push(key(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
-        }
-        unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-    }
-    Ok(())
-}
-
 pub fn shell_open(target: &str, args: Option<&str>) -> Result<(), String> {
     let wtarget = wide(target);
     let wargs = args.map(wide);

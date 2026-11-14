@@ -149,6 +149,8 @@ export interface FrostPreset {
   levels: number;
   /** Kawase sample offset in half-texels; larger = creamier. */
   offset: number;
+  /** Sigma (in taps) of the separable Gaussian smoothing pass after the pyramid; 0 = off. */
+  gauss: number;
   /** Matte veil: rgba(18, 20, 26, tint). */
   tint: number;
   /** Procedural micro-grain amplitude. */
@@ -158,9 +160,9 @@ export interface FrostPreset {
 export const FROST_ORDER: GlassFrost[] = ["subtle", "balanced", "deep"];
 
 export const FROST: Record<GlassFrost, FrostPreset> = {
-  subtle: { id: "subtle", levels: 4, offset: 1.9, tint: 0.26, grain: 0.008 },
-  balanced: { id: "balanced", levels: 5, offset: 2.2, tint: 0.36, grain: 0.012 },
-  deep: { id: "deep", levels: 6, offset: 2.6, tint: 0.5, grain: 0.016 },
+  subtle: { id: "subtle", levels: 5, offset: 2.3, gauss: 3.5, tint: 0.28, grain: 0.008 },
+  balanced: { id: "balanced", levels: 5, offset: 2.8, gauss: 5, tint: 0.38, grain: 0.012 },
+  deep: { id: "deep", levels: 6, offset: 3.2, gauss: 6.5, tint: 0.5, grain: 0.016 },
 };
 
 export const GLASS_TINT_RGB: [number, number, number] = [18 / 255, 20 / 255, 26 / 255];

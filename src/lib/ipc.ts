@@ -3,7 +3,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AccountStatus,
   AppEntry,
+  AppHit,
+  AudioState,
   DockLayout,
   DockPosition,
   LayoutItem,
@@ -40,7 +43,14 @@ export const ipc = {
   activateWindow: (hwnd: number) => invoke<void>("activate_window", { hwnd }),
   launchApp: (path: string) => invoke<void>("launch_app", { path }),
   openTarget: (target: string) => invoke<void>("open_target", { target }),
-  windowsSearch: (query: string) => invoke<void>("windows_search", { query }),
+  searchInstalledApps: (query: string) => invoke<AppHit[]>("search_installed_apps", { query }),
+
+  audioState: () => invoke<AudioState>("audio_state"),
+  audioSetVolume: (volume: number) => invoke<AudioState>("audio_set_volume", { volume: Math.round(Math.min(100, Math.max(0, volume))) }),
+  audioStep: (delta: number) => invoke<AudioState>("audio_step", { delta }),
+  /** null toggles. */
+  audioSetMute: (muted: boolean | null) => invoke<AudioState>("audio_set_mute", { muted }),
+  audioSetDevice: (id: string) => invoke<AudioState>("audio_set_device", { id }),
 
   mediaState: () => invoke<MediaState>("media_state"),
   mediaCommand: (action: "toggle" | "pause" | "play" | "next" | "previous") => invoke<void>("media_command", { action }),
@@ -56,6 +66,8 @@ export const ipc = {
   refreshProvider: (id: ProviderId) => invoke<ProviderResult>("refresh_provider", { id }),
   setSecret: (name: string, value: string) => invoke<string[]>("set_secret", { name, value }),
   getSecretNames: () => invoke<string[]>("get_secret_names"),
+  accountStatus: (provider: AccountStatus["provider"]) => invoke<AccountStatus>("account_status", { provider }),
+  accountLogin: (provider: AccountStatus["provider"]) => invoke<void>("account_login", { provider }),
 
   getLayout: () => invoke<LayoutItem[] | null>("get_layout"),
   saveLayout: (layout: LayoutItem[]) => invoke<void>("save_layout", { layout }),
@@ -78,6 +90,8 @@ export interface AppEvents {
   "provider:update": ProviderResult;
   "telemetry:sample": TelemetrySample;
   "media:state": MediaState;
+  "audio:state": AudioState;
+  "account:connected": AccountStatus;
   "glass:frame": number;
   "apps:foreground": number;
   "toast:push": ToastSpec;

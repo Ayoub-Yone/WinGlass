@@ -2048,6 +2048,7 @@ dependencies = [
  "tauri-build",
  "tokio",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

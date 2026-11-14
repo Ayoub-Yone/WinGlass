@@ -7,6 +7,7 @@ import {
   Check,
   CheckCircle2,
   KeyRound,
+  LogIn,
   Lock,
   Monitor,
   Palette,
@@ -26,7 +27,7 @@ import { FROST_ORDER, SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/T
 import { patchSettings, useSettings } from "../lib/hooks";
 import { formatPercent } from "../lib/format";
 import { broadcast, errorMessage, ipc, subscribe } from "../lib/ipc";
-import type { AutomationSettings, GlassBackdrop, GlassFrost, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
+import type { AccountStatus, AutomationSettings, GlassBackdrop, GlassFrost, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
 
 type Tab = "general" | "accounts" | "calendar" | "integrations" | "automations" | "advanced";
 
@@ -250,6 +251,8 @@ interface AccountSpec {
   name: string;
   fields: SecretField[];
   note?: TranslationKey;
+  /** One-click sign-in through the provider's official CLI. */
+  signIn?: AccountStatus["provider"];
 }
 
 const AI_ACCOUNTS: AccountSpec[] = [
@@ -261,6 +264,7 @@ const AI_ACCOUNTS: AccountSpec[] = [
       { name: "claude_oauth_token", label: "account.claude.oauth" },
     ],
     note: "account.claude.note",
+    signIn: "claude",
   },
   {
     id: "chatgpt",
@@ -270,6 +274,7 @@ const AI_ACCOUNTS: AccountSpec[] = [
       { name: "chatgpt_account_id", label: "account.chatgpt.account" },
     ],
     note: "account.chatgpt.note",
+    signIn: "chatgpt",
   },
   {
     id: "gemini",
@@ -278,6 +283,7 @@ const AI_ACCOUNTS: AccountSpec[] = [
       { name: "gemini_oauth_token", label: "account.gemini.token" },
       { name: "gemini_project_id", label: "account.gemini.project" },
     ],
+    signIn: "gemini",
   },
   { id: "grok", name: "Grok (xAI)", fields: [{ name: "xai_management_key", label: "account.grok.key" }, { name: "xai_team_id", label: "account.grok.team" }] },
   { id: "deepseek", name: "DeepSeek", fields: [{ name: "deepseek_api_key", label: "account.apiKey" }] },
@@ -372,6 +378,88 @@ function ProviderBadge({ id }: { id: ProviderId }) {
   );
 }
 
+const SIGN_IN_LABEL: Record<AccountStatus["provider"], TranslationKey> = {
+  claude: "account.signIn.claude",
+  chatgpt: "account.signIn.chatgpt",
+  gemini: "account.signIn.gemini",
+};
+
+/** « Se connecter avec … »: opens the official CLI sign-in, then shows « Connecté » once the
+ *  credentials it writes are picked up (`account:connected`). */
+function SignIn({ provider, names }: { provider: AccountStatus["provider"]; names: string[] }) {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<AccountStatus | null>(null);
+  const [waiting, setWaiting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const settings = useSettings();
+  const useCli = settings?.providers.useLocalCliCredentials;
+  const providerStatus = useHub((s) => s.providers[provider]?.status);
+
+  useEffect(() => {
+    let alive = true;
+    void ipc.accountStatus(provider).then((st) => alive && setStatus(st)).catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [provider, names, useCli, providerStatus]);
+
+  useEffect(
+    () =>
+      subscribe("account:connected", (st) => {
+        if (st.provider !== provider) return;
+        setStatus(st);
+        setWaiting(false);
+      }),
+    [provider],
+  );
+
+  const signIn = () => {
+    setError(null);
+    setWaiting(true);
+    ipc.accountLogin(provider).catch((e) => {
+      setWaiting(false);
+      setError(errorMessage(e));
+    });
+  };
+
+  const connected = !!status?.connected;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          data-testid={`sign-in-${provider}`}
+          className="lb-focus flex items-center gap-1.5 rounded-lg border-none px-3 py-1.5 text-[12px] font-semibold"
+          style={connected ? { background: "var(--lb-track)", color: "var(--lb-text)" } : { background: "var(--lb-accent)", color: "#fff" }}
+          disabled={waiting}
+          onClick={signIn}
+        >
+          {waiting ? <RefreshCw size={13} className="animate-spin" /> : <LogIn size={13} />}
+          {t(SIGN_IN_LABEL[provider])}
+        </button>
+        {connected && (
+          <span data-testid={`connected-${provider}`} className="flex min-w-0 items-center gap-1 text-[12px] font-semibold" style={{ color: "var(--lb-green)" }}>
+            <CheckCircle2 size={13} className="shrink-0" />
+            <span className="truncate">
+              {t("account.connected")}
+              <span className="font-normal lb-faint">
+                {" · "}
+                {status?.detail ? `${status.detail} · ` : ""}
+                {status?.source === "manual" ? t("account.viaManual") : t("account.viaCli")}
+              </span>
+            </span>
+          </span>
+        )}
+      </div>
+      <div className="text-[11px] lb-faint">
+        {waiting ? t("account.waiting") : t("account.signInHint")}
+        {status && !status.cliInstalled && !connected ? ` ${t("account.viaNpx")}` : ""}
+      </div>
+      {error && <div className="text-[11px]" style={{ color: "var(--lb-red)" }}>{error}</div>}
+      <div className="mt-1 text-[11px] lb-muted">{t("account.manualFields")}</div>
+    </div>
+  );
+}
+
 function AccountCard({ spec, names, setNames }: { spec: AccountSpec; names: string[]; setNames: (n: string[]) => void }) {
   const { t } = useI18n();
   const error = useHub((s) => s.providers[spec.id]?.error);
@@ -383,6 +471,7 @@ function AccountCard({ spec, names, setNames }: { spec: AccountSpec; names: stri
         <span className="flex-1 font-semibold">{spec.name}</span>
         <ProviderBadge id={spec.id} />
       </div>
+      {spec.signIn && <SignIn provider={spec.signIn} names={names} />}
       {spec.fields.map((f) => (
         <SecretInput key={f.name} field={f} isSet={names.includes(f.name)} onSaved={setNames} />
       ))}

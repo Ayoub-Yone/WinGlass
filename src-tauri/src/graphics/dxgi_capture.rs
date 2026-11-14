@@ -55,7 +55,7 @@ static DOCK_HWND: AtomicIsize = AtomicIsize::new(0);
 const MAX_FPS: u64 = 30;
 /// Extra desktop captured around the pill (physical px, clamped to the monitor) so the blur can
 /// pull in colour from outside the pill instead of smearing its own edge pixels.
-const BLUR_MARGIN: i32 = 48;
+const BLUR_MARGIN: i32 = 64;
 /// Safety net for the parked thread; every state change also notifies it explicitly.
 const PARK_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long AcquireNextFrame blocks (in the kernel) waiting for the desktop to change.

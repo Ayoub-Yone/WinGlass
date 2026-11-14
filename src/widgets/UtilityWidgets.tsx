@@ -1,4 +1,4 @@
-// Utilities: Pomodoro, Stopwatch, Todos, Quick Notes, Search / Launcher, World Clocks,
+// Utilities: Pomodoro, Stopwatch, Todos, Quick Notes, World Clocks,
 // Hourly Weather (Open-Meteo), Quick Folders, Clock.
 
 import {
@@ -19,7 +19,6 @@ import {
   Play,
   Plus,
   RotateCcw,
-  Search,
   StickyNote,
   Sun,
   Trash2,
@@ -328,56 +327,6 @@ export function QuickNotesWidget({ span, instance, preview }: WidgetProps) {
         />
       </Popover>
     </>
-  );
-}
-
-// ---------------------------------------------------------------- Search / Launcher
-
-export function SearchWidget({ span, preview }: WidgetProps) {
-  const { t } = useI18n();
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const input = useRef<HTMLInputElement | null>(null);
-
-  const submit = () => {
-    if (preview) return;
-    const q = query.trim();
-    setError(null);
-    const looksLikeUrl = /^(https?:\/\/)?[\w-]+(\.[\w-]+)+(\/\S*)?$/i.test(q) && !q.includes(" ");
-    const action = looksLikeUrl ? ipc.openTarget(q.startsWith("http") ? q : `https://${q}`) : ipc.windowsSearch(q);
-    action.then(() => setQuery("")).catch((e) => setError(errorMessage(e)));
-  };
-
-  return (
-    <WidgetCard span={span} title={error ?? t("search.title")} onClick={() => input.current?.focus()}>
-      <div className="flex w-full min-w-0 items-center gap-2">
-        <button
-          className="lb-icon-btn h-6 w-6 shrink-0"
-          onClick={(e) => {
-            e.stopPropagation();
-            submit();
-          }}
-          aria-label={t("search.open")}
-        >
-          <Search size={15} className="lb-muted" />
-        </button>
-        <input
-          ref={input}
-          value={query}
-          disabled={preview}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-            if (e.key === "Escape") {
-              setQuery("");
-              input.current?.blur();
-            }
-          }}
-          placeholder={t("search.placeholder")}
-          className="min-w-0 flex-1 border-none bg-transparent outline-none placeholder:text-[var(--lb-muted)]"
-        />
-      </div>
-    </WidgetCard>
   );
 }
 

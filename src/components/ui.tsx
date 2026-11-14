@@ -22,17 +22,19 @@ export function WidgetCard(props: {
   span: Span;
   children: ReactNode;
   onClick?: () => void;
+  onWheel?: (e: React.WheelEvent) => void;
   className?: string;
   title?: string;
   cardRef?: RefObject<HTMLDivElement | null>;
   padded?: boolean;
 }) {
-  const { span, children, onClick, className = "", title, cardRef, padded = true } = props;
+  const { span, children, onClick, onWheel, className = "", title, cardRef, padded = true } = props;
   return (
     <div
       ref={cardRef}
       title={title}
       onClick={onClick}
+      onWheel={onWheel}
       className={`lb-card relative flex shrink-0 items-center overflow-hidden ${padded ? "px-2.5" : ""} ${className}`}
       style={spanCss(span)}
     >

@@ -12,7 +12,10 @@ use crate::providers::api_poller::{self, ProviderResult};
 use crate::storage::db::{ScreenTimeDay, Todo};
 use crate::storage::secrets;
 use crate::storage::settings::Settings;
+use crate::providers::accounts::{self, AccountStatus};
+use crate::win32::app_search::{self, AppHit};
 use crate::win32::apps_enum::{self, AppEntry};
+use crate::win32::audio::{self, AudioState};
 use crate::win32::liner;
 use crate::win32::media_smtc::{self, MediaCommand, MediaState};
 use crate::win32::taskbar::{self, TaskbarMode};
@@ -180,8 +183,12 @@ pub fn activate_window(hwnd: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn launch_app(path: String) -> Result<(), String> {
     let lower = path.to_ascii_lowercase();
-    if !(lower.ends_with(".lnk") || lower.ends_with(".exe")) || !std::path::Path::new(&path).exists() {
-        return Err("only existing .lnk / .exe targets can be launched".into());
+    if !(lower.ends_with(".lnk") || lower.ends_with(".exe") || lower.ends_with(".url")) || !std::path::Path::new(&path).exists() {
+        return Err("only existing .lnk / .url / .exe targets can be launched".into());
+    }
+    // Internet shortcuts can point anywhere: only the ones the launcher index found on disk.
+    if lower.ends_with(".url") && !app_search::is_indexed(&path) {
+        return Err("this internet shortcut is not in the app index".into());
     }
     apps_enum::shell_open(&path, None)
 }
@@ -204,9 +211,41 @@ pub fn open_target(target: String) -> Result<(), String> {
     }
 }
 
+/// Integrated launcher: fuzzy/prefix search over Start Menu, Desktop and App Paths.
 #[tauri::command]
-pub async fn windows_search(query: String) -> Result<(), String> {
-    blocking(move || apps_enum::open_windows_search(&query)).await
+pub async fn search_installed_apps(query: String) -> Result<Vec<AppHit>, String> {
+    blocking(move || Ok(app_search::search(&query))).await
+}
+
+// ---------------------------------------------------------------------------------------------
+// System volume
+// ---------------------------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn audio_state() -> AudioState {
+    audio::latest()
+}
+
+#[tauri::command]
+pub async fn audio_set_volume(volume: u32) -> Result<AudioState, String> {
+    blocking(move || audio::set_volume(volume)).await
+}
+
+/// Mouse wheel: relative step (±2 / ±4) applied atomically on the audio thread.
+#[tauri::command]
+pub async fn audio_step(delta: i32) -> Result<AudioState, String> {
+    blocking(move || audio::step(delta)).await
+}
+
+/// `muted: null` toggles.
+#[tauri::command]
+pub async fn audio_set_mute(muted: Option<bool>) -> Result<AudioState, String> {
+    blocking(move || audio::set_mute(muted)).await
+}
+
+#[tauri::command]
+pub async fn audio_set_device(id: String) -> Result<AudioState, String> {
+    blocking(move || audio::set_default_device(id)).await
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -305,6 +344,20 @@ pub fn set_secret(app: AppHandle, state: State<'_, AppState>, name: String, valu
 }
 
 #[tauri::command]
+pub fn account_status(app: AppHandle, provider: String) -> Result<AccountStatus, String> {
+    if !accounts::LOGIN_PROVIDERS.contains(&provider.as_str()) {
+        return Err(format!("no account for '{provider}'"));
+    }
+    Ok(accounts::status(&app, &provider))
+}
+
+/// « Se connecter avec … »: open the official CLI login and watch for its credentials.
+#[tauri::command]
+pub fn account_login(app: AppHandle, provider: String) -> Result<(), String> {
+    accounts::start_login(&app, &provider)
+}
+
+#[tauri::command]
 pub fn get_secret_names(state: State<'_, AppState>) -> Vec<String> {
     secrets::names(&state.db)
 }
@@ -313,9 +366,38 @@ pub fn get_secret_names(state: State<'_, AppState>) -> Vec<String> {
 // Layout, notes, todos
 // ---------------------------------------------------------------------------------------------
 
+/// Widgets introduced after a layout was first saved, added once (removing them afterwards sticks).
+const LAYOUT_MIGRATIONS: &[(&str, &str, &str)] = &[("layout_migration_volume", "volume", "1x1")];
+
+/// Insert `widget_id` before the clock (or at the end) unless the layout already has it.
+pub fn add_widget_once(layout: &mut Vec<Value>, widget_id: &str, span: &str) -> bool {
+    if layout.iter().any(|item| item.get("widgetId").and_then(|w| w.as_str()) == Some(widget_id)) {
+        return false;
+    }
+    let item = serde_json::json!({ "instanceId": format!("{widget_id}-default"), "widgetId": widget_id, "span": span });
+    let at = layout.iter().position(|i| i.get("widgetId").and_then(|w| w.as_str()) == Some("clock")).unwrap_or(layout.len());
+    layout.insert(at, item);
+    true
+}
+
 #[tauri::command]
 pub fn get_layout(state: State<'_, AppState>) -> Option<Value> {
-    state.db.kv_get("layout").and_then(|json| serde_json::from_str(&json).ok())
+    let mut layout: Value = state.db.kv_get("layout").and_then(|json| serde_json::from_str(&json).ok())?;
+    if let Some(items) = layout.as_array_mut() {
+        let mut changed = false;
+        for (flag, widget, span) in LAYOUT_MIGRATIONS {
+            if state.db.kv_get(flag).is_none() {
+                changed |= add_widget_once(items, widget, span);
+                let _ = state.db.kv_set(flag, "1");
+            }
+        }
+        if changed {
+            if let Ok(json) = serde_json::to_string(&layout) {
+                let _ = state.db.kv_set("layout", &json);
+            }
+        }
+    }
+    Some(layout)
 }
 
 #[tauri::command]
@@ -370,4 +452,22 @@ pub fn delete_todo(state: State<'_, AppState>, list: String, id: i64) -> Result<
 pub fn clear_done_todos(state: State<'_, AppState>, list: String) -> Result<Vec<Todo>, String> {
     state.db.clear_done_todos(&list).map_err(|e| e.to_string())?;
     state.db.list_todos(&list).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_widget_is_added_once_before_the_clock() {
+        let mut layout: Vec<Value> = serde_json::from_str(r#"[{"instanceId":"a","widgetId":"apps","span":"auto"},{"instanceId":"c","widgetId":"clock","span":"1x1"}]"#).unwrap();
+        assert!(add_widget_once(&mut layout, "volume", "1x1"));
+        assert_eq!(layout[1]["widgetId"], "volume");
+        assert_eq!(layout[2]["widgetId"], "clock");
+        assert!(!add_widget_once(&mut layout, "volume", "1x1"));
+        assert_eq!(layout.len(), 3);
+        let mut no_clock: Vec<Value> = Vec::new();
+        assert!(add_widget_once(&mut no_clock, "volume", "1x1"));
+        assert_eq!(no_clock[0]["instanceId"], "volume-default");
+    }
 }

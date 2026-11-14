@@ -107,6 +107,17 @@ textarea {
   box-shadow: var(--lb-shadow);
 }
 
+/* Hoverable list row (volume devices, launcher results). */
+.lb-row {
+  transition: background-color 120ms ease;
+}
+.lb-row:hover {
+  background: var(--lb-card-hover);
+}
+.lb-row[data-active="true"] {
+  background: color-mix(in srgb, var(--lb-accent) 26%, transparent);
+}
+
 .lb-muted {
   color: var(--lb-muted);
 }

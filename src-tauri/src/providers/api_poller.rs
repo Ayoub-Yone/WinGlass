@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::ical_parser;
+use super::{accounts, ical_parser};
 use crate::AppState;
 use crate::storage::secrets;
 use crate::storage::settings::Settings;
@@ -50,7 +50,7 @@ enum Outcome {
 type R<T> = Result<T, String>;
 
 static CACHE: Lazy<Mutex<HashMap<String, ProviderResult>>> = Lazy::new(|| Mutex::new(HashMap::new()));
-static CLIENT: Lazy<Client> = Lazy::new(|| {
+pub(crate) static CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent(concat!("lumabar/", env!("CARGO_PKG_VERSION"), " (Windows)"))
@@ -153,19 +153,36 @@ fn parse_claude_usage(v: &Value) -> Value {
     json!({ "provider": "Claude", "plan": Value::Null, "tiers": tiers })
 }
 
+async fn claude_oauth_usage(token: &str) -> R<Value> {
+    send_json(
+        CLIENT
+            .get("https://api.anthropic.com/api/oauth/usage")
+            .bearer_auth(token)
+            .header("anthropic-beta", "oauth-2025-04-20"),
+    )
+    .await
+}
+
 async fn fetch_claude(ctx: &Ctx) -> R<Outcome> {
     if let Some(token) = ctx.secret("claude_oauth_token") {
-        let v = send_json(
-            CLIENT
-                .get("https://api.anthropic.com/api/oauth/usage")
-                .bearer_auth(token)
-                .header("anthropic-beta", "oauth-2025-04-20"),
-        )
-        .await?;
-        return Ok(Outcome::Data(parse_claude_usage(&v)));
+        return Ok(Outcome::Data(parse_claude_usage(&claude_oauth_usage(&token).await?)));
+    }
+    if ctx.settings.providers.use_local_cli_credentials {
+        // Claude Code's own sign-in (~/.claude/.credentials.json), refreshed when expired.
+        if let Some(token) = accounts::claude_cli_token(&CLIENT, false).await? {
+            let usage = match claude_oauth_usage(&token).await {
+                // Revoked early (e.g. signed in elsewhere): rotate once and retry.
+                Err(err) if err.starts_with("HTTP 401") => {
+                    let fresh = accounts::claude_cli_token(&CLIENT, true).await?.ok_or(err)?;
+                    claude_oauth_usage(&fresh).await?
+                }
+                other => other?,
+            };
+            return Ok(Outcome::Data(parse_claude_usage(&usage)));
+        }
     }
     let Some(session) = ctx.secret("claude_session_key") else {
-        return Ok(Outcome::Unconfigured("Add a Claude session key or OAuth token in Settings › Accounts".into()));
+        return Ok(Outcome::Unconfigured("Sign in with Claude (or add a session key / OAuth token) in Settings › Accounts".into()));
     };
     let cookie = format!("sessionKey={session}");
     let orgs = send_json(CLIENT.get("https://claude.ai/api/organizations").header("Cookie", &cookie)).await?;
@@ -199,7 +216,7 @@ async fn fetch_chatgpt(ctx: &Ctx) -> R<Outcome> {
         }
     }
     let Some(token) = token else {
-        return Ok(Outcome::Unconfigured("Add a ChatGPT access token (or enable local Codex CLI credentials)".into()));
+        return Ok(Outcome::Unconfigured("Sign in with ChatGPT (or add an access token) in Settings › Accounts".into()));
     };
     let mut req = CLIENT.get("https://chatgpt.com/backend-api/wham/usage").bearer_auth(token);
     if let Some(account) = account {
@@ -247,7 +264,7 @@ async fn fetch_gemini(ctx: &Ctx) -> R<Outcome> {
         }
     }
     let Some(token) = token else {
-        return Ok(Outcome::Unconfigured("Add a Gemini OAuth token (or enable local Gemini CLI credentials)".into()));
+        return Ok(Outcome::Unconfigured("Sign in with Gemini (or add an OAuth token) in Settings › Accounts".into()));
     };
     let mut project = ctx.secret("gemini_project_id");
     if project.is_none() {

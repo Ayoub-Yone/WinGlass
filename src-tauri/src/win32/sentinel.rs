@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 
 use once_cell::sync::OnceCell;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -19,7 +19,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetMessageW,
     MSG, RegisterClassW, RegisterWindowMessageW, TranslateMessage, WINEVENT_OUTOFCONTEXT,
     WINEVENT_SKIPOWNPROCESS, WM_ENDSESSION, WM_HOTKEY, WM_QUERYENDSESSION, WNDCLASSW,
-    WM_CLOSE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    WM_CLOSE, WS_EX_TOOLWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP, LWA_ALPHA,
+    SetLayeredWindowAttributes, ShowWindow, SW_SHOWNOACTIVATE,
 };
 use windows::core::w;
 
@@ -120,17 +121,19 @@ pub fn start(callback: Callback) {
             RegisterClassW(&wc);
             TASKBAR_CREATED_MSG.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::SeqCst);
 
-            // A real (never shown) top-level window: HWND_MESSAGE windows do not receive
-            // WM_QUERYENDSESSION or broadcast messages such as TaskbarCreated.
+            // A real top-level window: HWND_MESSAGE windows do not receive WM_QUERYENDSESSION or
+            // broadcast messages such as TaskbarCreated. It is *visible* (1x1, fully transparent,
+            // off-screen, click-through, never activated) so a graceful `taskkill` still has a
+            // window to send WM_CLOSE to while the dock and toast are hidden behind a fullscreen app.
             let hwnd = match CreateWindowExW(
-                WS_EX_TOOLWINDOW,
+                WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
                 class_name,
                 w!("lumabar sentinel"),
-                WS_OVERLAPPED,
-                0,
-                0,
-                0,
-                0,
+                WS_POPUP,
+                -32000,
+                -32000,
+                1,
+                1,
                 None,
                 None,
                 Some(instance.into()),
@@ -142,6 +145,9 @@ pub fn start(callback: Callback) {
                     return;
                 }
             };
+
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
             if let Err(err) = RegisterHotKey(
                 Some(hwnd),

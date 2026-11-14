@@ -29,6 +29,7 @@ import {
   Users,
   Watch,
   CloudSun,
+  Volume2,
 } from "lucide-react";
 import type { I18n } from "../i18n";
 import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/lumabar";
@@ -55,12 +56,13 @@ import {
   PomodoroWidget,
   QuickFoldersWidget,
   QuickNotesWidget,
-  SearchWidget,
   StopwatchWidget,
   TodosWidget,
   WeatherWidget,
   WorldClocksWidget,
 } from "./UtilityWidgets";
+import { SearchWidget } from "./SearchWidget";
+import { VolumeWidget } from "./VolumeWidget";
 
 const S1: Span[] = ["1x1"];
 const S12: Span[] = ["1x1", "2x1"];
@@ -106,10 +108,11 @@ export const WIDGETS: WidgetDefinition[] = [
   { id: "network", name: "Network", description: "Upload and download throughput", category: "System", sizes: S123, defaultSize: "2x1", icon: Network, keywords: ["bandwidth", "speed", "internet"], component: NetworkWidget },
   { id: "battery", name: "Battery", description: "Charge level and charging state", category: "System", sizes: S12, defaultSize: "1x1", icon: BatteryFull, keywords: ["power", "charge"], component: BatteryWidget },
   { id: "storage", name: "Free Storage", description: "Free space on the system drive", category: "System", sizes: S12, defaultSize: "1x1", icon: HardDrive, keywords: ["disk", "space", "drive"], component: StorageWidget },
+  { id: "volume", name: "Volume", description: "System volume, mute and output device", category: "System", sizes: S12, defaultSize: "1x1", icon: Volume2, keywords: ["sound", "audio", "speaker", "mute", "son", "haut-parleur", "sourdine"], component: VolumeWidget },
   { id: "keyboard", name: "Keyboard Layout", description: "Active input language (ENG / FRA)", category: "System", sizes: S1, defaultSize: "1x1", icon: Keyboard, keywords: ["language", "input", "ime"], component: KeyboardLayoutWidget },
 
   { id: "clock", name: "Clock", description: "Local time and date", category: "Utilities", sizes: S12, defaultSize: "1x1", icon: Clock, keywords: ["time", "date"], component: ClockWidget },
-  { id: "search", name: "Search", description: "Search or open apps, files and URLs", category: "Utilities", sizes: S23, defaultSize: "2x1", icon: Search, keywords: ["launcher", "start", "find"], component: SearchWidget },
+  { id: "search", name: "Search", description: "Search and launch installed apps, or open a URL", category: "Utilities", sizes: S23, defaultSize: "2x1", icon: Search, keywords: ["launcher", "start", "find"], component: SearchWidget },
   { id: "world-clocks", name: "World Clocks", description: "NYC, LDN, TYO analog + digital", category: "Utilities", sizes: S123, defaultSize: "3x1", icon: Globe, keywords: ["time zones", "clocks"], component: WorldClocksWidget },
   { id: "weather", name: "Hourly Weather", description: "Local forecast strip (Open-Meteo)", category: "Utilities", sizes: S123, defaultSize: "3x1", icon: CloudSun, keywords: ["forecast", "temperature"], providerId: "weather", component: WeatherWidget },
   { id: "folders", name: "Quick Folders", description: "Downloads, Screenshots, Recent, Recycle Bin", category: "Utilities", sizes: S123, defaultSize: "2x1", icon: FolderOpen, keywords: ["explorer", "files", "downloads"], component: QuickFoldersWidget },
@@ -171,6 +174,7 @@ export const DEFAULT_LAYOUT: LayoutItem[] = [
   { instanceId: "quick-toggles-default", widgetId: "quick-toggles", span: "2x1" },
   { instanceId: "cpu-default", widgetId: "cpu", span: "1x1" },
   { instanceId: "weather-default", widgetId: "weather", span: "2x1" },
+  { instanceId: "volume-default", widgetId: "volume", span: "1x1" },
   { instanceId: "clock-default", widgetId: "clock", span: "1x1" },
 ];
 

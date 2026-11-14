@@ -34,7 +34,8 @@ pub struct AppState {
 
 /// Restore the native taskbar and exit the process.
 pub fn restore_and_quit(app: &AppHandle) {
-    taskbar::restore();
+    taskbar::restore_for_exit();
+    win32::arm_exit_watchdog();
     app.exit(0);
 }
 
@@ -153,7 +154,14 @@ pub fn run() {
             commands::activate_window,
             commands::launch_app,
             commands::open_target,
-            commands::windows_search,
+            commands::search_installed_apps,
+            commands::audio_state,
+            commands::audio_set_volume,
+            commands::audio_step,
+            commands::audio_set_mute,
+            commands::audio_set_device,
+            commands::account_status,
+            commands::account_login,
             commands::media_state,
             commands::media_command,
             commands::media_pause,
@@ -214,6 +222,8 @@ pub fn run() {
                 SentinelEvent::CloseRequested => restore_and_quit(&sentinel_handle),
                 SentinelEvent::TaskbarRecreated => taskbar::reapply(),
                 SentinelEvent::ForegroundChanged(hwnd) => {
+                    // Alt+Tab / Win key out of a fullscreen game: re-evaluate the dock right now.
+                    window_manager::notify_foreground_changed();
                     let _ = sentinel_handle.emit_to("dock", "apps:foreground", hwnd as i64);
                 }
             }));
@@ -222,8 +232,10 @@ pub fn run() {
             window_manager::start_fullscreen_watch(handle.clone());
             graphics::start(handle.clone());
             graphics::configure(&handle, settings.theme == "liquid-glass", &settings.glass_backdrop);
-            win32::media_smtc::start(handle.clone());
             win32::memory::start();
+            win32::media_smtc::start(handle.clone());
+            win32::audio::start(handle.clone());
+            win32::app_search::warm();
             win32::screen_time::start(handle.clone());
             win32::telemetry::start(handle.clone());
             providers::api_poller::start(handle.clone());
@@ -235,7 +247,8 @@ pub fn run() {
 
     app.run(|_app, event| {
         if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
-            taskbar::restore();
+            taskbar::restore_for_exit();
+            win32::arm_exit_watchdog();
         }
     });
 
