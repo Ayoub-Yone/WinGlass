@@ -21,11 +21,21 @@
 //               visible on pitch black
 //             · soft inner ambient shadow, crisp 1px specular light catch along the top edge
 //             · anti-aliased capsule mask
+//             · hover (iOS 26 liquid glass): the capsule's screen-centre edge swells over the
+//               hovered icon (+6.5px) with gentle inward pinches (≈−1.6px) over the shrunken
+//               neighbours — a Mexican-hat profile 11.5·e^(−u²) − 5·e^(−u²/4), u = (x−hx)/R —
+//               the backdrop inside the bulge is magnified by a radial lens with ±0.0032
+//               dispersion, and the rim light + a specular caustic trace the curved edge.
+//               Hover only re-runs this composite pass — the blur stays cached.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
 import { GLASS_TINT_RGB, type FrostPreset } from "../engine/ThemeEngine";
 import { subscribe } from "../lib/ipc";
+import { getGlassHover, onGlassHover } from "../lib/magnify";
+
+/** Transparent CSS px above and below the pill so the bulge has room inside the canvas. */
+const BULGE_PAD = 10;
 
 const VERT = `#version 300 es
 in vec2 a_pos;
@@ -106,6 +116,11 @@ uniform float u_dpr;
 uniform vec4 u_tint;      // matte veil colour + base opacity
 uniform vec4 u_inner;     // pill rect inside the blurred frame: xy = offset, zw = scale (uv units)
 uniform float u_grain;    // micro-grain amplitude (~0.012)
+uniform float u_pad;      // device px of empty canvas above and below the pill (bulge room)
+uniform float u_hoverActive;  // 0..1 (smoothed)
+uniform float u_hoverX;       // device px from the canvas' left edge
+uniform float u_hoverRadius;  // device px
+uniform float u_edgeDir;      // +1 docked at the bottom (swell upward), -1 docked at the top
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
@@ -124,18 +139,50 @@ vec3 glass(vec2 uv) {
   return texture(u_blur, u_inner.xy + uv * u_inner.zw).rgb;
 }
 
+// Distance from the cursor in bulge radii, at canvas-centred x.
+float hoverU(float x) {
+  return (x + u_size.x * 0.5 - u_hoverX) / max(u_hoverRadius, 1.0);
+}
+
+// Lens strength: Gaussian around the cursor.
+float hoverWeight(float x) {
+  float u = hoverU(x);
+  return u_hoverActive * exp(-u * u);
+}
+
+// Outline offset in device px: +6.5 over the cursor, a gentle pinch (min ≈ −1.6 at u ≈ 2) over
+// the shrunken neighbours, 0 far away.
+float bulgePx(float x) {
+  float u2 = hoverU(x);
+  u2 *= u2;
+  return u_hoverActive * u_dpr * (11.5 * exp(-u2) - 5.0 * exp(-0.25 * u2));
+}
+
+// The capsule with its screen-centre edge displaced by bulgePx (the screen-edge side stays put).
+float sdPill(vec2 p, vec2 half_pill, float r) {
+  float b = bulgePx(p.x);
+  float hy = half_pill.y + 0.5 * b;
+  vec2 q = p - vec2(0.0, u_edgeDir * 0.5 * b);
+  return sdRoundedBox(q, vec2(half_pill.x, hy), clamp(r + 0.5 * b, 0.0, hy));
+}
+
 void main() {
   vec2 half_size = u_size * 0.5;
+  vec2 half_pill = vec2(half_size.x, half_size.y - u_pad);
+  vec2 pill_size = half_pill * 2.0;
   vec2 p = v_uv * u_size - half_size;
-  float r = min(u_radius, min(half_size.x, half_size.y));
-  float d = sdRoundedBox(p, half_size, r);
+  float r = min(u_radius, min(half_pill.x, half_pill.y));
+  float d = sdPill(p, half_pill, r);
 
-  // Outward surface normal from the SDF gradient.
+  // Outward surface normal from the SDF gradient (follows the bulge's curve).
   vec2 e = vec2(1.0, 0.0);
   vec2 n = vec2(
-    sdRoundedBox(p + e.xy, half_size, r) - sdRoundedBox(p - e.xy, half_size, r),
-    sdRoundedBox(p + e.yx, half_size, r) - sdRoundedBox(p - e.yx, half_size, r));
+    sdPill(p + e.xy, half_pill, r) - sdPill(p - e.xy, half_pill, r),
+    sdPill(p + e.yx, half_pill, r) - sdPill(p - e.yx, half_pill, r));
   n = normalize(n + 1e-6);
+  float lensW = hoverWeight(p.x);
+  // Pill-space uv (0..1 across the resting pill; the bulge reads the capture margin beyond it).
+  vec2 puv = (p + half_pill) / pill_size;
 
   // Optical edge: a 10px bevel with a circular profile, so the bend starts imperceptibly and
   // steepens smoothly towards the rim (no visible seam where refraction begins).
@@ -145,12 +192,20 @@ void main() {
   // Frosted diffusion: every pixel looks through the glass at a slightly different angle.
   float g1 = hash12(gl_FragCoord.xy);
   float g2 = hash12(gl_FragCoord.xy + 61.7);
-  vec2 scatter = (vec2(g1, g2) - 0.5) * (u_grain / 0.012) * (1.5 * u_dpr) / u_size;
+  vec2 scatter = (vec2(g1, g2) - 0.5) * (u_grain / 0.012) * (1.5 * u_dpr) / pill_size;
 
-  vec2 uv = v_uv - n * bend * (14.0 * u_dpr) / u_size + scatter;
+  vec2 uv = puv - n * bend * (14.0 * u_dpr) / pill_size + scatter;
 
-  // Chromatic dispersion: R and B pulled ±0.0015 along the normal at the rim.
-  float ca = 0.0015 * bend;
+  // Liquid lens under the cursor: radial magnification of the backdrop toward the hover centre,
+  // strongest in the middle of the bulge.
+  vec2 lensCenter = vec2((u_hoverX - (u_size.x * 0.5 - half_pill.x)) / pill_size.x, 0.5);
+  vec2 toC = uv - lensCenter;
+  float lensRefract = 0.14 * lensW * (1.0 - 0.5 * clamp(length(toC * vec2(pill_size.x / pill_size.y, 1.0)) * 0.5, 0.0, 1.0));
+  uv = lensCenter + toC * (1.0 - lensRefract);
+
+  // Chromatic dispersion: R and B pulled ±0.0015 along the normal at the rim, up to ±0.0032 in
+  // the bulge.
+  float ca = mix(0.0015, 0.0032, lensW) * max(bend, 0.35 * lensW);
   vec3 col;
   col.r = glass(uv + n * ca).r;
   col.g = glass(uv).g;
@@ -173,6 +228,9 @@ void main() {
   float top = smoothstep(0.25, 0.9, n.y);
   float bottom = smoothstep(0.25, 0.9, -n.y);
   col = mix(col, vec3(1.0), rim * (0.26 * top + 0.07 * bottom + 0.045));
+  // Specular caustic tracing the swollen edge: a soft band just inside the curved rim.
+  float caustic = lensW * smoothstep(-5.0 * u_dpr, -0.5 * u_dpr, d) * (1.0 - smoothstep(-0.5 * u_dpr, 0.6 * u_dpr, d));
+  col = mix(col, vec3(1.0), caustic * (0.22 * top + 0.12 * bottom + 0.05));
 
   // Ultra-fine procedural grain.
   col += (g1 - 0.5) * 2.0 * u_grain;
@@ -293,6 +351,7 @@ class GlassRenderer {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    this.frameSeq++;
   }
 
   private ensureChain(levels: number): void {
@@ -324,20 +383,33 @@ class GlassRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  render(radiusCss: number, frost: FrostPreset): boolean {
+  /** Last blurred half-res texture (reused by hover-only redraws). */
+  private blurred: WebGLTexture | null = null;
+  private blurKey = "";
+
+  /** Blur (when the frame / frost / size changed) and composite. */
+  render(radiusCss: number, frost: FrostPreset, padCss: number): boolean {
     if (!this.source) return false;
+    const key = `${this.frameSeq}|${frost.id}|${frost.levels}|${frost.offset}|${frost.gauss}|${this.srcW}x${this.srcH}`;
+    if (key !== this.blurKey || !this.blurred) {
+      this.blurred = this.blur(frost);
+      this.blurKey = key;
+    }
+    return this.composite(radiusCss, frost, padCss);
+  }
+
+  private frameSeq = 0;
+
+  private blur(frost: FrostPreset): WebGLTexture {
     const gl = this.gl;
-    const dpr = window.devicePixelRatio || 1;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    if (w === 0 || h === 0) return false;
+    const source = this.source as WebGLTexture;
     const levels = Math.max(2, Math.min(6, Math.round(frost.levels)));
     this.ensureChain(levels);
     gl.bindVertexArray(this.vao);
     gl.disable(gl.BLEND);
 
     // Down the pyramid…
-    let input = this.source;
+    let input = source;
     let inW = this.srcW;
     let inH = this.srcH;
     for (let i = 0; i < levels; i++) {
@@ -376,6 +448,20 @@ class GlassRenderer {
       }
     }
 
+    return input;
+  }
+
+  /** Composite pass only (hover animation, frost tint, radius). */
+  composite(radiusCss: number, frost: FrostPreset, padCss: number): boolean {
+    const gl = this.gl;
+    const input = this.blurred;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    if (!input || w === 0 || h === 0) return false;
+    const dpr = window.devicePixelRatio || 1;
+    const hover = getGlassHover();
+    gl.bindVertexArray(this.vao);
+    gl.disable(gl.BLEND);
     gl.useProgram(this.comp);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, w, h);
@@ -389,6 +475,11 @@ class GlassRenderer {
     gl.uniform1f(this.loc(this.comp, "u_dpr"), dpr);
     gl.uniform4f(this.loc(this.comp, "u_tint"), GLASS_TINT_RGB[0], GLASS_TINT_RGB[1], GLASS_TINT_RGB[2], frost.tint);
     gl.uniform1f(this.loc(this.comp, "u_grain"), frost.grain);
+    gl.uniform1f(this.loc(this.comp, "u_pad"), padCss * dpr);
+    gl.uniform1f(this.loc(this.comp, "u_hoverActive"), hover.active);
+    gl.uniform1f(this.loc(this.comp, "u_hoverX"), (hover.x + 1) * dpr); // canvas starts 1px left of the pill
+    gl.uniform1f(this.loc(this.comp, "u_hoverRadius"), hover.radius * dpr);
+    gl.uniform1f(this.loc(this.comp, "u_edgeDir"), hover.edge === "top" ? -1 : 1);
     // The texture is uploaded flipped (v = 0 is the bottom row), so the pill's bottom edge maps to
     // `srcH - (y + h)`.
     const [ix, iy, iw, ih] = this.inner;
@@ -409,6 +500,7 @@ class GlassRenderer {
     this.chainKey = "";
     if (this.source) gl.deleteTexture(this.source);
     this.source = null;
+    this.blurred = null;
     gl.deleteProgram(this.down);
     gl.deleteProgram(this.up);
     gl.deleteProgram(this.gauss);
@@ -464,7 +556,7 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
     const draw = () => {
       raf = 0;
       if (disposed) return;
-      const ok = renderer.render(radiusRef.current, frostRef.current);
+      const ok = renderer.render(radiusRef.current, frostRef.current, BULGE_PAD);
       if (ok !== hasFrame) {
         hasFrame = ok;
         activeCb.current(ok);
@@ -514,6 +606,16 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
     ro.observe(canvas);
     resize();
 
+    // Hover bulge: composite-only redraws, one per animation frame at most.
+    let hoverRaf = 0;
+    const offHover = onGlassHover(() => {
+      if (hoverRaf || disposed || !hasFrame) return;
+      hoverRaf = requestAnimationFrame(() => {
+        hoverRaf = 0;
+        if (!disposed) renderer.composite(radiusRef.current, frostRef.current, BULGE_PAD);
+      });
+    });
+
     const off = subscribe("glass:frame", (seq) => {
       wanted = seq;
       void pull();
@@ -526,6 +628,8 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
       disposed = true;
       redraw.current = null;
       off();
+      offHover();
+      if (hoverRaf) cancelAnimationFrame(hoverRaf);
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
       renderer.dispose();
@@ -538,6 +642,14 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
     redraw.current?.();
   }, [frost, radius]);
 
-  // The canvas covers the pill's border box (the pill border is transparent while glass is live).
-  return <canvas ref={canvasRef} className="pointer-events-none absolute h-full w-full" style={{ inset: -1, width: "calc(100% + 2px)", height: "calc(100% + 2px)", borderRadius: radius }} aria-hidden />;
+  // The canvas covers the pill's border box (the pill border is transparent while glass is live)
+  // plus BULGE_PAD above and below, where the swollen capsule is drawn on hover.
+  return (
+    <canvas
+      ref={canvasRef}
+      className="pointer-events-none absolute"
+      style={{ left: -1, top: -1 - BULGE_PAD, width: "calc(100% + 2px)", height: `calc(100% + ${2 + 2 * BULGE_PAD}px)` }}
+      aria-hidden
+    />
+  );
 }

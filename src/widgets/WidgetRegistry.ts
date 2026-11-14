@@ -30,7 +30,7 @@ import {
   Watch,
   CloudSun,
   Volume2,
-  Layers,
+  ChevronUp,
 } from "lucide-react";
 import type { I18n } from "../i18n";
 import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/lumabar";
@@ -62,9 +62,9 @@ import {
   WeatherWidget,
   WorldClocksWidget,
 } from "./UtilityWidgets";
-import { ActiveAppsWidget } from "./ActiveAppsWidget";
 import { SearchWidget } from "./SearchWidget";
 import { VolumeWidget } from "./VolumeWidget";
+import { HiddenTrayButton } from "./HiddenTrayButton";
 
 const S1: Span[] = ["1x1"];
 const S12: Span[] = ["1x1", "2x1"];
@@ -73,7 +73,6 @@ const S23: Span[] = ["2x1", "3x1"];
 
 export const WIDGETS: WidgetDefinition[] = [
   { id: "apps", name: "Pinned & Running Apps", description: "Taskbar pins and open windows with focus dots", category: "Apps", sizes: ["auto"], defaultSize: "auto", icon: AppWindow, keywords: ["taskbar", "windows", "launcher", "pinned"], component: PinnedRunningApps },
-  { id: "open-apps", name: "Open Apps", description: "Every open application at a glance — switch or close", category: "Apps", sizes: S12, defaultSize: "2x1", icon: Layers, keywords: ["windows", "switcher", "alt tab", "running", "fenêtres", "applications"], component: ActiveAppsWidget },
 
   { id: "claude", name: "Claude", description: "Session, weekly and Opus usage limits", category: "AI", sizes: S123, defaultSize: "2x1", icon: Sparkles, keywords: ["anthropic", "limits", "usage", "opus"], providerId: "claude", component: ClaudeWidget },
   { id: "chatgpt", name: "ChatGPT", description: "5-hour and weekly Codex/ChatGPT limits", category: "AI", sizes: S123, defaultSize: "2x1", icon: Bot, keywords: ["openai", "codex", "gpt", "usage"], providerId: "chatgpt", component: ChatGptWidget },
@@ -111,6 +110,7 @@ export const WIDGETS: WidgetDefinition[] = [
   { id: "network", name: "Network", description: "Upload and download throughput", category: "System", sizes: S123, defaultSize: "2x1", icon: Network, keywords: ["bandwidth", "speed", "internet"], component: NetworkWidget },
   { id: "battery", name: "Battery", description: "Charge level and charging state", category: "System", sizes: S12, defaultSize: "1x1", icon: BatteryFull, keywords: ["power", "charge"], component: BatteryWidget },
   { id: "storage", name: "Free Storage", description: "Free space on the system drive", category: "System", sizes: S12, defaultSize: "1x1", icon: HardDrive, keywords: ["disk", "space", "drive"], component: StorageWidget },
+  { id: "hidden-tray", name: "Hidden Icons", description: "The ^ chevron: background tray apps (Riot, Discord, AMD…) in a popup", category: "System", sizes: ["auto"], defaultSize: "auto", icon: ChevronUp, keywords: ["tray", "notification area", "systray", "background", "icônes cachées", "zone de notification", "riot", "discord"], component: HiddenTrayButton },
   { id: "volume", name: "Volume", description: "System volume, mute and output device", category: "System", sizes: S12, defaultSize: "1x1", icon: Volume2, keywords: ["sound", "audio", "speaker", "mute", "son", "haut-parleur", "sourdine"], component: VolumeWidget },
   { id: "keyboard", name: "Keyboard Layout", description: "Active input language (ENG / FRA)", category: "System", sizes: S1, defaultSize: "1x1", icon: Keyboard, keywords: ["language", "input", "ime"], component: KeyboardLayoutWidget },
 
@@ -177,7 +177,7 @@ export const DEFAULT_LAYOUT: LayoutItem[] = [
   { instanceId: "quick-toggles-default", widgetId: "quick-toggles", span: "2x1" },
   { instanceId: "cpu-default", widgetId: "cpu", span: "1x1" },
   { instanceId: "weather-default", widgetId: "weather", span: "2x1" },
-  { instanceId: "open-apps-default", widgetId: "open-apps", span: "2x1" },
+  { instanceId: "hidden-tray-default", widgetId: "hidden-tray", span: "auto" },
   { instanceId: "volume-default", widgetId: "volume", span: "1x1" },
   { instanceId: "clock-default", widgetId: "clock", span: "1x1" },
 ];

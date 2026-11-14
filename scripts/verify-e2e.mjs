@@ -452,16 +452,82 @@ try {
     check("volume flyout closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="volume-popover"]')`)) === true);
   }
 
-  // ---------------------------------------------------------------- open apps box
-  const openApps = await dock.invoke("get_open_apps");
-  check("get_open_apps: real windows, never lumabar or the shell", Array.isArray(openApps) && openApps.every((a) => a.pid !== pid && a.title && a.name), JSON.stringify(openApps.slice(0, 4).map((a) => a.name)));
-  check("open apps box enabled by default", (await dock.eval(`Boolean(document.querySelector('[data-testid="open-apps-box"]'))`)) === true);
-  await dock.eval(`document.querySelector('[data-testid="open-apps-box"]').closest(".lb-card").click()`);
-  const panel = await waitFor(() => dock.eval(`(() => { const p = document.querySelector('[data-testid="open-apps-panel"]'); return p ? p.querySelectorAll('[data-testid="open-app-row"]').length : null; })()`), 3000);
-  check("open apps panel lists every open application", panel !== null && panel >= Math.min(1, openApps.length), `rows=${panel} apps=${openApps.length}`);
+  // ---------------------------------------------------------------- hidden-icons chevron (no tray strip in the bar)
+  const tray = await dock.invoke("get_tray_icons");
+  check("get_tray_icons: running tray apps with icons, never lumabar", Array.isArray(tray) && tray.every((t) => t.id && t.name && t.iconPng?.startsWith("data:image/png") && !/lumabar/i.test(t.exe)), JSON.stringify(tray.map((t) => t.name)));
+  const chevron = await waitFor(() => dock.eval(`(() => { const c = document.querySelector('.lb-pill [data-testid="tray-chevron"]'); return c ? { up: Boolean(c.querySelector('.lucide-chevron-up')), label: c.getAttribute('aria-label'), iconsInBar: document.querySelectorAll('.lb-pill [data-testid="tray-icon"]').length } : null; })()`), 6000);
+  check("one « Afficher les icônes cachées » chevron (^ docked bottom), zero tray icons in the bar", chevron && chevron.up && chevron.label === "Afficher les icônes cachées" && chevron.iconsInBar === 0, JSON.stringify(chevron));
+  await dock.eval(`document.querySelector('[data-testid="tray-chevron"]').click()`);
+  const trayPanel = await waitFor(() => dock.eval(`(() => { const p = document.querySelector('[data-testid="tray-panel"]'); if (!p) return null; const pr = p.closest('.lb-menu').getBoundingClientRect(); const cr = document.querySelector('[data-testid="tray-chevron"]').getBoundingClientRect(); return { cells: p.querySelectorAll('[data-testid="tray-icon"]').length, names: [...p.querySelectorAll('[data-testid="tray-icon"]')].map((b) => b.getAttribute('aria-label')), above: pr.bottom <= cr.top }; })()`), 3000);
+  check("chevron opens the frosted grid above it with every tray app", trayPanel && trayPanel.cells === tray.length && trayPanel.above, JSON.stringify(trayPanel));
+  if (trayPanel?.cells) {
+    const hoverName = await dock.eval(`(() => { const b = document.querySelector('[data-testid="tray-panel"] [data-testid="tray-icon"]'); b.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); b.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); return new Promise((r) => setTimeout(() => r({ want: b.getAttribute('aria-label'), got: document.querySelector('[data-testid="tray-hover-name"]').textContent }), 100)); })()`);
+    check("hovering a tray icon shows the app's name", hoverName.want === hoverName.got, JSON.stringify(hoverName));
+  }
   await dock.eval(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
   await sleep(200);
-  check("open apps panel closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="open-apps-panel"]')`)) === true);
+  check("tray grid closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="tray-panel"]')`)) === true);
+  await dock.eval(`document.querySelector('[data-testid="tray-chevron"]').click()`);
+  await sleep(200);
+  await dock.eval(`document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }))`);
+  await sleep(200);
+  check("tray grid closes on an outside click", (await dock.eval(`!document.querySelector('[data-testid="tray-panel"]')`)) === true);
+  const badActivate = await dock.invoke("activate_tray_icon", { id: "no-such-id", button: "right" }).then(() => "ok", (e) => String(e));
+  check("activate_tray_icon rejects unknown items without touching the shell", badActivate !== "ok", badActivate);
+
+  // ---------------------------------------------------------------- dock magnification (local compression) + glass bulge
+  const mag = await dock.eval(`(async () => {
+    const pill = document.querySelector('.lb-pill');
+    const slots = [...pill.querySelectorAll('[data-mag-group] [data-mag]')];
+    if (slots.length < 3) return { slots: slots.length };
+    const rest = slots.map((s) => s.getBoundingClientRect());
+    const stripL = rest[0].left, stripR = rest[rest.length - 1].right;
+    const move = (x, y) => document.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true }));
+    const settle = async (x, y) => { for (let i = 0; i < 40; i++) { move(x, y); await new Promise((res) => requestAnimationFrame(res)); } await new Promise((res) => setTimeout(res, 300)); };
+    const icon = (el) => el.querySelector('[data-mag-icon]');
+    const scale = (el) => parseFloat(icon(el).style.getPropertyValue("--mag-scale")) || 1;
+    const pr = pill.getBoundingClientRect();
+    const bounds = () => {
+      const r = slots.map((s) => s.getBoundingClientRect());
+      const ir = slots.map((s) => icon(s).getBoundingClientRect());
+      return {
+        left: Math.min(...r.map((x) => x.left)) - stripL,
+        right: stripR - Math.max(...r.map((x) => x.right)),
+        top: Math.min(...ir.map((x) => x.top)) - pr.top,
+        bottom: pr.bottom - Math.max(...ir.map((x) => x.bottom)),
+        // Icons (what you see) never overlap; slots only translate, so their invisible hit boxes may touch.
+        overlap: ir.slice(1).some((x, i) => x.left < ir[i].right - 0.5),
+      };
+    };
+    const mid = Math.floor(slots.length / 2);
+    await settle(rest[mid].left + rest[mid].width / 2, rest[mid].top + rest[mid].height / 2);
+    const label = document.querySelector(".lb-mag-label");
+    const out = {
+      slots: slots.length,
+      hovered: scale(slots[mid]),
+      n1: scale(slots[mid + 1] ?? slots[mid - 1]),
+      n2: slots[mid + 2] || slots[mid - 2] ? scale(slots[mid + 2] ?? slots[mid - 2]) : null,
+      lift: icon(slots[mid]).style.getPropertyValue("--mag-lift-y"),
+      label: label.textContent,
+      labelOpacity: Number(label.style.opacity),
+      mid: bounds(),
+    };
+    // Edge icons: the strip must stay inside its resting footprint.
+    await settle(rest[0].left + rest[0].width / 2, rest[0].top + rest[0].height / 2);
+    out.first = bounds();
+    await settle(rest[rest.length - 1].left + rest[rest.length - 1].width / 2, rest[0].top + rest[0].height / 2);
+    out.last = bounds();
+    move(rest[0].left, rest[0].top - 400);
+    await new Promise((res) => setTimeout(res, 700));
+    out.after = scale(slots[mid]);
+    return out;
+  })()`);
+  const inside = (b) => b && b.left >= -0.6 && b.right >= -0.6 && b.top >= -7.5 && b.bottom >= -0.6 && !b.overlap;
+  check("magnification: hovered ~1.32x, neighbours shrink (~0.84x, ~0.92x), lifted ~4px, label shown", mag.hovered > 1.28 && mag.hovered <= 1.3201 && mag.n1 > 0.8 && mag.n1 < 0.9 && (mag.n2 === null || (mag.n2 > 0.88 && mag.n2 < 0.96)) && parseFloat(mag.lift) <= -3.5 && mag.labelOpacity > 0.5 && mag.label, JSON.stringify(mag));
+  check("magnification: no icon leaves the strip / capsule, no overlap (middle, first and last icon)", inside(mag.mid) && inside(mag.first) && inside(mag.last), JSON.stringify({ mid: mag.mid, first: mag.first, last: mag.last }));
+  check("magnification settles back to 1x when the cursor leaves", mag.after === 1, JSON.stringify(mag));
+  const glassAfterHover = await dock.eval("(() => { const c = document.querySelector('.lb-pill canvas'); return c ? { w: c.width, h: c.height, pill: document.querySelector('.lb-pill').getBoundingClientRect().height * devicePixelRatio } : null; })()");
+  check("glass canvas extends above/below the pill for the bulge, shader still live", glassAfterHover && glassAfterHover.h > glassAfterHover.pill + 10 && /running$/.test(await dock.invoke("get_glass_status")), JSON.stringify(glassAfterHover));
 
   // ---------------------------------------------------------------- accounts auto-detection
   const claudeAccount = await dock.invoke("account_status", { provider: "claude" });
@@ -480,7 +546,8 @@ try {
   await patchSettings(dock, { hideOnFullscreen: false });
   note(`fullscreen probe: ${JSON.stringify(fs)}`);
   check("borderless fullscreen app in front hides the dock", fs.foregroundWasProbe && fs.inFullscreen === 0, JSON.stringify(fs));
-  check("Alt+Tab out of the fullscreen app wakes the dock immediately (< 400 ms)", fs.wakeMs >= 0 && fs.wakeMs < 400 && fs.afterAltTab >= 1, `wake ${fs.wakeMs} ms, switcher ${fs.switcherClass}, after ${fs.afterAltTab}`);
+  // After Alt is released the previous app returns: the dock hides again if that is a fullscreen game.
+  check("Alt+Tab out of the fullscreen app wakes the dock immediately (< 400 ms)", fs.wakeMs >= 0 && fs.wakeMs < 400, `wake ${fs.wakeMs} ms, switcher ${fs.switcherClass}, after ${fs.afterAltTab}`);
 
   // ---------------------------------------------------------------- layout audit (all widgets x spans x sizes x languages)
   await patchSettings(dock, { simulation: true });

@@ -16,8 +16,8 @@ use crate::providers::accounts::{self, AccountStatus};
 use crate::win32::app_search::{self, AppHit};
 use crate::win32::apps_enum::{self, AppEntry};
 use crate::win32::audio::{self, AppAudio, AudioState};
-use crate::win32::open_apps::{self, OpenApp};
 use crate::win32::liner;
+use crate::win32::tray_icons::{self, TrayIcon};
 use crate::win32::media_smtc::{self, MediaCommand, MediaState};
 use crate::win32::taskbar::{self, TaskbarMode};
 use crate::win32::telemetry;
@@ -266,24 +266,19 @@ pub async fn set_app_mute(pid: u32, muted: bool) -> Result<Vec<AppAudio>, String
 }
 
 // ---------------------------------------------------------------------------------------------
-// Open applications box
+// Notification-area (tray) icons — behind the dock's hidden-icons chevron
 // ---------------------------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_open_apps() -> Result<Vec<OpenApp>, String> {
-    blocking(|| Ok(open_apps::list())).await
+pub async fn get_tray_icons() -> Result<Vec<TrayIcon>, String> {
+    blocking(|| Ok(tray_icons::list())).await
 }
 
-/// Restore (if minimized) and bring to the front.
+/// `button`: "left" | "right" | "double". Forwarded to the app's real tray icon.
 #[tauri::command]
-pub fn focus_app_window(hwnd: isize) -> Result<(), String> {
-    open_apps::focus(hwnd)
-}
-
-/// WM_CLOSE, like the taskbar's « Fermer la fenêtre ».
-#[tauri::command]
-pub fn close_app_window(hwnd: isize) -> Result<(), String> {
-    open_apps::close(hwnd)
+pub async fn activate_tray_icon(id: String, button: String) -> Result<(), String> {
+    let button = tray_icons::Button::parse(&button).ok_or_else(|| format!("unknown button '{button}'"))?;
+    blocking(move || tray_icons::activate(&id, button)).await
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -408,8 +403,19 @@ pub fn get_secret_names(state: State<'_, AppState>) -> Vec<String> {
 /// (kv flag, widget, span, insert before the first of these widgets present — else at the end)
 const LAYOUT_MIGRATIONS: &[(&str, &str, &str, &[&str])] = &[
     ("layout_migration_volume", "volume", "1x1", &["clock"]),
-    ("layout_migration_open_apps", "open-apps", "2x1", &["volume", "clock"]),
+    ("layout_migration_hidden_tray", "hidden-tray", "auto", &["volume", "clock"]),
 ];
+
+/// Widgets that no longer exist (the open-apps box, the always-visible tray strip): dropped from
+/// stored layouts.
+const RETIRED_WIDGETS: &[&str] = &["open-apps", "system-tray"];
+
+/// Remove retired widgets; true when the layout changed.
+pub fn drop_retired(layout: &mut Vec<Value>) -> bool {
+    let before = layout.len();
+    layout.retain(|i| !i.get("widgetId").and_then(|w| w.as_str()).is_some_and(|w| RETIRED_WIDGETS.contains(&w)));
+    layout.len() != before
+}
 
 /// Insert `widget_id` before the first `anchors` widget present (or at the end) unless the layout
 /// already has it.
@@ -431,7 +437,7 @@ pub fn add_widget_once(layout: &mut Vec<Value>, widget_id: &str, span: &str, anc
 pub fn get_layout(state: State<'_, AppState>) -> Option<Value> {
     let mut layout: Value = state.db.kv_get("layout").and_then(|json| serde_json::from_str(&json).ok())?;
     if let Some(items) = layout.as_array_mut() {
-        let mut changed = false;
+        let mut changed = drop_retired(items);
         for (flag, widget, span, anchors) in LAYOUT_MIGRATIONS {
             if state.db.kv_get(flag).is_none() {
                 changed |= add_widget_once(items, widget, span, anchors);
@@ -513,12 +519,21 @@ mod tests {
         assert_eq!(layout[2]["widgetId"], "clock");
         assert!(!add_widget_once(&mut layout, "volume", "1x1", &["clock"]));
         assert_eq!(layout.len(), 3);
-        // Open apps lands just left of the volume widget.
-        assert!(add_widget_once(&mut layout, "open-apps", "2x1", &["volume", "clock"]));
-        assert_eq!(layout[1]["widgetId"], "open-apps");
+        // The hidden-icons chevron lands just left of the volume widget.
+        assert!(add_widget_once(&mut layout, "hidden-tray", "auto", &["volume", "clock"]));
+        assert_eq!(layout[1]["widgetId"], "hidden-tray");
         assert_eq!(layout[2]["widgetId"], "volume");
         let mut no_clock: Vec<Value> = Vec::new();
         assert!(add_widget_once(&mut no_clock, "volume", "1x1", &["clock"]));
         assert_eq!(no_clock[0]["instanceId"], "volume-default");
+    }
+
+    #[test]
+    fn retired_widgets_are_dropped_from_stored_layouts() {
+        let mut layout: Vec<Value> = serde_json::from_str(r#"[{"widgetId":"apps"},{"widgetId":"open-apps"},{"widgetId":"system-tray"},{"widgetId":"volume"}]"#).unwrap();
+        assert!(drop_retired(&mut layout));
+        let ids: Vec<&str> = layout.iter().filter_map(|i| i["widgetId"].as_str()).collect();
+        assert_eq!(ids, ["apps", "volume"]);
+        assert!(!drop_retired(&mut layout));
     }
 }

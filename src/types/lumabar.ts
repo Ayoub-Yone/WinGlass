@@ -332,17 +332,17 @@ export interface AppAudio {
   muted: boolean;
 }
 
-/** A real open application window (dock "active apps" box). */
-export interface OpenApp {
-  hwnd: number;
-  pid: number;
-  exe: string;
+/** A notification-area (tray) app, forwarded to its real tray icon on click. */
+export interface TrayIcon {
+  id: string;
   name: string;
-  title: string;
-  isFocused: boolean;
-  isMinimized: boolean;
-  iconKey: string;
+  exe: string;
+  /** PNG data URL. */
+  iconPng: string | null;
+  isHiddenOverflow: boolean;
 }
+
+export type TrayButton = "left" | "right" | "double";
 
 /** Integrated launcher result (Start Menu / Desktop / App Paths). */
 export interface AppHit {

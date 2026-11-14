@@ -6,10 +6,10 @@ pub mod guardian;
 pub mod liner;
 pub mod media_smtc;
 pub mod memory;
-pub mod open_apps;
 pub mod screen_time;
 pub mod sentinel;
 pub mod taskbar;
+pub mod tray_icons;
 pub mod telemetry;
 pub mod window_manager;
 

@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { AppIcon } from "../components/AppIcon";
 import { Popover, WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
-import { errorMessage, ipc, subscribe } from "../lib/ipc";
+import { errorMessage, ipc, on } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
 import type { AppAudio, AudioState, WidgetProps } from "../types/lumabar";
 
@@ -41,8 +41,19 @@ function setAudio(next: AudioState): void {
 function ensureStarted(): void {
   if (started) return;
   started = true;
-  subscribe("audio:state", setAudio);
-  void ipc.audioState().then(setAudio).catch(() => undefined);
+  // The worker only pushes on change, and the listener registers asynchronously: re-query once it
+  // is in place, and keep asking (every 2 s) until the default endpoint is bound.
+  void on("audio:state", setAudio).then(() => {
+    const poll = () =>
+      ipc
+        .audioState()
+        .then((s) => {
+          if (!audio.available || s.available) setAudio(s);
+          if (!s.available) window.setTimeout(poll, 2000);
+        })
+        .catch(() => window.setTimeout(poll, 2000));
+    void poll();
+  });
 }
 
 function useAudio(): AudioState {

@@ -7,7 +7,7 @@
 //!   console handlers and session-end messages.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
@@ -15,7 +15,7 @@ use windows::Win32::UI::Shell::{
     ABM_GETSTATE, ABM_SETSTATE, ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, IsWindowVisible, SW_HIDE, SW_SHOWNA, ShowWindow,
+    FindWindowExW, FindWindowW, IsWindowVisible, SW_HIDE, SW_SHOWNA, SW_SHOWNOACTIVATE, ShowWindow,
 };
 use windows::core::w;
 
@@ -53,6 +53,41 @@ static CURRENT_MODE: AtomicI64 = AtomicI64::new(0);
 /// Latched by `restore_for_exit`: once lumabar is quitting nothing may hide the taskbar again
 /// (the state file is already gone, so a later hard kill could not repair it).
 static QUITTING: AtomicBool = AtomicBool::new(false);
+/// `enforce_hidden` leaves the taskbar alone until this instant (ms since UNIX epoch).
+static ENFORCE_PAUSED_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// The dock forwards a click to a real tray icon: make the taskbar reachable for `grace` (its
+/// menus and the hidden-icons flyout need it), then `completely_hidden` hides it again.
+pub fn show_for_interaction(grace: std::time::Duration) {
+    if QUITTING.load(Ordering::SeqCst) {
+        return;
+    }
+    ENFORCE_PAUSED_UNTIL.store(now_ms() + grace.as_millis() as u64, Ordering::SeqCst);
+    if CURRENT_MODE.load(Ordering::SeqCst) == 2 {
+        for hwnd in find_taskbars() {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
+        }
+    }
+}
+
+/// Keep the interaction pause alive (a tray app's native menu is still open).
+pub fn extend_interaction(grace: std::time::Duration) {
+    if !QUITTING.load(Ordering::SeqCst) {
+        ENFORCE_PAUSED_UNTIL.fetch_max(now_ms() + grace.as_millis() as u64, Ordering::SeqCst);
+    }
+}
+
+/// The tray interaction is over (menu dismissed): hide the taskbar again right away.
+pub fn end_interaction() {
+    ENFORCE_PAUSED_UNTIL.store(0, Ordering::SeqCst);
+    enforce_hidden();
+}
 
 fn state_file() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("lumabar").join("taskbar_state.json"))
@@ -221,7 +256,7 @@ pub fn reapply() {
 
 /// In `completely_hidden` mode Windows re-shows the tray when Start opens; hide it again.
 pub fn enforce_hidden() {
-    if QUITTING.load(Ordering::SeqCst) || CURRENT_MODE.load(Ordering::SeqCst) != 2 {
+    if QUITTING.load(Ordering::SeqCst) || CURRENT_MODE.load(Ordering::SeqCst) != 2 || now_ms() < ENFORCE_PAUSED_UNTIL.load(Ordering::SeqCst) {
         return;
     }
     for hwnd in find_taskbars() {

@@ -24,6 +24,7 @@ import { getHub, useHub } from "../engine/DataHub";
 import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER, frostPreset } from "../engine/ThemeEngine";
 import { LANGUAGES, useI18n } from "../i18n";
 import { pushCapture, useHitRegion } from "../lib/hitRegions";
+import { GLASS_BULGE, MAG_HEADROOM, attachMagnifier } from "../lib/magnify";
 import { patchSettings, useSettings } from "../lib/hooks";
 import { ipc, subscribe } from "../lib/ipc";
 import { clamp } from "../lib/format";
@@ -83,12 +84,17 @@ export function DockContainer() {
 
   const pillRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Magnification: label pill + a hit region that also covers the headroom while icons are grown.
+  const magLabelRef = useRef<HTMLDivElement | null>(null);
+  const headroomRef = useRef<HTMLDivElement | null>(null);
+  const [magnifying, setMagnifying] = useState(false);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const pending = useRef<Pending | null>(null);
   const scrollTarget = useRef<number | null>(null);
   const scrollAnim = useRef(0);
 
   useHitRegion(pillRef, !fullscreen);
+  useHitRegion(headroomRef, !fullscreen && magnifying);
 
   const theme = THEMES[settings?.theme ?? "ios-glass"];
   const size = SIZES[settings?.size ?? "medium"];
@@ -351,6 +357,23 @@ export function DockContainer() {
     return items;
   };
 
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  // The glass capsule swells over the hovered icon only while the shader is live; elsewhere the
+  // icons must fit the rigid capsule.
+  const bulgeRef = useRef(0);
+  bulgeRef.current = theme.usesGlassShader && glassActive ? GLASS_BULGE : 0;
+  useEffect(() => {
+    const pill = pillRef.current;
+    if (!pill) return;
+    return attachMagnifier(pill, {
+      edge: () => positionRef.current,
+      bulge: () => bulgeRef.current,
+      label: magLabelRef.current,
+      onActiveChange: setMagnifying,
+    });
+  }, []);
+
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     const itemEl = (e.target as HTMLElement).closest<HTMLElement>("[data-instance]");
@@ -397,7 +420,19 @@ export function DockContainer() {
         onContextMenu={onContextMenu}
       >
         {theme.usesGlassShader && <LiquidGlassCanvas radius={size.radius} frost={frostPreset(settings?.glassFrost)} onActiveChange={setGlassActive} />}
-        <div ref={scrollRef} className="lb-noscroll relative flex h-full min-w-0 items-center overflow-x-auto" style={{ gap: "var(--lb-gap)" }}>
+        <div
+          ref={headroomRef}
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0"
+          style={{ top: -MAG_HEADROOM, bottom: -MAG_HEADROOM }}
+        />
+        <div ref={magLabelRef} className="lb-mag-label" style={position === "bottom" ? { bottom: `calc(100% + ${MAG_HEADROOM}px)` } : { top: `calc(100% + ${MAG_HEADROOM}px)` }} />
+        {/* Vertical headroom inside the horizontal scroller so magnified icons are not clipped. */}
+        <div
+          ref={scrollRef}
+          className="lb-noscroll relative flex min-w-0 items-center overflow-x-auto"
+          style={{ gap: "var(--lb-gap)", height: `calc(100% + ${2 * MAG_HEADROOM}px)`, paddingBlock: MAG_HEADROOM, marginBlock: -MAG_HEADROOM }}
+        >
           {(layout ?? []).map((item, index) => {
             const def = getWidget(item.widgetId);
             if (!def) return null;

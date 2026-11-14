@@ -97,6 +97,8 @@ function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => 
     <>
       <button
         ref={ref}
+        data-mag=""
+        data-mag-label={app.name}
         className="lb-icon-btn lb-focus relative flex h-full shrink-0 flex-col items-center justify-center rounded-[12px]"
         style={{ width: "calc(var(--lb-icon) + 12px)" }}
         title={app.windows.length === 1 ? app.windows[0].title : app.name}
@@ -105,16 +107,18 @@ function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => 
           if (e.button === 1) launch();
         }}
       >
-        {icon ? (
-          <img
-            src={icon}
-            alt=""
-            draggable={false}
-            style={{ width: "var(--lb-icon)", height: "var(--lb-icon)", opacity: allMinimized ? 0.72 : 1, imageRendering: "auto" }}
-          />
-        ) : (
-          <AppWindowIcon style={{ width: "var(--lb-icon)", height: "var(--lb-icon)" }} className="lb-muted" />
-        )}
+        <span data-mag-icon="" className="flex items-center justify-center" style={{ width: "var(--lb-icon)", height: "var(--lb-icon)" }}>
+          {icon ? (
+            <img
+              src={icon}
+              alt=""
+              draggable={false}
+              style={{ width: "var(--lb-icon)", height: "var(--lb-icon)", opacity: allMinimized ? 0.72 : 1, imageRendering: "auto" }}
+            />
+          ) : (
+            <AppWindowIcon style={{ width: "var(--lb-icon)", height: "var(--lb-icon)" }} className="lb-muted" />
+          )}
+        </span>
         <span
           className="absolute bottom-[2px] left-1/2 h-[3px] -translate-x-1/2 rounded-full"
           style={{
@@ -179,7 +183,7 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
 
   return (
     <div className="flex h-full shrink-0 items-center" title={error ?? undefined}>
-      <div className="flex h-full items-center gap-[2px]">
+      <div data-mag-group="apps" className="flex h-full items-center gap-[2px]">
         {apps.map((app) => (
           <AppButton key={app.id} app={app} onError={setError} />
         ))}

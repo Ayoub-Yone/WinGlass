@@ -7,7 +7,8 @@ import type {
   AppEntry,
   AppAudio,
   AppHit,
-  OpenApp,
+  TrayButton,
+  TrayIcon,
   AudioState,
   DockLayout,
   DockPosition,
@@ -57,9 +58,8 @@ export const ipc = {
   setAppVolume: (pid: number, volume: number) => invoke<AppAudio[]>("set_app_volume", { pid, volume: Math.round(Math.min(100, Math.max(0, volume))) }),
   setAppMute: (pid: number, muted: boolean) => invoke<AppAudio[]>("set_app_mute", { pid, muted }),
 
-  getOpenApps: () => invoke<OpenApp[]>("get_open_apps"),
-  focusAppWindow: (hwnd: number) => invoke<void>("focus_app_window", { hwnd }),
-  closeAppWindow: (hwnd: number) => invoke<void>("close_app_window", { hwnd }),
+  getTrayIcons: () => invoke<TrayIcon[]>("get_tray_icons"),
+  activateTrayIcon: (id: string, button: TrayButton) => invoke<void>("activate_tray_icon", { id, button }),
 
   mediaState: () => invoke<MediaState>("media_state"),
   mediaCommand: (action: "toggle" | "pause" | "play" | "next" | "previous") => invoke<void>("media_command", { action }),
