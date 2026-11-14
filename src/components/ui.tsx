@@ -212,6 +212,8 @@ export function Popover(props: {
       className="lb-menu lb-pop fixed z-50 p-3"
       style={{ ...style, transformOrigin: position === "bottom" ? "bottom center" : "top center", color: "var(--lb-text)" }}
       onPointerDown={(e) => e.stopPropagation()}
+      // Portaled, but React still bubbles to the dock: the wheel must scroll the popover, not the dock.
+      onWheel={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()}
     >
       {children}

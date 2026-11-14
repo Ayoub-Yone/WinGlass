@@ -51,9 +51,9 @@ function TierRow(props: { tier: UsageTier; now: number; long: boolean; balance?:
   return (
     <div className="flex min-w-0 items-center gap-1.5" style={{ fontSize: "var(--lb-small)", lineHeight: 1.1 }}>
       <span className="w-[42px] shrink-0 truncate lb-muted">{label}</span>
-      <ProgressBar value={tier.percent} color={color} height={4} className="min-w-[30px] flex-1" />
+      <ProgressBar value={tier.percent} color={color} height={4} className="min-w-[14px] flex-1" />
       {pace && (
-        <span title={i18n.t("ai.pace")}>
+        <span className="shrink-0" title={i18n.t("ai.pace")}>
           <AlertTriangle size={9} style={{ color: "var(--lb-amber)" }} />
         </span>
       )}

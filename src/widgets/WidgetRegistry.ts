@@ -30,6 +30,7 @@ import {
   Watch,
   CloudSun,
   Volume2,
+  Layers,
 } from "lucide-react";
 import type { I18n } from "../i18n";
 import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/lumabar";
@@ -61,6 +62,7 @@ import {
   WeatherWidget,
   WorldClocksWidget,
 } from "./UtilityWidgets";
+import { ActiveAppsWidget } from "./ActiveAppsWidget";
 import { SearchWidget } from "./SearchWidget";
 import { VolumeWidget } from "./VolumeWidget";
 
@@ -71,6 +73,7 @@ const S23: Span[] = ["2x1", "3x1"];
 
 export const WIDGETS: WidgetDefinition[] = [
   { id: "apps", name: "Pinned & Running Apps", description: "Taskbar pins and open windows with focus dots", category: "Apps", sizes: ["auto"], defaultSize: "auto", icon: AppWindow, keywords: ["taskbar", "windows", "launcher", "pinned"], component: PinnedRunningApps },
+  { id: "open-apps", name: "Open Apps", description: "Every open application at a glance — switch or close", category: "Apps", sizes: S12, defaultSize: "2x1", icon: Layers, keywords: ["windows", "switcher", "alt tab", "running", "fenêtres", "applications"], component: ActiveAppsWidget },
 
   { id: "claude", name: "Claude", description: "Session, weekly and Opus usage limits", category: "AI", sizes: S123, defaultSize: "2x1", icon: Sparkles, keywords: ["anthropic", "limits", "usage", "opus"], providerId: "claude", component: ClaudeWidget },
   { id: "chatgpt", name: "ChatGPT", description: "5-hour and weekly Codex/ChatGPT limits", category: "AI", sizes: S123, defaultSize: "2x1", icon: Bot, keywords: ["openai", "codex", "gpt", "usage"], providerId: "chatgpt", component: ChatGptWidget },
@@ -174,6 +177,7 @@ export const DEFAULT_LAYOUT: LayoutItem[] = [
   { instanceId: "quick-toggles-default", widgetId: "quick-toggles", span: "2x1" },
   { instanceId: "cpu-default", widgetId: "cpu", span: "1x1" },
   { instanceId: "weather-default", widgetId: "weather", span: "2x1" },
+  { instanceId: "open-apps-default", widgetId: "open-apps", span: "2x1" },
   { instanceId: "volume-default", widgetId: "volume", span: "1x1" },
   { instanceId: "clock-default", widgetId: "clock", span: "1x1" },
 ];

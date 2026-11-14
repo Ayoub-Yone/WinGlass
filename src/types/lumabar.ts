@@ -318,6 +318,32 @@ export interface AudioState {
   devices: AudioDevice[];
 }
 
+/** One app in the per-app volume mixer (all of its WASAPI sessions). */
+export interface AppAudio {
+  pid: number;
+  pids: number[];
+  exe: string;
+  /** Empty for the system-sounds session. */
+  name: string;
+  iconKey: string;
+  isSystem: boolean;
+  active: boolean;
+  volume: number;
+  muted: boolean;
+}
+
+/** A real open application window (dock "active apps" box). */
+export interface OpenApp {
+  hwnd: number;
+  pid: number;
+  exe: string;
+  name: string;
+  title: string;
+  isFocused: boolean;
+  isMinimized: boolean;
+  iconKey: string;
+}
+
 /** Integrated launcher result (Start Menu / Desktop / App Paths). */
 export interface AppHit {
   name: string;

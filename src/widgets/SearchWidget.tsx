@@ -4,8 +4,9 @@
 // results render in a frosted popover directly above (or below, top dock) the search card.
 //   ↑ / ↓ select · Enter launches and dismisses · Esc / click outside closes.
 
-import { AppWindow, Globe, Search } from "lucide-react";
+import { Globe, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { AppIcon } from "../components/AppIcon";
 import { Popover, WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc } from "../lib/ipc";
@@ -20,42 +21,6 @@ const URL_RE = /^(https?:\/\/)?[\w-]+(\.[\w-]+)+(:\d+)?(\/\S*)?$/i;
 
 export function looksLikeUrl(q: string): boolean {
   return URL_RE.test(q) && !q.includes(" ");
-}
-
-/** Bounded per-window icon cache (the backend LRU holds the PNGs; this only avoids re-asking). */
-const ICONS = new Map<string, string | null>();
-const ICON_LIMIT = 64;
-
-function useIcon(path: string): string | null {
-  const [url, setUrl] = useState<string | null>(() => ICONS.get(path) ?? null);
-  useEffect(() => {
-    if (ICONS.has(path)) {
-      setUrl(ICONS.get(path) ?? null);
-      return;
-    }
-    let alive = true;
-    void ipc
-      .getAppIcon(path)
-      .then((u) => {
-        if (ICONS.size >= ICON_LIMIT) ICONS.delete(ICONS.keys().next().value as string);
-        ICONS.set(path, u);
-        if (alive) setUrl(u);
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [path]);
-  return url;
-}
-
-function AppIcon({ path }: { path: string }) {
-  const url = useIcon(path);
-  return url ? (
-    <img src={url} alt="" className="h-6 w-6 shrink-0 object-contain" draggable={false} />
-  ) : (
-    <AppWindow size={20} className="shrink-0 lb-muted" />
-  );
 }
 
 export function SearchWidget({ span, preview }: WidgetProps) {
@@ -186,7 +151,7 @@ export function SearchWidget({ span, preview }: WidgetProps) {
             if (item.kind === "app") {
               return (
                 <button key={item.hit.path} data-testid="search-hit" {...common}>
-                  <AppIcon path={item.hit.path} />
+                  <AppIcon iconKey={item.hit.path} />
                   <span className="min-w-0 flex-1 truncate font-medium">{item.hit.name}</span>
                   <span className="max-w-[40%] shrink-0 truncate lb-faint" style={{ fontSize: "var(--lb-small)" }}>
                     {item.hit.folder ?? t("search.app")}

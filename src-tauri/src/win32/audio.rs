@@ -10,6 +10,8 @@
 //!   device appears / disappears.
 //! * Switching the default output uses the shell's `IPolicyConfig` (the interface the Sound
 //!   control panel itself uses; there is no documented API for it).
+//! * Per-app mixer: `IAudioSessionManager2` on the default device; sessions are grouped by
+//!   executable (a browser plays through several), expired sessions are dropped.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
@@ -23,12 +25,15 @@ use windows::Win32::Media::Audio::Endpoints::{
     IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
 };
 use windows::Win32::Media::Audio::{
+    AudioSessionStateActive, AudioSessionStateExpired, IAudioSessionControl2, IAudioSessionManager2, ISimpleAudioVolume,
     AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, DEVICE_STATE_ACTIVE, EDataFlow, ERole, IMMDevice, IMMDeviceEnumerator,
     IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator, eCommunications, eConsole, eMultimedia, eRender,
 };
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, STGM_READ};
-use windows::core::{GUID, PCWSTR, PWSTR, implement};
+use windows::core::{GUID, Interface, PCWSTR, PWSTR, implement};
+
+use super::apps_enum;
 
 /// PKEY_Device_FriendlyName ("Speakers (Realtek(R) Audio)").
 const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY =
@@ -63,6 +68,85 @@ impl AudioState {
     }
 }
 
+/// One app in the per-app mixer (all of its sessions on the default device).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppAudio {
+    /// Representative process id (commands address the whole group through it).
+    pub pid: u32,
+    pub pids: Vec<u32>,
+    pub exe: String,
+    /// Product name; empty for the system-sounds session (the UI labels it « Sons système »).
+    pub name: String,
+    pub icon_key: String,
+    pub is_system: bool,
+    /// Some session of the app is currently playing.
+    pub active: bool,
+    pub volume: u32,
+    pub muted: bool,
+}
+
+/// One WASAPI session as read from the device.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawSession {
+    pub pid: u32,
+    pub exe: String,
+    pub is_system: bool,
+    pub active: bool,
+    pub expired: bool,
+    pub volume: f32,
+    pub muted: bool,
+}
+
+fn group_key(r: &RawSession) -> String {
+    if r.is_system {
+        "::system".into()
+    } else if r.exe.is_empty() {
+        format!("::pid:{}", r.pid)
+    } else {
+        r.exe.to_ascii_lowercase()
+    }
+}
+
+/// Group sessions by executable (expired ones dropped). Order: system sounds first, then playing
+/// apps, then the rest by name. `name_of` resolves product names (version info in production).
+pub fn group_sessions(raw: &[RawSession], name_of: impl Fn(&str) -> String) -> Vec<AppAudio> {
+    let mut groups: Vec<(String, AppAudio)> = Vec::new();
+    for r in raw.iter().filter(|r| !r.expired) {
+        let key = group_key(r);
+        if let Some((_, g)) = groups.iter_mut().find(|(k, _)| *k == key) {
+            if !g.pids.contains(&r.pid) {
+                g.pids.push(r.pid);
+            }
+            g.active |= r.active;
+            // The group is muted only when every session is; its level is the loudest session's.
+            g.muted &= r.muted;
+            g.volume = g.volume.max(scalar_to_percent(r.volume));
+            continue;
+        }
+        let name = if r.is_system { String::new() } else if r.exe.is_empty() { format!("PID {}", r.pid) } else { name_of(&r.exe) };
+        groups.push((
+            key,
+            AppAudio {
+                pid: r.pid,
+                pids: vec![r.pid],
+                exe: r.exe.clone(),
+                name,
+                icon_key: r.exe.clone(),
+                is_system: r.is_system,
+                active: r.active,
+                volume: scalar_to_percent(r.volume),
+                muted: r.muted,
+            },
+        ));
+    }
+    let mut out: Vec<AppAudio> = groups.into_iter().map(|(_, g)| g).collect();
+    out.sort_by(|a, b| {
+        b.is_system.cmp(&a.is_system).then(b.active.cmp(&a.active)).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    out
+}
+
 /// `scalar` (0.0–1.0) -> percentage as Windows rounds it.
 pub fn scalar_to_percent(scalar: f32) -> u32 {
     (scalar.clamp(0.0, 1.0) * 100.0).round() as u32
@@ -86,6 +170,10 @@ enum Command {
     SetDefault(String),
     /// Default device changed / devices added or removed (from the notification client).
     Rebind,
+    /// Per-app mixer (replies on its own channel).
+    Sessions(Sender<Result<Vec<AppAudio>, String>>),
+    SetAppVolume(u32, u32, Sender<Result<Vec<AppAudio>, String>>),
+    SetAppMute(u32, bool, Sender<Result<Vec<AppAudio>, String>>),
 }
 
 type Reply = Sender<Result<AudioState, String>>;
@@ -139,6 +227,25 @@ pub fn set_mute(muted: Option<bool>) -> Result<AudioState, String> {
 
 pub fn set_default_device(id: String) -> Result<AudioState, String> {
     request(Command::SetDefault(id))
+}
+
+fn request_sessions(make: impl FnOnce(Sender<Result<Vec<AppAudio>, String>>) -> Command) -> Result<Vec<AppAudio>, String> {
+    let tx = TX.get().ok_or("the audio service is not running")?;
+    let (reply_tx, reply_rx) = mpsc::channel();
+    tx.lock().send((make(reply_tx), None)).map_err(|_| "the audio service stopped".to_string())?;
+    reply_rx.recv_timeout(Duration::from_secs(3)).map_err(|_| "the audio service did not answer".to_string())?
+}
+
+pub fn sessions() -> Result<Vec<AppAudio>, String> {
+    request_sessions(Command::Sessions)
+}
+
+pub fn set_app_volume(pid: u32, volume: u32) -> Result<Vec<AppAudio>, String> {
+    request_sessions(|r| Command::SetAppVolume(pid, volume.min(100), r))
+}
+
+pub fn set_app_mute(pid: u32, muted: bool) -> Result<Vec<AppAudio>, String> {
+    request_sessions(|r| Command::SetAppMute(pid, muted, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -278,6 +385,7 @@ fn list_devices(enumerator: &IMMDeviceEnumerator, default_id: &str) -> Vec<Audio
 }
 
 struct Bound {
+    device: IMMDevice,
     endpoint: IAudioEndpointVolume,
     callback: IAudioEndpointVolumeCallback,
     device_id: String,
@@ -298,7 +406,7 @@ fn bind_default(enumerator: &IMMDeviceEnumerator) -> Option<Bound> {
         let endpoint: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).ok()?;
         let callback: IAudioEndpointVolumeCallback = VolumeCallback.into();
         endpoint.RegisterControlChangeNotify(&callback).ok()?;
-        Some(Bound { endpoint, callback, device_id: device_id(&device), device_name: device_name(&device) })
+        Some(Bound { endpoint, callback, device_id: device_id(&device), device_name: device_name(&device), device })
     }
 }
 
@@ -315,6 +423,76 @@ fn read_state(enumerator: &IMMDeviceEnumerator, bound: Option<&Bound>) -> AudioS
             device_name: b.device_name.clone(),
             devices: list_devices(enumerator, &b.device_id),
         }
+    }
+}
+
+/// Every session on the device with its volume control.
+fn device_sessions(device: &IMMDevice) -> Result<Vec<(RawSession, ISimpleAudioVolume)>, String> {
+    let own = std::process::id();
+    let mut out = Vec::new();
+    unsafe {
+        let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None).map_err(|e| format!("IAudioSessionManager2: {e}"))?;
+        let list = manager.GetSessionEnumerator().map_err(|e| e.to_string())?;
+        for i in 0..list.GetCount().unwrap_or(0) {
+            let Ok(control) = list.GetSession(i) else { continue };
+            let Ok(control2) = control.cast::<IAudioSessionControl2>() else { continue };
+            let Ok(volume) = control.cast::<ISimpleAudioVolume>() else { continue };
+            let pid = control2.GetProcessId().unwrap_or(0);
+            if pid == own {
+                continue;
+            }
+            // S_OK (0) means "this is the system sounds session"; S_FALSE (1) means it is not.
+            let is_system = control2.IsSystemSoundsSession().0 == 0;
+            let state = control.GetState().unwrap_or(AudioSessionStateExpired);
+            let exe = if is_system { String::new() } else { apps_enum::process_image_path(pid).unwrap_or_default() };
+            out.push((
+                RawSession {
+                    pid,
+                    exe,
+                    is_system,
+                    active: state == AudioSessionStateActive,
+                    expired: state == AudioSessionStateExpired,
+                    volume: volume.GetMasterVolume().unwrap_or(1.0),
+                    muted: volume.GetMute().map(|m| m.as_bool()).unwrap_or(false),
+                },
+                volume,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+fn read_sessions(bound: Option<&Bound>) -> Result<Vec<AppAudio>, String> {
+    let b = bound.ok_or("no audio output device")?;
+    let raw: Vec<RawSession> = device_sessions(&b.device)?.into_iter().map(|(r, _)| r).collect();
+    Ok(group_sessions(&raw, apps_enum::friendly_name))
+}
+
+/// Apply `f` to every session of the app group that `pid` belongs to.
+fn for_app_group(bound: Option<&Bound>, pid: u32, f: impl Fn(&ISimpleAudioVolume) -> windows::core::Result<()>) -> Result<(), String> {
+    let b = bound.ok_or("no audio output device")?;
+    let sessions = device_sessions(&b.device)?;
+    let target = sessions.iter().find(|(r, _)| r.pid == pid && !r.expired).map(|(r, _)| group_key(r)).ok_or("this app has no audio session")?;
+    for (r, volume) in sessions.iter().filter(|(r, _)| !r.expired && group_key(r) == target) {
+        f(volume).map_err(|e| format!("session {}: {e}", r.pid))?;
+    }
+    Ok(())
+}
+
+fn apply_session_command(bound: Option<&Bound>, command: Command) {
+    match command {
+        Command::Sessions(reply) => {
+            let _ = reply.send(read_sessions(bound));
+        }
+        Command::SetAppVolume(pid, v, reply) => {
+            let result = for_app_group(bound, pid, |s| unsafe { s.SetMasterVolume(v as f32 / 100.0, &LUMABAR_CONTEXT) });
+            let _ = reply.send(result.and_then(|_| read_sessions(bound)));
+        }
+        Command::SetAppMute(pid, m, reply) => {
+            let result = for_app_group(bound, pid, |s| unsafe { s.SetMute(m, &LUMABAR_CONTEXT) });
+            let _ = reply.send(result.and_then(|_| read_sessions(bound)));
+        }
+        _ => {}
     }
 }
 
@@ -352,7 +530,7 @@ fn apply(enumerator: &IMMDeviceEnumerator, bound: &mut Option<Bound>, command: C
                 };
                 b.endpoint.SetMute(target, &LUMABAR_CONTEXT).map_err(|e| e.to_string())?;
             }
-            Command::Rebind | Command::SetDefault(_) => {}
+            Command::Rebind | Command::SetDefault(_) | Command::Sessions(_) | Command::SetAppVolume(..) | Command::SetAppMute(..) => {}
         }
     }
     Ok(())
@@ -385,6 +563,10 @@ fn run(rx: Receiver<(Command, Option<Reply>)>) {
     super::memory::request_trim(Duration::from_secs(2));
 
     for (command, reply) in rx {
+        if matches!(command, Command::Sessions(_) | Command::SetAppVolume(..) | Command::SetAppMute(..)) {
+            apply_session_command(bound.as_ref(), command);
+            continue;
+        }
         let result = apply(&enumerator, &mut bound, command);
         let state = read_state(&enumerator, bound.as_ref());
         publish(state.clone());
@@ -427,6 +609,57 @@ mod tests {
         assert_eq!(stepped(99, 4), 100);
         assert_eq!(stepped(1, -2), 0);
         assert_eq!(stepped(0, -100), 0);
+    }
+
+    fn raw(pid: u32, exe: &str, active: bool, volume: f32, muted: bool) -> RawSession {
+        RawSession { pid, exe: exe.into(), is_system: false, active, expired: false, volume, muted }
+    }
+
+    #[test]
+    fn sessions_group_by_executable_and_drop_expired_ones() {
+        let chrome = r"C:\Program Files\Google\Chrome\chrome.exe";
+        let sessions = vec![
+            raw(10, chrome, false, 0.5, true),
+            raw(11, &chrome.to_uppercase(), true, 0.8, false),
+            raw(20, r"C:\Apps\Discord.exe", false, 1.0, false),
+            RawSession { expired: true, ..raw(30, r"C:\Apps\Old.exe", false, 1.0, false) },
+            RawSession { is_system: true, ..raw(0, "", false, 0.36, false) },
+        ];
+        let groups = group_sessions(&sessions, |exe| if exe.contains("chrome") { "Google Chrome".into() } else { "Discord".into() });
+        assert_eq!(groups.len(), 3, "{groups:#?}");
+        // System sounds first, then playing apps.
+        assert!(groups[0].is_system && groups[0].name.is_empty() && groups[0].volume == 36);
+        let g = &groups[1];
+        assert_eq!((g.name.as_str(), g.pid, g.pids.clone(), g.active, g.volume, g.muted), ("Google Chrome", 10, vec![10, 11], true, 80, false));
+        assert_eq!(groups[2].name, "Discord");
+        assert!(!groups.iter().any(|g| g.pids.contains(&30)));
+    }
+
+    /// Real per-app mixer on this machine: every listed app can be set to its own current level
+    /// and mute state (no audible change) and reads back the same.
+    #[test]
+    fn wasapi_sessions_round_trip() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.expect("MMDeviceEnumerator");
+        let Some(bound) = bind_default(&enumerator) else {
+            eprintln!("no default audio output on this machine; skipping");
+            return;
+        };
+        let before = read_sessions(Some(&bound)).expect("enumerate sessions");
+        for app in &before {
+            assert!(app.is_system || !app.name.is_empty());
+            for_app_group(Some(&bound), app.pid, |s| unsafe { s.SetMasterVolume(app.volume as f32 / 100.0, &LUMABAR_CONTEXT) }).expect("set app volume");
+            for_app_group(Some(&bound), app.pid, |s| unsafe { s.SetMute(app.muted, &LUMABAR_CONTEXT) }).expect("set app mute");
+        }
+        let after = read_sessions(Some(&bound)).expect("re-enumerate");
+        for app in &before {
+            if let Some(again) = after.iter().find(|a| a.pid == app.pid) {
+                assert_eq!((again.volume, again.muted), (app.volume, app.muted), "{}", app.name);
+            }
+        }
+        assert!(for_app_group(Some(&bound), u32::MAX, |_| Ok(())).is_err(), "unknown pid is rejected");
     }
 
     /// Real WASAPI round-trip on the default output, without audibly changing anything: the

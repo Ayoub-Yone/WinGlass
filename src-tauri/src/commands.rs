@@ -15,7 +15,8 @@ use crate::storage::settings::Settings;
 use crate::providers::accounts::{self, AccountStatus};
 use crate::win32::app_search::{self, AppHit};
 use crate::win32::apps_enum::{self, AppEntry};
-use crate::win32::audio::{self, AudioState};
+use crate::win32::audio::{self, AppAudio, AudioState};
+use crate::win32::open_apps::{self, OpenApp};
 use crate::win32::liner;
 use crate::win32::media_smtc::{self, MediaCommand, MediaState};
 use crate::win32::taskbar::{self, TaskbarMode};
@@ -248,6 +249,43 @@ pub async fn audio_set_device(id: String) -> Result<AudioState, String> {
     blocking(move || audio::set_default_device(id)).await
 }
 
+/// Per-app mixer: sessions on the default output, grouped by executable.
+#[tauri::command]
+pub async fn get_audio_sessions() -> Result<Vec<AppAudio>, String> {
+    blocking(audio::sessions).await
+}
+
+#[tauri::command]
+pub async fn set_app_volume(pid: u32, volume: u8) -> Result<Vec<AppAudio>, String> {
+    blocking(move || audio::set_app_volume(pid, u32::from(volume))).await
+}
+
+#[tauri::command]
+pub async fn set_app_mute(pid: u32, muted: bool) -> Result<Vec<AppAudio>, String> {
+    blocking(move || audio::set_app_mute(pid, muted)).await
+}
+
+// ---------------------------------------------------------------------------------------------
+// Open applications box
+// ---------------------------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_open_apps() -> Result<Vec<OpenApp>, String> {
+    blocking(|| Ok(open_apps::list())).await
+}
+
+/// Restore (if minimized) and bring to the front.
+#[tauri::command]
+pub fn focus_app_window(hwnd: isize) -> Result<(), String> {
+    open_apps::focus(hwnd)
+}
+
+/// WM_CLOSE, like the taskbar's « Fermer la fenêtre ».
+#[tauri::command]
+pub fn close_app_window(hwnd: isize) -> Result<(), String> {
+    open_apps::close(hwnd)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Media
 // ---------------------------------------------------------------------------------------------
@@ -367,15 +405,24 @@ pub fn get_secret_names(state: State<'_, AppState>) -> Vec<String> {
 // ---------------------------------------------------------------------------------------------
 
 /// Widgets introduced after a layout was first saved, added once (removing them afterwards sticks).
-const LAYOUT_MIGRATIONS: &[(&str, &str, &str)] = &[("layout_migration_volume", "volume", "1x1")];
+/// (kv flag, widget, span, insert before the first of these widgets present — else at the end)
+const LAYOUT_MIGRATIONS: &[(&str, &str, &str, &[&str])] = &[
+    ("layout_migration_volume", "volume", "1x1", &["clock"]),
+    ("layout_migration_open_apps", "open-apps", "2x1", &["volume", "clock"]),
+];
 
-/// Insert `widget_id` before the clock (or at the end) unless the layout already has it.
-pub fn add_widget_once(layout: &mut Vec<Value>, widget_id: &str, span: &str) -> bool {
+/// Insert `widget_id` before the first `anchors` widget present (or at the end) unless the layout
+/// already has it.
+pub fn add_widget_once(layout: &mut Vec<Value>, widget_id: &str, span: &str, anchors: &[&str]) -> bool {
     if layout.iter().any(|item| item.get("widgetId").and_then(|w| w.as_str()) == Some(widget_id)) {
         return false;
     }
     let item = serde_json::json!({ "instanceId": format!("{widget_id}-default"), "widgetId": widget_id, "span": span });
-    let at = layout.iter().position(|i| i.get("widgetId").and_then(|w| w.as_str()) == Some("clock")).unwrap_or(layout.len());
+    let id_of = |i: &Value| i.get("widgetId").and_then(|w| w.as_str()).map(str::to_string);
+    let at = anchors
+        .iter()
+        .find_map(|a| layout.iter().position(|i| id_of(i).as_deref() == Some(*a)))
+        .unwrap_or(layout.len());
     layout.insert(at, item);
     true
 }
@@ -385,9 +432,9 @@ pub fn get_layout(state: State<'_, AppState>) -> Option<Value> {
     let mut layout: Value = state.db.kv_get("layout").and_then(|json| serde_json::from_str(&json).ok())?;
     if let Some(items) = layout.as_array_mut() {
         let mut changed = false;
-        for (flag, widget, span) in LAYOUT_MIGRATIONS {
+        for (flag, widget, span, anchors) in LAYOUT_MIGRATIONS {
             if state.db.kv_get(flag).is_none() {
-                changed |= add_widget_once(items, widget, span);
+                changed |= add_widget_once(items, widget, span, anchors);
                 let _ = state.db.kv_set(flag, "1");
             }
         }
@@ -461,13 +508,17 @@ mod tests {
     #[test]
     fn volume_widget_is_added_once_before_the_clock() {
         let mut layout: Vec<Value> = serde_json::from_str(r#"[{"instanceId":"a","widgetId":"apps","span":"auto"},{"instanceId":"c","widgetId":"clock","span":"1x1"}]"#).unwrap();
-        assert!(add_widget_once(&mut layout, "volume", "1x1"));
+        assert!(add_widget_once(&mut layout, "volume", "1x1", &["clock"]));
         assert_eq!(layout[1]["widgetId"], "volume");
         assert_eq!(layout[2]["widgetId"], "clock");
-        assert!(!add_widget_once(&mut layout, "volume", "1x1"));
+        assert!(!add_widget_once(&mut layout, "volume", "1x1", &["clock"]));
         assert_eq!(layout.len(), 3);
+        // Open apps lands just left of the volume widget.
+        assert!(add_widget_once(&mut layout, "open-apps", "2x1", &["volume", "clock"]));
+        assert_eq!(layout[1]["widgetId"], "open-apps");
+        assert_eq!(layout[2]["widgetId"], "volume");
         let mut no_clock: Vec<Value> = Vec::new();
-        assert!(add_widget_once(&mut no_clock, "volume", "1x1"));
+        assert!(add_widget_once(&mut no_clock, "volume", "1x1", &["clock"]));
         assert_eq!(no_clock[0]["instanceId"], "volume-default");
     }
 }

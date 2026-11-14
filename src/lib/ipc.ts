@@ -5,7 +5,9 @@ import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountStatus,
   AppEntry,
+  AppAudio,
   AppHit,
+  OpenApp,
   AudioState,
   DockLayout,
   DockPosition,
@@ -51,6 +53,13 @@ export const ipc = {
   /** null toggles. */
   audioSetMute: (muted: boolean | null) => invoke<AudioState>("audio_set_mute", { muted }),
   audioSetDevice: (id: string) => invoke<AudioState>("audio_set_device", { id }),
+  getAudioSessions: () => invoke<AppAudio[]>("get_audio_sessions"),
+  setAppVolume: (pid: number, volume: number) => invoke<AppAudio[]>("set_app_volume", { pid, volume: Math.round(Math.min(100, Math.max(0, volume))) }),
+  setAppMute: (pid: number, muted: boolean) => invoke<AppAudio[]>("set_app_mute", { pid, muted }),
+
+  getOpenApps: () => invoke<OpenApp[]>("get_open_apps"),
+  focusAppWindow: (hwnd: number) => invoke<void>("focus_app_window", { hwnd }),
+  closeAppWindow: (hwnd: number) => invoke<void>("close_app_window", { hwnd }),
 
   mediaState: () => invoke<MediaState>("media_state"),
   mediaCommand: (action: "toggle" | "pause" | "play" | "next" | "previous") => invoke<void>("media_command", { action }),

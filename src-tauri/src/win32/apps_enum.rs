@@ -61,10 +61,10 @@ pub struct AppWindow {
     pub is_active: bool,
 }
 
-struct RawWindow {
-    hwnd: HWND,
-    title: String,
-    exe: String,
+pub(crate) struct RawWindow {
+    pub hwnd: HWND,
+    pub title: String,
+    pub exe: String,
 }
 
 struct PinnedShortcut {
@@ -210,7 +210,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL 
     BOOL(1)
 }
 
-fn enumerate_windows() -> Vec<RawWindow> {
+pub(crate) fn enumerate_windows() -> Vec<RawWindow> {
     let mut out: Vec<RawWindow> = Vec::new();
     unsafe {
         let _ = EnumWindows(Some(enum_windows_proc), LPARAM(&mut out as *mut _ as isize));
@@ -274,7 +274,7 @@ fn pinned_shortcuts() -> Vec<PinnedShortcut> {
     items.into_iter().map(|(path, name, target)| PinnedShortcut { path, name, target }).collect()
 }
 
-fn display_name(exe: &str, fallback_title: &str) -> String {
+pub(crate) fn display_name(exe: &str, fallback_title: &str) -> String {
     Path::new(exe)
         .file_stem()
         .map(|s| {
@@ -286,6 +286,55 @@ fn display_name(exe: &str, fallback_title: &str) -> String {
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| fallback_title.to_string())
+}
+
+static FRIENDLY_CACHE: Lazy<Mutex<LruCache<String>>> = Lazy::new(|| Mutex::new(LruCache::new(ICON_CACHE_CAPACITY)));
+
+/// The executable's own product name (version-info `FileDescription`, e.g. "Google Chrome"), falling
+/// back to the capitalized file stem. Cached in a bounded LRU.
+pub fn friendly_name(exe: &str) -> String {
+    if let Some(hit) = FRIENDLY_CACHE.lock().get(exe) {
+        return hit;
+    }
+    let name = version_description(exe).unwrap_or_else(|| display_name(exe, ""));
+    FRIENDLY_CACHE.lock().insert(exe.to_string(), name.clone());
+    name
+}
+
+fn version_description(exe: &str) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+    if exe.is_empty() {
+        return None;
+    }
+    let wexe = wide(exe);
+    unsafe {
+        let size = GetFileVersionInfoSizeW(PCWSTR(wexe.as_ptr()), None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(PCWSTR(wexe.as_ptr()), None, size, data.as_mut_ptr() as *mut _).ok()?;
+        // First language/codepage pair, then that block's FileDescription.
+        let mut ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        let translation = wide(r"\VarFileInfo\Translation");
+        let mut pairs: Vec<(u16, u16)> = Vec::new();
+        if VerQueryValueW(data.as_ptr() as *const _, PCWSTR(translation.as_ptr()), &mut ptr, &mut len).as_bool() && len >= 4 {
+            let words = std::slice::from_raw_parts(ptr as *const u16, (len / 2) as usize);
+            pairs.extend(words.chunks_exact(2).map(|w| (w[0], w[1])));
+        }
+        pairs.extend([(0x0409, 0x04B0), (0x0409, 0x04E4), (0x040C, 0x04B0)]);
+        for (lang, cp) in pairs {
+            let key = wide(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\FileDescription"));
+            if VerQueryValueW(data.as_ptr() as *const _, PCWSTR(key.as_ptr()), &mut ptr, &mut len).as_bool() && len > 1 {
+                let text = from_wide(std::slice::from_raw_parts(ptr as *const u16, len as usize)).trim().to_string();
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Pinned shortcuts first (with any matching running windows), then unpinned running apps grouped by exe.

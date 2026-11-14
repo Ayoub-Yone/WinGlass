@@ -432,10 +432,36 @@ try {
     await dock.eval(`document.querySelector('[data-testid="volume-widget"]').closest('.lb-card').click()`);
     const pop = await waitFor(() => dock.eval(`(() => { const p = document.querySelector('[data-testid="volume-popover"]'); return p ? { slider: !!p.querySelector('[data-testid="volume-slider"]'), mute: !!p.querySelector('[data-testid="volume-mute"]'), devices: p.querySelectorAll('[data-testid="volume-device"]').length } : null; })()`), 3000);
     check("volume flyout: mute button, slider and output devices", pop && pop.slider && pop.mute && pop.devices === audio0.devices.length, JSON.stringify(pop));
+    const wheelOn = (sel, deltaY) => dock.eval(`document.querySelector('${sel}').dispatchEvent(new WheelEvent("wheel", { deltaY: ${deltaY}, bubbles: true, cancelable: true }))`);
+    await wheelOn('[data-testid="volume-devices"]', down);
+    await sleep(700);
+    check("volume flyout: wheel over the device list scrolls, volume untouched", (await dock.invoke("audio_state")).volume === audio0.volume);
+    const notCancelled = await wheelOn('[data-testid="volume-slider"]', down);
+    const viaSlider = await waitFor(async () => { const st = await dock.invoke("audio_state"); return st.volume !== audio0.volume ? st : null; }, 3000);
+    check("volume flyout: wheel over the master slider steps the volume (popover does not scroll)", viaSlider && Math.abs(viaSlider.volume - audio0.volume) === 2 && notCancelled === false, `${audio0.volume} -> ${viaSlider?.volume}, defaultPrevented=${!notCancelled}`);
+    await sleep(300);
+    await wheelOn('[data-testid="volume-slider"]', -down);
+    await waitFor(async () => ((await dock.invoke("audio_state")).volume === audio0.volume ? true : null), 3000);
+    const mixer = await waitFor(() => dock.eval(`(() => { const m = document.querySelector('[data-testid="volume-apps"]'); return m ? { rows: m.querySelectorAll('[data-testid="app-volume-row"]').length, sliders: m.querySelectorAll('[data-testid="app-volume-slider"]').length } : null; })()`), 3000);
+    const sessions = await dock.invoke("get_audio_sessions");
+    check("volume flyout: per-app mixer lists every audio session", mixer && mixer.rows === sessions.length && mixer.sliders === sessions.length, `${JSON.stringify(mixer)} sessions=${sessions.map((a) => a.name || "system").join(", ")}`);
+    const scrollable = await dock.eval(`(() => { const p = document.querySelector('[data-testid="volume-popover"]'); return getComputedStyle(p).overflowY; })()`);
+    check("volume flyout scrolls (overflow-y: auto)", scrollable === "auto", scrollable);
     await dock.eval(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     await sleep(200);
     check("volume flyout closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="volume-popover"]')`)) === true);
   }
+
+  // ---------------------------------------------------------------- open apps box
+  const openApps = await dock.invoke("get_open_apps");
+  check("get_open_apps: real windows, never lumabar or the shell", Array.isArray(openApps) && openApps.every((a) => a.pid !== pid && a.title && a.name), JSON.stringify(openApps.slice(0, 4).map((a) => a.name)));
+  check("open apps box enabled by default", (await dock.eval(`Boolean(document.querySelector('[data-testid="open-apps-box"]'))`)) === true);
+  await dock.eval(`document.querySelector('[data-testid="open-apps-box"]').closest(".lb-card").click()`);
+  const panel = await waitFor(() => dock.eval(`(() => { const p = document.querySelector('[data-testid="open-apps-panel"]'); return p ? p.querySelectorAll('[data-testid="open-app-row"]').length : null; })()`), 3000);
+  check("open apps panel lists every open application", panel !== null && panel >= Math.min(1, openApps.length), `rows=${panel} apps=${openApps.length}`);
+  await dock.eval(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+  await sleep(200);
+  check("open apps panel closes on Escape", (await dock.eval(`!document.querySelector('[data-testid="open-apps-panel"]')`)) === true);
 
   // ---------------------------------------------------------------- accounts auto-detection
   const claudeAccount = await dock.invoke("account_status", { provider: "claude" });
@@ -462,14 +488,14 @@ try {
   await dock.invoke("open_window", { label: "picker" });
   let picker = await Page.open("picker");
   await sleep(1500);
-  const fullCatalog = await waitFor(() => picker.eval("document.querySelectorAll('[data-widget-tile]').length >= 39"), 10000);
+  const fullCatalog = await waitFor(() => picker.eval("document.querySelectorAll('[data-widget-tile]').length >= 40"), 10000);
   if (!fullCatalog) note(`picker state: ${JSON.stringify(await picker.eval("({ tiles: document.querySelectorAll('[data-widget-tile]').length, inputs: [...document.querySelectorAll('input')].map((i) => i.value), focus: document.hasFocus(), hidden: document.hidden })"))}`);
   for (const lang of ["fr", "en"]) {
     for (const size of ["compact", "medium", "large"]) {
       await patchSettings(dock, { language: lang, size });
       await sleep(500);
       const audit = await picker.eval(AUDIT);
-      check(`layout ${lang}/${size}: ${audit.tiles} widgets, ${audit.cards} variants, no clipping / wrapping / overflow`, audit.tiles === 39 && audit.problems.length === 0, audit.problems.slice(0, 12).join("\n        "));
+      check(`layout ${lang}/${size}: ${audit.tiles} widgets, ${audit.cards} variants, no clipping / wrapping / overflow`, audit.tiles === 40 && audit.problems.length === 0, audit.problems.slice(0, 12).join("\n        "));
       if (audit.ellipsis.length) note(`${lang}/${size} ellipsis-truncated (by design): ${audit.ellipsis.join("; ")}`);
     }
   }
