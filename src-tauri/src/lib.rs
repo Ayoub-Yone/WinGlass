@@ -221,8 +221,8 @@ pub fn run() {
 
             window_manager::start_hit_testing();
             window_manager::start_fullscreen_watch(handle.clone());
-            graphics::dxgi_capture::start(handle.clone());
-            graphics::dxgi_capture::set_enabled(&handle, settings.theme == "liquid-glass");
+            graphics::backdrop::start(handle.clone());
+            graphics::backdrop::set_enabled(settings.theme == "liquid-glass");
             win32::media_smtc::start(handle.clone());
             win32::memory::start();
             win32::screen_time::start(handle.clone());

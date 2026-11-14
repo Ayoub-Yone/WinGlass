@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::{from_wide, memory, taskbar};
 use crate::AppState;
-use crate::graphics::dxgi_capture;
+use crate::graphics::backdrop;
 use crate::i18n::{Lang, Text, tr};
 
 /// Logical px reserved above (bottom dock) or below (top dock) the pill for popovers & menus.
@@ -497,7 +497,7 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                 if fullscreen != hidden {
                     hidden = fullscreen;
                     // Nothing is composited while the dock is hidden: stop the desktop capture.
-                    dxgi_capture::set_paused(fullscreen);
+                    backdrop::set_paused(fullscreen);
                     let _ = app.emit("dock:fullscreen", fullscreen);
                     let toast = app.get_webview_window("toast");
                     if fullscreen {

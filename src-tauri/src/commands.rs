@@ -7,7 +7,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 use crate::AppState;
-use crate::graphics::dxgi_capture;
+use crate::graphics::backdrop;
 use crate::providers::api_poller::{self, ProviderResult};
 use crate::storage::db::{ScreenTimeDay, Todo};
 use crate::storage::secrets;
@@ -52,7 +52,7 @@ pub fn update_settings(app: AppHandle, state: State<'_, AppState>, settings: Set
         crate::refresh_tray_language(&app, &settings.language);
     }
     if previous.theme != settings.theme {
-        dxgi_capture::set_enabled(&app, settings.theme == "liquid-glass");
+        backdrop::set_enabled(settings.theme == "liquid-glass");
     }
     let providers_changed = serde_json::to_value(&previous.providers).ok() != serde_json::to_value(&settings.providers).ok();
     if previous.simulation != settings.simulation || providers_changed {
@@ -144,7 +144,7 @@ pub fn set_glass_rect(window: WebviewWindow, rect: HitRect) -> Result<(), String
     unsafe { GetWindowRect(HWND(raw as *mut core::ffi::c_void), &mut win) }.map_err(|e| e.to_string())?;
     let left = win.left + rect[0].round() as i32;
     let top = win.top + rect[1].round() as i32;
-    dxgi_capture::set_rect(RECT {
+    backdrop::set_rect(RECT {
         left,
         top,
         right: left + rect[2].round() as i32,
@@ -155,7 +155,7 @@ pub fn set_glass_rect(window: WebviewWindow, rect: HitRect) -> Result<(), String
 
 #[tauri::command]
 pub fn get_glass_status() -> String {
-    dxgi_capture::status()
+    backdrop::status()
 }
 
 // ---------------------------------------------------------------------------------------------

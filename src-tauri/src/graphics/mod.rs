@@ -1,4 +1,4 @@
-pub mod dxgi_capture;
+pub mod backdrop;
 
 use tauri::http::{Response, StatusCode};
 
@@ -11,7 +11,7 @@ pub fn capture_response() -> Response<Vec<u8>> {
             .header("Access-Control-Expose-Headers", "X-Width, X-Height, X-Seq")
             .header("Cache-Control", "no-store")
     };
-    let response = dxgi_capture::with_latest(|frame| {
+    let response = backdrop::with_latest(|frame| {
         builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/octet-stream")

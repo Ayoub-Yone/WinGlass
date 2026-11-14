@@ -1,6 +1,6 @@
 // WebGL2 "matte liquid glass": the live desktop behind the dock, diffused into frosted glass.
 //
-// Pipeline (renders only when a new DXGI frame arrives, the canvas resizes or the frost preset
+// Pipeline (renders only when a new backdrop frame arrives, the canvas resizes or the frost preset
 // changes — never on an idle rAF loop, so a static desktop costs zero GPU work):
 //   upload  glass://capture BGRA  ->  source texture (swizzled to RGB in the first pass)
 //   pass 1  dual-Kawase blur pyramid: 3–5 downsample + matching upsample passes. Deep enough that
