@@ -11,6 +11,7 @@ export type DockPosition = "bottom" | "top";
 export type TaskbarMode = "native" | "auto_hide" | "completely_hidden";
 export type Language = "fr" | "en";
 export type GlassFrost = "subtle" | "balanced" | "deep";
+export type GlassBackdrop = "live" | "wallpaper";
 
 export interface ThemeTokens {
   id: ThemeId;
@@ -93,6 +94,7 @@ export interface Settings {
   accent: string;
   language: Language;
   glassFrost: GlassFrost;
+  glassBackdrop: GlassBackdrop;
   pomodoroFocusMinutes: number;
   pomodoroBreakMinutes: number;
   worldClocks: WorldClock[];

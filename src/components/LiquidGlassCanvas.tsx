@@ -3,8 +3,11 @@
 // Pipeline (renders only when a new backdrop frame arrives, the canvas resizes or the frost preset
 // changes — never on an idle rAF loop, so a static desktop costs zero GPU work):
 //   upload  glass://capture BGRA  ->  source texture (swizzled to RGB in the first pass)
-//   pass 1  dual-Kawase blur pyramid: 3–5 downsample + matching upsample passes. Deep enough that
-//           windows and wallpapers dissolve into smooth colour gradients rather than shapes.
+//           The live capture includes a margin around the pill (X-Inner says where the pill is),
+//           so the blur pulls in real colour from outside instead of smearing its edge pixels.
+//   pass 1  dual-Kawase blur pyramid: 4–6 downsample + matching upsample passes with wide sample
+//           offsets (~60–120px effective radius). Deep enough that windows, text and bright
+//           elements melt into smooth, creamy colour gradients — no shapes bleed through.
 //   pass 2  composite:
 //             · SDF rounded-box lens — UVs bend along the outer 10px perimeter with a circular
 //               bevel profile, ±0.0015 R/B chromatic dispersion at the rim
@@ -77,6 +80,7 @@ uniform vec2 u_size;      // canvas size in device px
 uniform float u_radius;   // corner radius in device px
 uniform float u_dpr;
 uniform vec4 u_tint;      // matte veil colour + base opacity
+uniform vec4 u_inner;     // pill rect inside the blurred frame: xy = offset, zw = scale (uv units)
 uniform float u_grain;    // micro-grain amplitude (~0.012)
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
@@ -89,6 +93,11 @@ float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
+}
+
+// Pill-space uv -> blurred-frame uv (the frame has a capture margin around the pill).
+vec3 glass(vec2 uv) {
+  return texture(u_blur, u_inner.xy + uv * u_inner.zw).rgb;
 }
 
 void main() {
@@ -119,9 +128,9 @@ void main() {
   // Chromatic dispersion: R and B pulled ±0.0015 along the normal at the rim.
   float ca = 0.0015 * bend;
   vec3 col;
-  col.r = texture(u_blur, uv + n * ca).r;
-  col.g = texture(u_blur, uv).g;
-  col.b = texture(u_blur, uv - n * ca).b;
+  col.r = glass(uv + n * ca).r;
+  col.g = glass(uv).g;
+  col.b = glass(uv - n * ca).b;
 
   // Matte: only a whisper of vibrancy, then the adaptive contrast veil.
   float luma = dot(col, vec3(0.299, 0.587, 0.114));
@@ -208,6 +217,8 @@ class GlassRenderer {
   private source: WebGLTexture | null = null;
   private srcW = 0;
   private srcH = 0;
+  /** Pill rect inside the source frame, in source pixels (top-left origin). */
+  private inner: [number, number, number, number] = [0, 0, 0, 0];
   /** `levels` downsample targets followed by `levels - 1` upsample targets. */
   private chain: Target[] = [];
   private chainKey = "";
@@ -243,8 +254,9 @@ class GlassRenderer {
   }
 
   /** `pixels` is the capture's raw BGRA buffer; the first blur pass swizzles it. */
-  upload(width: number, height: number, pixels: Uint8Array): void {
+  upload(width: number, height: number, pixels: Uint8Array, inner: [number, number, number, number]): void {
     const gl = this.gl;
+    this.inner = inner;
     if (!this.source || width !== this.srcW || height !== this.srcH) {
       if (this.source) gl.deleteTexture(this.source);
       this.source = makeTexture(gl, width, height);
@@ -292,7 +304,7 @@ class GlassRenderer {
     const w = this.canvas.width;
     const h = this.canvas.height;
     if (w === 0 || h === 0) return false;
-    const levels = Math.max(2, Math.min(5, Math.round(frost.levels)));
+    const levels = Math.max(2, Math.min(6, Math.round(frost.levels)));
     this.ensureChain(levels);
     gl.bindVertexArray(this.vao);
     gl.disable(gl.BLEND);
@@ -330,6 +342,10 @@ class GlassRenderer {
     gl.uniform1f(this.loc(this.comp, "u_dpr"), dpr);
     gl.uniform4f(this.loc(this.comp, "u_tint"), GLASS_TINT_RGB[0], GLASS_TINT_RGB[1], GLASS_TINT_RGB[2], frost.tint);
     gl.uniform1f(this.loc(this.comp, "u_grain"), frost.grain);
+    // The texture is uploaded flipped (v = 0 is the bottom row), so the pill's bottom edge maps to
+    // `srcH - (y + h)`.
+    const [ix, iy, iw, ih] = this.inner;
+    gl.uniform4f(this.loc(this.comp, "u_inner"), ix / this.srcW, (this.srcH - iy - ih) / this.srcH, iw / this.srcW, ih / this.srcH);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return true;
   }
@@ -354,6 +370,14 @@ class GlassRenderer {
 }
 
 const CAPTURE_URL = convertFileSrc("capture", "glass");
+
+/** `X-Inner: x,y,w,h` — the pill inside the frame; the whole frame when absent or malformed. */
+function parseInner(header: string | null, width: number, height: number): [number, number, number, number] {
+  const parts = (header ?? "").split(",").map(Number);
+  const [x, y, w, h] = parts;
+  const valid = parts.length === 4 && parts.every((n) => Number.isFinite(n) && n >= 0) && w > 0 && h > 0 && x + w <= width && y + h <= height;
+  return valid ? [x, y, w, h] : [0, 0, width, height];
+}
 
 /**
  * Renders behind the dock pill. `onActiveChange(true)` once the first desktop frame has been
@@ -414,7 +438,7 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
           const h = Number(resp.headers.get("X-Height"));
           const buf = new Uint8Array(await resp.arrayBuffer());
           if (w > 0 && h > 0 && buf.length === w * h * 4 && !disposed) {
-            renderer.upload(w, h, buf);
+            renderer.upload(w, h, buf, parseInner(resp.headers.get("X-Inner"), w, h));
             scheduleDraw();
           }
         }

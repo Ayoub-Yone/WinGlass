@@ -158,9 +158,9 @@ export interface FrostPreset {
 export const FROST_ORDER: GlassFrost[] = ["subtle", "balanced", "deep"];
 
 export const FROST: Record<GlassFrost, FrostPreset> = {
-  subtle: { id: "subtle", levels: 3, offset: 1.6, tint: 0.26, grain: 0.008 },
-  balanced: { id: "balanced", levels: 4, offset: 1.75, tint: 0.36, grain: 0.012 },
-  deep: { id: "deep", levels: 5, offset: 2.1, tint: 0.5, grain: 0.016 },
+  subtle: { id: "subtle", levels: 4, offset: 1.9, tint: 0.26, grain: 0.008 },
+  balanced: { id: "balanced", levels: 5, offset: 2.2, tint: 0.36, grain: 0.012 },
+  deep: { id: "deep", levels: 6, offset: 2.6, tint: 0.5, grain: 0.016 },
 };
 
 export const GLASS_TINT_RGB: [number, number, number] = [18 / 255, 20 / 255, 26 / 255];

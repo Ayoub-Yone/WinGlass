@@ -252,7 +252,7 @@ try {
   const first = await dock.invoke("get_settings");
   check("first launch: French", first.language === "fr" && (await dock.eval("document.documentElement.lang")) === "fr", `language=${first.language}`);
   check("first launch: matte liquid glass, balanced frost", first.theme === "liquid-glass" && first.glassFrost === "balanced", `${first.theme}/${first.glassFrost}`);
-  check("first launch: taskbar auto-hidden", first.taskbarMode === "auto_hide" && taskbar().autoHide === true, JSON.stringify(taskbar()));
+  check("first launch: taskbar completely hidden", first.taskbarMode === "completely_hidden" && taskbar().visible === false, JSON.stringify(taskbar()));
   check("taskbar state persisted while modified", existsSync(stateFile));
   check("only dock + toast webviews exist at idle", (await targets()).length === 2, (await targets()).map((t) => t.url.split("?")[1]).join(", "));
 

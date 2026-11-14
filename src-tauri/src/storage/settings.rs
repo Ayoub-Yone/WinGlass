@@ -123,6 +123,9 @@ impl Default for ProviderConfig {
     }
 }
 
+/// Current settings document revision.
+pub const SCHEMA: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -140,6 +143,10 @@ pub struct Settings {
     pub language: String,
     /// Liquid-glass frost intensity: "subtle" | "balanced" (default) | "deep".
     pub glass_frost: String,
+    /// Liquid-glass backdrop source: "live" (default, desktop duplication) | "wallpaper".
+    pub glass_backdrop: String,
+    /// Settings document revision, see `Settings::parse`.
+    pub schema: u32,
     pub pomodoro_focus_minutes: u32,
     pub pomodoro_break_minutes: u32,
     pub world_clocks: Vec<WorldClock>,
@@ -160,7 +167,7 @@ impl Default for Settings {
             size: "medium".into(),
             position: "bottom".into(),
             monitor: None,
-            taskbar_mode: "auto_hide".into(),
+            taskbar_mode: "completely_hidden".into(),
             hide_on_fullscreen: true,
             simulation: false,
             do_not_disturb: false,
@@ -168,6 +175,8 @@ impl Default for Settings {
             accent: "#0A84FF".into(),
             language: "fr".into(),
             glass_frost: "balanced".into(),
+            glass_backdrop: "live".into(),
+            schema: SCHEMA,
             pomodoro_focus_minutes: 25,
             pomodoro_break_minutes: 5,
             world_clocks: vec![
@@ -183,9 +192,31 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load(db: &Db) -> Settings {
-        db.kv_get("settings")
-            .and_then(|json| serde_json::from_str::<Settings>(&json).ok())
-            .unwrap_or_default()
+        let Some(json) = db.kv_get("settings") else { return Settings::default() };
+        let (settings, migrated) = Settings::parse(&json);
+        if migrated {
+            let _ = settings.save(db);
+        }
+        settings
+    }
+
+    /// Parse a stored document, upgrading older revisions. Returns `(settings, changed)`.
+    pub fn parse(json: &str) -> (Settings, bool) {
+        let Ok(mut settings) = serde_json::from_str::<Settings>(json) else { return (Settings::default(), false) };
+        // `#[serde(default)]` fills a missing `schema` with the current one, so read it raw.
+        let stored = serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .and_then(|v| v.get("schema").and_then(|s| s.as_u64()))
+            .unwrap_or(1) as u32;
+        let migrated = stored < SCHEMA;
+        if stored < 2 && settings.taskbar_mode == "auto_hide" {
+            // Revision 2: an auto-hidden Windows 11 taskbar still pops up over the dock when the
+            // cursor touches the screen edge, so the old default becomes "completely hidden".
+            // "native" (explicit choice, or set by the emergency hotkey) is left alone.
+            settings.taskbar_mode = "completely_hidden".into();
+        }
+        settings.schema = SCHEMA;
+        (settings, migrated)
     }
 
     pub fn save(&self, db: &Db) -> Result<(), String> {
@@ -208,12 +239,13 @@ mod tests {
     use super::Settings;
 
     #[test]
-    fn first_launch_is_french_matte_glass_with_auto_hidden_taskbar() {
+    fn first_launch_is_french_matte_live_glass_with_hidden_taskbar() {
         let s = Settings::default();
         assert_eq!(s.language, "fr");
         assert_eq!(s.theme, "liquid-glass");
         assert_eq!(s.glass_frost, "balanced");
-        assert_eq!(s.taskbar_mode, "auto_hide");
+        assert_eq!(s.taskbar_mode, "completely_hidden");
+        assert_eq!(s.glass_backdrop, "live");
         assert_eq!(s.position, "bottom");
     }
 
@@ -225,6 +257,22 @@ mod tests {
         assert_eq!(s.dock_height(), 70.0);
         assert_eq!(s.language, "fr");
         assert_eq!(s.glass_frost, "balanced");
+    }
+
+    #[test]
+    fn old_auto_hide_default_migrates_to_completely_hidden_once() {
+        let (s, changed) = Settings::parse(r#"{"theme":"liquid-glass","taskbarMode":"auto_hide"}"#);
+        assert!(changed);
+        assert_eq!(s.taskbar_mode, "completely_hidden");
+        assert_eq!(s.glass_backdrop, "live");
+        // An explicit "native" (e.g. after the emergency hotkey) is never overridden.
+        let (s, _) = Settings::parse(r#"{"taskbarMode":"native"}"#);
+        assert_eq!(s.taskbar_mode, "native");
+        // A current document keeps whatever the user picked, including auto-hide.
+        let current = serde_json::to_string(&Settings { taskbar_mode: "auto_hide".into(), ..Settings::default() }).unwrap();
+        let (s, changed) = Settings::parse(&current);
+        assert!(!changed);
+        assert_eq!(s.taskbar_mode, "auto_hide");
     }
 
     #[test]

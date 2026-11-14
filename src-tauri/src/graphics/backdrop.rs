@@ -1,15 +1,12 @@
-//! Liquid-glass backdrop: the desktop wallpaper region directly behind the dock.
+//! Wallpaper backdrop for liquid glass — the fallback source (`glassBackdrop: "wallpaper"`) for
+//! machines where the live capture (`dxgi_capture.rs`) misbehaves.
 //!
 //! The shell's desktop window (`Progman`) is rendered with `PrintWindow(PW_RENDERFULLCONTENT)`
 //! into a small DIB the size of the dock pill; a viewport offset on the memory DC makes GDI clip
 //! everything but that region, so the full desktop is never copied. This follows whatever the
-//! shell shows as wallpaper (fit modes, slideshows, per-monitor and animated wallpapers).
-//!
-//! Why the wallpaper and not the live screen: capturing what is behind the dock from the composed
-//! screen needs the dock excluded from capture (`WDA_EXCLUDEFROMCAPTURE`) plus a desktop
-//! duplication session, and on some GPU / driver combinations that pairing makes the excluded
-//! window disappear from the physical display. The dock must never be able to hide itself, so
-//! no display affinity is set and nothing on the composed screen is captured.
+//! shell shows as wallpaper (fit modes, slideshows, per-monitor and animated wallpapers), but
+//! windows sitting behind the dock do not show through. It needs no display affinity and no
+//! desktop duplication.
 //!
 //! * One memory DC + DIB section are reused; they are re-created only when the pill changes size
 //!   and released while parked.
@@ -34,22 +31,14 @@ use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
 use windows::core::w;
 
-/// The most recent backdrop. `seq == 0` means "no frame". The pixel buffer is reused across
-/// frames and only grows when the dock rect does.
-pub struct FrameBuffer {
-    pub seq: u64,
-    pub width: u32,
-    pub height: u32,
-    /// Tightly packed BGRA rows, `width * height * 4` bytes.
-    pub bgra: Vec<u8>,
-}
+use super::FrameBuffer;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 /// Dock hidden behind a fullscreen app: nothing to composite, so nothing to render.
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static CAPTURE_RECT: Lazy<Mutex<Option<RECT>>> = Lazy::new(|| Mutex::new(None));
-static LATEST: Lazy<Mutex<FrameBuffer>> = Lazy::new(|| Mutex::new(FrameBuffer { seq: 0, width: 0, height: 0, bgra: Vec::new() }));
+static LATEST: Lazy<Mutex<FrameBuffer>> = Lazy::new(|| Mutex::new(FrameBuffer::empty()));
 static STATUS: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new("idle".into()));
 /// Parks the thread while there is nothing to do; also cuts the refresh wait short.
 static WAKE: Lazy<(Mutex<()>, Condvar)> = Lazy::new(|| (Mutex::new(()), Condvar::new()));
@@ -230,6 +219,7 @@ fn render(surface: &mut Option<Surface>, rect: &RECT) -> Result<Option<u64>, Str
     frame.bgra.copy_from_slice(pixels);
     frame.width = w as u32;
     frame.height = h as u32;
+    frame.inner = [0, 0, w as u32, h as u32];
     frame.seq = SEQ.fetch_add(1, Ordering::SeqCst) + 1;
     Ok(Some(frame.seq))
 }

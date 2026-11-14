@@ -26,7 +26,7 @@ import { FROST_ORDER, SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/T
 import { patchSettings, useSettings } from "../lib/hooks";
 import { formatPercent } from "../lib/format";
 import { broadcast, errorMessage, ipc, subscribe } from "../lib/ipc";
-import type { AutomationSettings, GlassFrost, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
+import type { AutomationSettings, GlassBackdrop, GlassFrost, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
 
 type Tab = "general" | "accounts" | "calendar" | "integrations" | "automations" | "advanced";
 
@@ -189,6 +189,18 @@ function GeneralTab({ s }: { s: Settings }) {
                 </span>
               ))}
             </div>
+          </div>
+        </Row>
+        <Row label={t("settings.backdrop")} hint={s.theme !== "liquid-glass" ? t("settings.frostHint") : s.glassBackdrop === "wallpaper" ? t("settings.backdropHintWallpaper") : t("settings.backdropHintLive")}>
+          <div style={{ opacity: s.theme === "liquid-glass" ? 1 : 0.5 }}>
+            <Segmented<GlassBackdrop>
+              value={s.glassBackdrop === "wallpaper" ? "wallpaper" : "live"}
+              options={[
+                { value: "live", label: t("backdrop.live") },
+                { value: "wallpaper", label: t("backdrop.wallpaper") },
+              ]}
+              onChange={(glassBackdrop) => update((x) => ({ ...x, glassBackdrop }))}
+            />
           </div>
         </Row>
       </Section>

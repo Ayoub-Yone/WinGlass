@@ -202,8 +202,7 @@ pub fn run() {
             window_manager::layout_windows(&handle);
             for label in ["dock", "toast"] {
                 if let Some(window) = handle.get_webview_window(label) {
-                    window_manager::make_tool_window(&window);
-                    let _ = window.set_ignore_cursor_events(true);
+                    window_manager::prepare_overlay(&window);
                     window_manager::show_no_activate(&window);
                 }
             }
@@ -221,8 +220,8 @@ pub fn run() {
 
             window_manager::start_hit_testing();
             window_manager::start_fullscreen_watch(handle.clone());
-            graphics::backdrop::start(handle.clone());
-            graphics::backdrop::set_enabled(settings.theme == "liquid-glass");
+            graphics::start(handle.clone());
+            graphics::configure(&handle, settings.theme == "liquid-glass", &settings.glass_backdrop);
             win32::media_smtc::start(handle.clone());
             win32::memory::start();
             win32::screen_time::start(handle.clone());

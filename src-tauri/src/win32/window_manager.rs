@@ -14,7 +14,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Shell::{
@@ -22,13 +22,14 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
-    GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, IsZoomed, SW_SHOWNOACTIVATE, WS_CAPTION, SetWindowLongPtrW, ShowWindow, WS_EX_APPWINDOW,
-    WS_EX_TOOLWINDOW,
+    GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, HWND_TOPMOST, IsZoomed, LWA_ALPHA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_LAYERED,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 use super::{from_wide, memory, taskbar};
 use crate::AppState;
-use crate::graphics::backdrop;
+use crate::graphics;
 use crate::i18n::{Lang, Text, tr};
 
 /// Logical px reserved above (bottom dock) or below (top dock) the pill for popovers & menus.
@@ -285,7 +286,6 @@ pub fn on_modal_destroyed(label: &str) {
 pub type HitRect = [f64; 4];
 
 struct HitEntry {
-    window: WebviewWindow,
     /// Cached on registration (main thread). Calling `window.hwnd()` from the hit-test thread
     /// would round-trip through the event loop.
     hwnd: isize,
@@ -310,7 +310,7 @@ pub fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>, capture_all: 
             }
         }
         None => {
-            map.insert(label, HitEntry { window, hwnd, rects, capture_all, interactive: None });
+            map.insert(label, HitEntry { hwnd, rects, capture_all, interactive: None });
         }
     }
 }
@@ -331,7 +331,7 @@ fn hit_test_tick() {
     }
     // Decide under the lock, act after releasing it: the Tauri call dispatches to the main
     // thread, which may itself be waiting for this lock inside `set_hit_regions`.
-    let mut changes: Vec<(WebviewWindow, bool)> = Vec::new();
+    let mut changes: Vec<(isize, bool)> = Vec::new();
     {
         let mut map = HIT_REGIONS.lock();
         for entry in map.values_mut() {
@@ -346,12 +346,14 @@ fn hit_test_tick() {
             };
             if entry.interactive != Some(interactive) {
                 entry.interactive = Some(interactive);
-                changes.push((entry.window.clone(), interactive));
+                if entry.hwnd != 0 {
+                    changes.push((entry.hwnd, interactive));
+                }
             }
         }
     }
-    for (window, interactive) in changes {
-        let _ = window.set_ignore_cursor_events(!interactive);
+    for (hwnd, interactive) in changes {
+        set_click_through(HWND(hwnd as *mut core::ffi::c_void), !interactive);
     }
 }
 
@@ -368,22 +370,66 @@ pub fn start_hit_testing() {
         .expect("spawn hit-test thread");
 }
 
-/// Keep overlay windows out of Alt+Tab / Task View (WS_EX_TOOLWINDOW), like the real taskbar.
-pub fn make_tool_window(window: &WebviewWindow) {
-    if let Ok(raw) = window.hwnd() {
-        let hwnd = HWND(raw.0 as *mut core::ffi::c_void);
-        unsafe {
-            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize));
+// ---------------------------------------------------------------------------------------------
+// Overlay window styles
+//
+// The dock and toast windows are created hidden and are shown, hidden and made click-through
+// with raw Win32 calls only. Tauri (tao) keeps its own copy of each window's flags and rewrites
+// GWL_STYLE / GWL_EXSTYLE from that copy whenever one of them changes: since it never saw the
+// window being shown, toggling `set_ignore_cursor_events` after startup re-applied the styles
+// without WS_VISIBLE and the dock vanished the moment the cursor entered the pill. So nothing
+// here may go through a tao flag setter once the window is up.
+// ---------------------------------------------------------------------------------------------
+
+/// Extended style for an overlay window: always layered + topmost + tool window (kept out of
+/// Alt+Tab / Task View like the real taskbar), click-through unless the cursor is over content.
+fn overlay_ex_style(current: isize, click_through: bool) -> isize {
+    let base = (current | (WS_EX_LAYERED.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0) as isize) & !(WS_EX_APPWINDOW.0 as isize);
+    if click_through { base | WS_EX_TRANSPARENT.0 as isize } else { base & !(WS_EX_TRANSPARENT.0 as isize) }
+}
+
+/// Toggle mouse pass-through. Only the WS_EX_TRANSPARENT bit changes; visibility, z-order and
+/// every other style are left exactly as they are.
+fn set_click_through(hwnd: HWND, click_through: bool) {
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let wanted = overlay_ex_style(ex, click_through);
+        if wanted != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
         }
     }
 }
 
-/// Show a window without activating it (never steal focus from the user's app).
+/// One-time setup before an overlay window is first shown: start click-through.
+pub fn prepare_overlay(window: &WebviewWindow) {
+    // The only tao flag change, made while the window is still hidden: it also gives the layered
+    // window its opaque alpha so it renders once shown.
+    let _ = window.set_ignore_cursor_events(true);
+    if let Ok(raw) = window.hwnd() {
+        let hwnd = HWND(raw.0 as *mut core::ffi::c_void);
+        unsafe {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+        }
+        set_click_through(hwnd, true);
+    }
+}
+
+/// Show a window above everything else without activating it (never steal focus from the user's app).
 pub fn show_no_activate(window: &WebviewWindow) {
     if let Ok(raw) = window.hwnd() {
+        let hwnd = HWND(raw.0 as *mut core::ffi::c_void);
         unsafe {
-            let _ = ShowWindow(HWND(raw.0 as *mut core::ffi::c_void), SW_SHOWNOACTIVATE);
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+
+/// Hide an overlay window (fullscreen app in front). The only code path that hides the dock.
+fn hide_overlay(window: &WebviewWindow) {
+    if let Ok(raw) = window.hwnd() {
+        unsafe {
+            let _ = ShowWindow(HWND(raw.0 as *mut core::ffi::c_void), SW_HIDE);
         }
     }
 }
@@ -462,6 +508,7 @@ pub fn start_fullscreen_watch(app: AppHandle) {
             loop {
                 std::thread::sleep(Duration::from_millis(500));
                 taskbar::enforce_hidden();
+                graphics::dxgi_capture::verify_affinity();
 
                 let Some(dock) = app.get_webview_window("dock") else { continue };
                 if cached_hwnd == 0 {
@@ -497,16 +544,16 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                 if fullscreen != hidden {
                     hidden = fullscreen;
                     // Nothing is composited while the dock is hidden: stop the desktop capture.
-                    backdrop::set_paused(fullscreen);
+                    graphics::set_paused(fullscreen);
                     let _ = app.emit("dock:fullscreen", fullscreen);
                     let toast = app.get_webview_window("toast");
                     if fullscreen {
                         // Let the slide-out animation finish, then truly hide so the topmost
                         // transparent windows never interfere with exclusive fullscreen.
                         std::thread::sleep(Duration::from_millis(320));
-                        let _ = dock.hide();
+                        hide_overlay(&dock);
                         if let Some(t) = toast {
-                            let _ = t.hide();
+                            hide_overlay(&t);
                         }
                     } else {
                         show_no_activate(&dock);
@@ -523,6 +570,26 @@ pub fn start_fullscreen_watch(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn click_through_toggle_only_changes_the_transparent_bit() {
+        let visible_unrelated = 0x0000_0110isize; // WS_EX_WINDOWEDGE | WS_EX_ACCEPTFILES
+        let through = overlay_ex_style(visible_unrelated, true);
+        let solid = overlay_ex_style(through, false);
+        assert_ne!(through & WS_EX_TRANSPARENT.0 as isize, 0);
+        assert_eq!(solid & WS_EX_TRANSPARENT.0 as isize, 0);
+        assert_eq!(through ^ solid, WS_EX_TRANSPARENT.0 as isize);
+        for style in [through, solid] {
+            assert_ne!(style & WS_EX_TOPMOST.0 as isize, 0);
+            assert_ne!(style & WS_EX_LAYERED.0 as isize, 0);
+            assert_ne!(style & WS_EX_TOOLWINDOW.0 as isize, 0);
+            assert_eq!(style & WS_EX_APPWINDOW.0 as isize, 0);
+            assert_eq!(style & visible_unrelated, visible_unrelated);
+        }
+        // Idempotent.
+        assert_eq!(overlay_ex_style(solid, false), solid);
+        assert_eq!(overlay_ex_style(through, true), through);
+    }
 
     #[test]
     fn only_picker_and_settings_are_lazy_modals() {
