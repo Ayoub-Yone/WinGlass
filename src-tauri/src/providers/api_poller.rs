@@ -1031,7 +1031,7 @@ fn simulate(id: &str, settings: &Settings) -> Option<Value> {
             json!({ "events": [
                 { "uid": format!("sim-design-{block}"), "title": "Design review", "start": meeting.to_rfc3339(), "end": (meeting + ChronoDuration::minutes(30)).to_rfc3339(), "allDay": false, "location": "Zoom", "url": "https://calendar.google.com", "calendar": "Work" },
                 { "uid": "sim-lunch", "title": "Lunch with Sam", "start": lunch.to_rfc3339(), "end": (lunch + ChronoDuration::hours(1)).to_rfc3339(), "allDay": false, "location": Value::Null, "url": Value::Null, "calendar": "Personal" },
-                { "uid": "sim-renewal", "title": "Figma subscription renewal", "start": renewal.to_rfc3339(), "end": (renewal + ChronoDuration::minutes(15)).to_rfc3339(), "allDay": false, "location": Value::Null, "url": "https://www.figma.com/settings", "calendar": "Billing" },
+                { "uid": "sim-renewal", "title": "Figma subscription renewal", "start": renewal.to_rfc3339(), "end": (renewal + ChronoDuration::minutes(15)).to_rfc3339(), "allDay": false, "location": Value::Null, "url": "https://www.figma.com/settings", "calendar": "Billing", "recurring": true },
             ]})
         }
         _ => return None,

@@ -55,7 +55,7 @@ export interface WorldClock {
 
 export interface AutomationSettings {
   preMeetingPause: { enabled: boolean; minutes: number };
-  aiLimitWarning: { enabled: boolean; thresholdPercent: number; horizonHours: number };
+  aiLimitWarning: { enabled: boolean; thresholdPercent: number; criticalPercent: number; horizonHours: number };
   revenueMilestone: { enabled: boolean; milestones: number[] };
   renewalReminder: { enabled: boolean; hours: number; keywords: string[] };
 }
@@ -276,6 +276,8 @@ export interface CalendarEvent {
   location: string | null;
   url: string | null;
   calendar: string | null;
+  /** Part of a repeating series (RRULE). */
+  recurring?: boolean;
 }
 
 export interface CalendarData {
@@ -347,6 +349,23 @@ export interface TrayIcon {
 export type TrayAction = "open" | "settings" | "quit";
 
 export type TrayOutcome = "focused" | "invoked" | "launched" | "shown" | "closed" | "terminated" | "stillOpen";
+
+/** A local path typed in the launcher, or one of its completions. */
+export interface PathHit {
+  path: string;
+  name: string;
+  isDir: boolean;
+  /** The typed path itself (not a completion). */
+  exact: boolean;
+}
+
+/** A display whose brightness can be changed (WMI panel or DDC/CI monitor). */
+export interface BrightnessDisplay {
+  id: string;
+  name: string;
+  internal: boolean;
+  percent: number;
+}
 
 /** Integrated launcher result (Start Menu / Desktop / App Paths). */
 export interface AppHit {
@@ -428,7 +447,8 @@ export interface Todo {
 
 export type ToastAction =
   | { kind: "open"; target: string }
-  | { kind: "window"; label: "settings" | "picker" };
+  | { kind: "window"; label: "settings" | "picker" }
+  | { kind: "dismiss" };
 
 export interface ToastSpec {
   id: string;
@@ -437,6 +457,9 @@ export interface ToastSpec {
   kind?: "calendar" | "ai" | "revenue" | "renewal" | "system";
   actionLabel?: string;
   action?: ToastAction;
+  /** Second pill (e.g. « Résilier » next to « Garder »). */
+  secondaryLabel?: string;
+  secondaryAction?: ToastAction;
   durationMs?: number;
 }
 

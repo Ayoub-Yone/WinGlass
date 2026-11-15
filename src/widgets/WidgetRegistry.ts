@@ -29,6 +29,7 @@ import {
   Users,
   Watch,
   CloudSun,
+  SunMedium,
   Volume2,
   ChevronUp,
 } from "lucide-react";
@@ -65,6 +66,7 @@ import {
 import { SearchWidget } from "./SearchWidget";
 import { VolumeWidget } from "./VolumeWidget";
 import { HiddenTrayButton } from "./HiddenTrayButton";
+import { BrightnessWidget } from "./BrightnessWidget";
 
 const S1: Span[] = ["1x1"];
 const S12: Span[] = ["1x1", "2x1"];
@@ -111,6 +113,7 @@ export const WIDGETS: WidgetDefinition[] = [
   { id: "battery", name: "Battery", description: "Charge level and charging state", category: "System", sizes: S12, defaultSize: "1x1", icon: BatteryFull, keywords: ["power", "charge"], component: BatteryWidget },
   { id: "storage", name: "Free Storage", description: "Free space on the system drive", category: "System", sizes: S12, defaultSize: "1x1", icon: HardDrive, keywords: ["disk", "space", "drive"], component: StorageWidget },
   { id: "hidden-tray", name: "Hidden Icons", description: "The ^ chevron: background tray apps (Riot, Discord, AMD…) in a popup", category: "System", sizes: ["auto"], defaultSize: "auto", icon: ChevronUp, keywords: ["tray", "notification area", "systray", "background", "icônes cachées", "zone de notification", "riot", "discord"], component: HiddenTrayButton },
+  { id: "brightness", name: "Brightness", description: "Screen brightness: laptop panel and DDC/CI monitors", category: "System", sizes: S12, defaultSize: "1x1", icon: SunMedium, keywords: ["luminosité", "écran", "display", "monitor", "ddc", "backlight"], component: BrightnessWidget },
   { id: "volume", name: "Volume", description: "System volume, mute and output device", category: "System", sizes: S12, defaultSize: "1x1", icon: Volume2, keywords: ["sound", "audio", "speaker", "mute", "son", "haut-parleur", "sourdine"], component: VolumeWidget },
   { id: "keyboard", name: "Keyboard Layout", description: "Active input language (ENG / FRA)", category: "System", sizes: S1, defaultSize: "1x1", icon: Keyboard, keywords: ["language", "input", "ime"], component: KeyboardLayoutWidget },
 

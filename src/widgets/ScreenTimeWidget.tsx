@@ -86,6 +86,22 @@ export function ScreenTimeWidget({ span }: WidgetProps) {
           <span className="font-semibold">{t("common.today")}</span>
           <span className="tabular-nums lb-muted">{data ? formatDuration(data.totalSeconds) : "—"}</span>
         </div>
+        {/* Whole day, hour by hour. */}
+        <div data-testid="screen-time-hours" className="mb-1 flex h-[44px] items-end gap-[2px]">
+          {hourly.map((v, h) => (
+            <div
+              key={h}
+              className="flex-1 rounded-[2px]"
+              title={`${h}${hourSuffix} · ${formatDuration(v)}`}
+              style={{ height: `${Math.max(5, (v / Math.max(3600, ...hourly)) * 100)}%`, background: h === currentHour ? "var(--lb-accent)" : v > 0 ? "var(--lb-muted)" : "var(--lb-track)", opacity: v > 0 ? 1 : 0.6 }}
+            />
+          ))}
+        </div>
+        <div className="mb-2 flex justify-between lb-faint tabular-nums" style={{ fontSize: "calc(var(--lb-small) - 1px)" }}>
+          <span>0{hourSuffix}</span>
+          <span>12{hourSuffix}</span>
+          <span>23{hourSuffix}</span>
+        </div>
         {data && data.topApps.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {data.topApps.map((a) => (

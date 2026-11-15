@@ -39,8 +39,12 @@ pub fn run(pid: u32) {
             return;
         };
         let waited = WaitForSingleObject(handle, INFINITE);
+        let mut code = 0u32;
+        let _ = windows::Win32::System::Threading::GetExitCodeProcess(handle, &mut code);
         let _ = CloseHandle(handle);
         if waited == WAIT_OBJECT_0 {
+            // Exit code 0 after a logged quit is normal; anything else is a crash or a hard kill.
+            super::exit_log(&format!("guardian: lumabar pid {pid} ended with exit code {code:#x}"));
             taskbar::repair_from_persisted();
         }
     }

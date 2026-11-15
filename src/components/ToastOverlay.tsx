@@ -57,8 +57,7 @@ function ToastCard(props: { toast: LiveToast; fromBelow: boolean; onDismiss: (ke
   const kind = KIND[toast.kind ?? "system"];
   const Icon = kind.icon;
 
-  const runAction = () => {
-    const action = toast.action;
+  const runAction = (action: ToastSpec["action"]) => {
     if (action?.kind === "open") void ipc.openTarget(action.target).catch(() => undefined);
     if (action?.kind === "window") void ipc.openWindow(action.label);
     onDismiss(toast.key);
@@ -86,12 +85,35 @@ function ToastCard(props: { toast: LiveToast; fromBelow: boolean; onDismiss: (ke
       <div className="min-w-0 flex-1 leading-snug">
         <div className="truncate text-[13.5px] font-semibold" title={toast.title}>{toast.title}</div>
         {toast.subtitle && <div className="truncate text-[12px] lb-muted">{toast.subtitle}</div>}
+        {/* A question (keep / cancel): both answers on their own row so the title keeps its width. */}
+        {toast.secondaryLabel && (
+          <div className="mt-1.5 flex items-center gap-1.5">
+            {toast.actionLabel && (
+              <button
+                data-toast-action="primary"
+                className="lb-focus whitespace-nowrap rounded-full border-none px-3 py-1 text-[12px] font-semibold"
+                style={{ background: "var(--lb-card-hover)" }}
+                onClick={() => runAction(toast.action)}
+              >
+                {toast.actionLabel}
+              </button>
+            )}
+            <button
+              data-toast-action="secondary"
+              className="lb-focus whitespace-nowrap rounded-full border-none bg-transparent px-2.5 py-1 text-[12px] font-semibold lb-muted"
+              onClick={() => runAction(toast.secondaryAction)}
+            >
+              {toast.secondaryLabel}
+            </button>
+          </div>
+        )}
       </div>
-      {toast.actionLabel && (
+      {toast.actionLabel && !toast.secondaryLabel && (
         <button
+          data-toast-action="primary"
           className="lb-focus shrink-0 whitespace-nowrap rounded-full border-none px-3 py-1 text-[12px] font-semibold"
           style={{ background: "var(--lb-card-hover)" }}
-          onClick={runAction}
+          onClick={() => runAction(toast.action)}
         >
           {toast.actionLabel}
         </button>

@@ -445,7 +445,7 @@ export function WeatherWidget({ span }: WidgetProps) {
 const FOLDERS: Array<{ id: string; label: TranslationKey; short: TranslationKey; icon: LucideIcon }> = [
   { id: "downloads", label: "folders.downloads", short: "folders.downloads", icon: Download },
   { id: "screenshots", label: "folders.screenshots", short: "folders.screenshotsShort", icon: Image },
-  { id: "recent", label: "folders.recent", short: "folders.recent", icon: History },
+  { id: "recent", label: "folders.recent", short: "folders.recentShort", icon: History },
   { id: "recycle-bin", label: "folders.recycle", short: "folders.recycle", icon: Trash2 },
 ];
 

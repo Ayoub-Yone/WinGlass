@@ -1,4 +1,5 @@
 pub mod app_search;
+pub mod brightness;
 pub mod apps_enum;
 pub mod audio;
 pub mod dpapi;
@@ -37,7 +38,22 @@ pub fn acquire_single_instance() -> Option<SingleInstanceGuard> {
     }
 }
 
-unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> BOOL {
+/// Why lumabar is exiting, appended to `%APPDATA%\lumabar\exit.log` (local only, capped at 64 KB):
+/// a dock that disappears can then be told apart from a crash, a quit command or a session end.
+pub fn exit_log(reason: &str) {
+    use std::io::Write;
+    let Some(dir) = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("lumabar")) else { return };
+    let path = dir.join("exit.log");
+    if std::fs::metadata(&path).map(|m| m.len() > 64 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{} pid={} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), std::process::id(), reason.replace(|c: char| c.is_control(), " "));
+    }
+}
+
+unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
+    exit_log(&format!("console control event {ctrl_type}"));
     taskbar::restore();
     // FALSE: let the default handler terminate the process after we restored.
     BOOL(0)
@@ -47,6 +63,8 @@ unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> BOOL {
 pub fn install_crash_guards() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        exit_log(&format!("panic on thread {}: {info}", thread.name().unwrap_or("?")));
         taskbar::restore();
         previous(info);
     }));

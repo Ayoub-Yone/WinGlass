@@ -7,6 +7,8 @@ import type {
   AppEntry,
   AppAudio,
   AppHit,
+  BrightnessDisplay,
+  PathHit,
   TrayAction,
   TrayIcon,
   TrayOutcome,
@@ -58,6 +60,11 @@ export const ipc = {
   getAudioSessions: () => invoke<AppAudio[]>("get_audio_sessions"),
   setAppVolume: (pid: number, volume: number) => invoke<AppAudio[]>("set_app_volume", { pid, volume: Math.round(Math.min(100, Math.max(0, volume))) }),
   setAppMute: (pid: number, muted: boolean) => invoke<AppAudio[]>("set_app_mute", { pid, muted }),
+
+  completePath: (query: string) => invoke<PathHit[]>("complete_path", { query }),
+  openPath: (path: string) => invoke<void>("open_path", { path }),
+  getBrightness: () => invoke<BrightnessDisplay[]>("get_brightness"),
+  setBrightness: (id: string, percent: number) => invoke<BrightnessDisplay>("set_brightness", { id, percent: Math.round(Math.min(100, Math.max(0, percent))) }),
 
   getTrayIcons: () => invoke<TrayIcon[]>("get_tray_icons"),
   trayIconAction: (id: string, action: TrayAction) => invoke<TrayOutcome>("tray_icon_action", { id, action }),

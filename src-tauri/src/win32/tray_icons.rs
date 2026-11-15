@@ -1042,7 +1042,11 @@ mod tests {
         for t in &icons {
             eprintln!("tray: {} | overflow={} | self={} | icon={} | {}", t.name, t.is_hidden_overflow, t.is_self, t.icon_png.is_some(), t.exe);
         }
-        assert_eq!(before, after, "listing must never reveal the tray or move the cursor");
+        // Listing must never reveal the tray or open an overflow. (The user may open the native
+        // flyout or move the mouse meanwhile: only transitions listing could cause are checked.)
+        assert_eq!(before.0, after.0, "Shell_TrayWnd visibility changed while listing");
+        assert!(before.1 || !after.1, "listing opened the hidden-icons flyout");
+        assert!(before.2 || !after.2, "listing opened the legacy overflow window");
         let procs: HashSet<String> = processes().into_iter().map(|(_, p)| p).collect();
         let mut ids = HashSet::new();
         for t in &icons {

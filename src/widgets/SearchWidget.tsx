@@ -2,22 +2,30 @@
 // The backend indexes Start Menu / Desktop shortcuts and App Paths executables
 // (`search_installed_apps`, fuzzy + prefix: "riot" -> Client Riot, VALORANT, League of Legends);
 // results render in a frosted popover directly above (or below, top dock) the search card.
+// A typed local path (« C:\Projects », « %APPDATA% », « ~\Documents ») lists the folder and its
+// completions instead: Enter opens it in Explorer (files are revealed, never executed).
 //   ↑ / ↓ select · Enter launches and dismisses · Esc / click outside closes.
 
-import { Globe, Search } from "lucide-react";
+import { File, Folder, Globe, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppIcon } from "../components/AppIcon";
 import { Popover, WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc } from "../lib/ipc";
-import type { AppHit, WidgetProps } from "../types/lumabar";
+import type { AppHit, PathHit, WidgetProps } from "../types/lumabar";
 
 type Item =
+  | { kind: "path"; hit: PathHit }
   | { kind: "app"; hit: AppHit }
   | { kind: "url"; url: string }
   | { kind: "web"; query: string };
 
 const URL_RE = /^(https?:\/\/)?[\w-]+(\.[\w-]+)+(:\d+)?(\/\S*)?$/i;
+
+/** `C:\…`, `C:`, `d:/…`, `~\…`, `%VAR%…` (network shares are not listed). */
+export function looksLikePath(q: string): boolean {
+  return /^[a-z]:([\\/]|$)/i.test(q) || q.startsWith("~") || q.startsWith("%");
+}
 
 export function looksLikeUrl(q: string): boolean {
   return URL_RE.test(q) && !q.includes(" ");
@@ -27,6 +35,7 @@ export function SearchWidget({ span, preview }: WidgetProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<AppHit[]>([]);
+  const [paths, setPaths] = useState<PathHit[]>([]);
   const [selected, setSelected] = useState(0);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,27 +44,36 @@ export function SearchWidget({ span, preview }: WidgetProps) {
   const seq = useRef(0);
 
   const q = query.trim();
-  const items: Item[] = [
+  const isPath = looksLikePath(q);
+  const items: Item[] = isPath
+    ? paths.map((hit) => ({ kind: "path" as const, hit }))
+    : [
     ...hits.map((hit) => ({ kind: "app" as const, hit })),
     ...(q && looksLikeUrl(q) ? [{ kind: "url" as const, url: q.startsWith("http") ? q : `https://${q}` }] : []),
     ...(q ? [{ kind: "web" as const, query: q }] : []),
-  ];
+      ];
 
   // Debounced search; stale answers (slower than a newer keystroke) are dropped.
   useEffect(() => {
     if (preview) return;
     if (!q) {
       setHits([]);
+      setPaths([]);
       setOpen(false);
       return;
     }
     const id = ++seq.current;
     const timer = window.setTimeout(() => {
-      ipc
-        .searchInstalledApps(q)
-        .then((r) => {
+      const request: Promise<void> = looksLikePath(q)
+        ? ipc.completePath(q).then((r) => {
+            if (id === seq.current) setPaths(r);
+          })
+        : ipc.searchInstalledApps(q).then((r) => {
+            if (id === seq.current) setHits(r);
+          });
+      request
+        .then(() => {
           if (id !== seq.current) return;
-          setHits(r);
           setSelected(0);
           setOpen(true);
         })
@@ -69,6 +87,7 @@ export function SearchWidget({ span, preview }: WidgetProps) {
     setOpen(false);
     setQuery("");
     setHits([]);
+    setPaths([]);
     input.current?.blur();
   };
 
@@ -76,7 +95,9 @@ export function SearchWidget({ span, preview }: WidgetProps) {
     if (!item || preview) return;
     setError(null);
     const action =
-      item.kind === "app"
+      item.kind === "path"
+        ? ipc.openPath(item.hit.path)
+        : item.kind === "app"
         ? ipc.launchApp(item.hit.path)
         : item.kind === "url"
           ? ipc.openTarget(item.url)
@@ -134,9 +155,9 @@ export function SearchWidget({ span, preview }: WidgetProps) {
       </WidgetCard>
       <Popover anchor={card} open={open && !preview && !!q} onClose={() => setOpen(false)} width={380}>
         <div data-testid="search-results" className="flex flex-col gap-0.5">
-          {hits.length === 0 && (
+          {(isPath ? paths.length === 0 : hits.length === 0) && (
             <div className="px-2 py-1.5 lb-muted" style={{ fontSize: "var(--lb-small)" }}>
-              {t("search.noResults")}
+              {isPath ? t("search.noPath") : t("search.noResults")}
             </div>
           )}
           {items.map((item, i) => {
@@ -148,6 +169,18 @@ export function SearchWidget({ span, preview }: WidgetProps) {
               className: "lb-row flex w-full items-center gap-2.5 rounded-lg border-none bg-transparent px-2 py-1.5 text-left",
               style: { color: "var(--lb-text)" },
             };
+            if (item.kind === "path") {
+              const Icon = item.hit.isDir ? Folder : File;
+              return (
+                <button key={item.hit.path} data-testid="search-path" {...common}>
+                  <Icon size={18} className="mx-[3px] shrink-0" style={{ color: item.hit.isDir ? "var(--lb-accent)" : "var(--lb-muted)" }} />
+                  <span className="min-w-0 flex-1 truncate font-medium">{item.hit.exact && item.hit.isDir ? t("search.openFolder", { name: item.hit.name }) : item.hit.name}</span>
+                  <span className="max-w-[45%] shrink-0 truncate lb-faint" style={{ fontSize: "var(--lb-small)", direction: "rtl" }} title={item.hit.path}>
+                    {item.hit.path}
+                  </span>
+                </button>
+              );
+            }
             if (item.kind === "app") {
               return (
                 <button key={item.hit.path} data-testid="search-hit" {...common}>

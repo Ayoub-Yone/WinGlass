@@ -33,7 +33,8 @@ pub struct AppState {
 }
 
 /// Restore the native taskbar and exit the process.
-pub fn restore_and_quit(app: &AppHandle) {
+pub fn restore_and_quit(app: &AppHandle, reason: &str) {
+    win32::exit_log(&format!("quit: {reason}"));
     taskbar::restore_for_exit();
     win32::arm_exit_watchdog();
     app.exit(0);
@@ -89,7 +90,7 @@ fn build_tray(app: &AppHandle, lang: Lang) -> tauri::Result<()> {
                 }
             }
             "restore" => emergency_restore(app),
-            "quit" => restore_and_quit(app),
+            "quit" => restore_and_quit(app, "tray menu « Quitter »"),
             _ => {}
         })
         .build(app)?;
@@ -165,6 +166,10 @@ pub fn run() {
             commands::set_app_mute,
             commands::get_tray_icons,
             commands::tray_icon_action,
+            commands::complete_path,
+            commands::open_path,
+            commands::get_brightness,
+            commands::set_brightness,
             commands::account_status,
             commands::account_login,
             commands::media_state,
@@ -196,7 +201,7 @@ pub fn run() {
                 // quits, restoring the taskbar first.
                 if window_manager::modal_spec(window.label(), Lang::Fr).is_none() {
                     api.prevent_close();
-                    restore_and_quit(window.app_handle());
+                    restore_and_quit(window.app_handle(), &format!("close requested on the {} window (Alt+F4 / WM_CLOSE / taskkill)", window.label()));
                 }
             }
             WindowEvent::Destroyed => {
@@ -223,8 +228,11 @@ pub fn run() {
             let sentinel_handle = handle.clone();
             sentinel::start(Box::new(move |event| match event {
                 SentinelEvent::EmergencyRestore => emergency_restore(&sentinel_handle),
-                SentinelEvent::SessionEnding => taskbar::restore(),
-                SentinelEvent::CloseRequested => restore_and_quit(&sentinel_handle),
+                SentinelEvent::SessionEnding => {
+                    win32::exit_log("session ending (logoff / shutdown)");
+                    taskbar::restore();
+                }
+                SentinelEvent::CloseRequested => restore_and_quit(&sentinel_handle, "WM_CLOSE on the sentinel (graceful taskkill)"),
                 SentinelEvent::TaskbarRecreated => taskbar::reapply(),
                 SentinelEvent::ForegroundChanged(hwnd) => {
                     // Alt+Tab / Win key out of a fullscreen game: re-evaluate the dock right now.
@@ -252,6 +260,9 @@ pub fn run() {
 
     app.run(|_app, event| {
         if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
+            if matches!(event, RunEvent::Exit) {
+                win32::exit_log("run loop exit");
+            }
             taskbar::restore_for_exit();
             win32::arm_exit_watchdog();
         }

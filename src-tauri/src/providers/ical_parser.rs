@@ -23,6 +23,8 @@ pub struct CalendarEvent {
     pub location: Option<String>,
     pub url: Option<String>,
     pub calendar: Option<String>,
+    /// Part of a repeating series (RRULE or an overridden occurrence): subscriptions, rent…
+    pub recurring: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -516,6 +518,7 @@ pub fn parse_ics(text: &str, days_ahead: i64) -> Result<Vec<CalendarEvent>, Stri
                     location: raw.location.clone(),
                     url: raw.url.clone(),
                     calendar: cal_name.clone(),
+                    recurring: raw.rrule.is_some() || raw.recurrence_id.is_some(),
                 });
             }
         }

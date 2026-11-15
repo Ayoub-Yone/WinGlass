@@ -13,7 +13,8 @@ use crate::storage::db::{ScreenTimeDay, Todo};
 use crate::storage::secrets;
 use crate::storage::settings::Settings;
 use crate::providers::accounts::{self, AccountStatus};
-use crate::win32::app_search::{self, AppHit};
+use crate::win32::app_search::{self, AppHit, PathHit};
+use crate::win32::brightness::{self, Display};
 use crate::win32::apps_enum::{self, AppEntry};
 use crate::win32::audio::{self, AppAudio, AudioState};
 use crate::win32::liner;
@@ -120,7 +121,7 @@ pub fn set_taskbar_mode(app: AppHandle, state: State<'_, AppState>, mode: String
 
 #[tauri::command]
 pub fn restore_taskbar_and_quit(app: AppHandle) {
-    crate::restore_and_quit(&app);
+    crate::restore_and_quit(&app, "Restaurer la barre des tâches et quitter (dock menu / tray card)");
 }
 
 /// Show the picker / settings window, creating it on demand. Async on purpose: creating a window
@@ -216,6 +217,32 @@ pub fn open_target(target: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn search_installed_apps(query: String) -> Result<Vec<AppHit>, String> {
     blocking(move || Ok(app_search::search(&query))).await
+}
+
+/// Launcher: a typed local path (« C:Projects », « %APPDATA% », « ~Documents ») and its completions.
+#[tauri::command]
+pub async fn complete_path(query: String) -> Result<Vec<PathHit>, String> {
+    blocking(move || Ok(app_search::complete_path(&query))).await
+}
+
+/// Folder -> Explorer at it; file -> Explorer with it selected (never executed).
+#[tauri::command]
+pub async fn open_path(path: String) -> Result<(), String> {
+    blocking(move || app_search::open_path(&path)).await
+}
+
+// ---------------------------------------------------------------------------------------------
+// Display brightness (WMI panel + DDC/CI monitors)
+// ---------------------------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_brightness() -> Result<Vec<Display>, String> {
+    blocking(|| Ok(brightness::list())).await
+}
+
+#[tauri::command]
+pub async fn set_brightness(id: String, percent: u32) -> Result<Display, String> {
+    blocking(move || brightness::set(&id, percent.min(100))).await
 }
 
 // ---------------------------------------------------------------------------------------------

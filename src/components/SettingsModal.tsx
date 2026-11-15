@@ -655,7 +655,7 @@ function AutomationsTab({ s }: { s: Settings }) {
           <Toggle checked={a.preMeetingPause.enabled} onChange={(v) => setA({ preMeetingPause: { ...a.preMeetingPause, enabled: v } })} />
         </Row>
         <Row label={t("settings.minutesBefore")}>
-          <CommitInput type="number" width={70} value={a.preMeetingPause.minutes} onCommit={(v) => setA({ preMeetingPause: { ...a.preMeetingPause, minutes: Math.max(1, Math.min(60, Math.round(Number(v) || 5))) } })} />
+          <CommitInput type="number" width={70} value={a.preMeetingPause.minutes} onCommit={(v) => setA({ preMeetingPause: { ...a.preMeetingPause, minutes: Math.max(1, Math.min(60, Math.round(Number(v) || 2))) } })} />
         </Row>
       </Section>
       <Section title={t("settings.rule2")} description={t("settings.rule2Desc")}>
@@ -671,6 +671,16 @@ function AutomationsTab({ s }: { s: Settings }) {
             value={a.aiLimitWarning.thresholdPercent}
             onChange={(e) => setA({ aiLimitWarning: { ...a.aiLimitWarning, thresholdPercent: Number(e.target.value) } })}
             style={{ accentColor: "var(--lb-accent)" }}
+          />
+        </Row>
+        <Row label={t("settings.critical")} hint={formatPercent(a.aiLimitWarning.criticalPercent ?? 95)}>
+          <input
+            type="range"
+            min={60}
+            max={100}
+            value={a.aiLimitWarning.criticalPercent ?? 95}
+            onChange={(e) => setA({ aiLimitWarning: { ...a.aiLimitWarning, criticalPercent: Math.max(Number(e.target.value), a.aiLimitWarning.thresholdPercent + 1) } })}
+            style={{ accentColor: "var(--lb-red)" }}
           />
         </Row>
         <Row label={t("settings.horizon")}>

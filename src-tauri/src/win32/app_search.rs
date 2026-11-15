@@ -354,6 +354,130 @@ pub fn search(query: &str) -> Vec<AppHit> {
     rank(&index(), query, MAX_RESULTS)
 }
 
+// ---------------------------------------------------------------------------------------------
+// Local paths typed in the search bar (« C:\Projects », « %APPDATA% », « ~\Documents »)
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PathHit {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    /// The typed path itself (not a completion).
+    pub exact: bool,
+}
+
+const MAX_PATH_HITS: usize = 6;
+
+/// Expand `%VAR%` and a leading `~` with the given environment lookup.
+pub fn expand_path(query: &str, env: impl Fn(&str) -> Option<String>) -> String {
+    let q = query.trim().trim_matches('"');
+    let q = match q.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['\\', '/']) => format!("{}{rest}", env("USERPROFILE").unwrap_or_else(|| "~".into())),
+        _ => q.to_string(),
+    };
+    let mut out = String::new();
+    let mut rest = q.as_str();
+    while let Some(start) = rest.find('%') {
+        let Some(len) = rest[start + 1..].find('%') else { break };
+        let name = &rest[start + 1..start + 1 + len];
+        out.push_str(&rest[..start]);
+        match env(name) {
+            Some(value) if !name.is_empty() => out.push_str(&value),
+            _ => out.push_str(&rest[start..start + len + 2]),
+        }
+        rest = &rest[start + len + 2..];
+    }
+    out.push_str(rest);
+    out.replace('/', "\\")
+}
+
+/// A local absolute path (`C:\…`, `C:`), never a network share: listing `\\server\…` could hang
+/// the launcher on an unreachable host.
+pub fn is_local_path(expanded: &str) -> bool {
+    let b = expanded.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\')
+}
+
+/// Whether the query is meant as a path at all (decided before touching the file system).
+pub fn looks_like_path(query: &str) -> bool {
+    let q = query.trim();
+    q.starts_with('~') || q.starts_with('%') || is_local_path(&q.replace('/', "\\"))
+}
+
+/// The folder itself when it exists, then children of the folder being typed whose names start
+/// with the last segment (folders first).
+pub fn complete_path(query: &str) -> Vec<PathHit> {
+    if !looks_like_path(query) {
+        return Vec::new();
+    }
+    let expanded = expand_path(query, |k| std::env::var(k).ok());
+    if !is_local_path(&expanded) {
+        return Vec::new();
+    }
+    let mut full = expanded.clone();
+    if full.len() == 2 {
+        full.push('\\');
+    }
+    let mut out = Vec::new();
+    let as_path = Path::new(&full);
+    let (dir, prefix) = if full.ends_with('\\') {
+        if as_path.is_dir() {
+            out.push(PathHit { path: full.clone(), name: full.clone(), is_dir: true, exact: true });
+        }
+        (as_path.to_path_buf(), String::new())
+    } else {
+        if as_path.is_dir() || as_path.is_file() {
+            out.push(PathHit { path: full.clone(), name: display_name(as_path), is_dir: as_path.is_dir(), exact: true });
+        }
+        (as_path.parent().map(Path::to_path_buf).unwrap_or_default(), as_path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default())
+    };
+    if as_path.is_dir() && !full.ends_with('\\') {
+        // An exact folder: its own entry is enough (children appear once a "\" is typed).
+        return out;
+    }
+    if let Ok(read) = std::fs::read_dir(&dir) {
+        let mut children: Vec<PathHit> = read
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let lower = name.to_lowercase();
+                if !lower.starts_with(&prefix) || name.starts_with('$') {
+                    return None;
+                }
+                let is_dir = e.file_type().ok()?.is_dir();
+                Some(PathHit { path: e.path().to_string_lossy().into_owned(), name, is_dir, exact: false })
+            })
+            .filter(|h| !out.iter().any(|o| o.path.eq_ignore_ascii_case(&h.path)))
+            .collect();
+        children.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        out.extend(children);
+    }
+    out.truncate(MAX_PATH_HITS);
+    out
+}
+
+fn display_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned())
+}
+
+/// Folder -> Explorer at that folder; file -> Explorer with the file selected (never executed).
+pub fn open_path(path: &str) -> Result<(), String> {
+    let expanded = expand_path(path, |k| std::env::var(k).ok());
+    if !is_local_path(&expanded) {
+        return Err("only local paths can be opened".into());
+    }
+    let p = Path::new(&expanded);
+    if p.is_dir() {
+        super::apps_enum::shell_open("explorer.exe", Some(&format!("\"{expanded}\"")))
+    } else if p.is_file() {
+        super::apps_enum::shell_open("explorer.exe", Some(&format!("/select,\"{expanded}\"")))
+    } else {
+        Err(format!("{expanded} does not exist"))
+    }
+}
+
 /// True when `path` is something the index produced (the launcher only launches those).
 pub fn is_indexed(path: &str) -> bool {
     let wanted = path.to_ascii_lowercase();
@@ -363,6 +487,46 @@ pub fn is_indexed(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_paths_expand_and_stay_local() {
+        let env = |k: &str| match k {
+            "USERPROFILE" => Some(r"C:\Users\me".to_string()),
+            "APPDATA" => Some(r"C:\Users\me\AppData\Roaming".to_string()),
+            _ => None,
+        };
+        assert_eq!(expand_path(r"~\Documents", env), r"C:\Users\me\Documents");
+        assert_eq!(expand_path("~", env), r"C:\Users\me");
+        assert_eq!(expand_path(r"%APPDATA%\lumabar", env), r"C:\Users\me\AppData\Roaming\lumabar");
+        assert_eq!(expand_path(r"%NOPE%\x", env), r"%NOPE%\x");
+        assert_eq!(expand_path("c:/Projects/lumabar", env), r"c:\Projects\lumabar");
+        assert_eq!(expand_path("\"C:\\Program Files\"", env), r"C:\Program Files");
+        assert!(looks_like_path(r"C:\Projects") && looks_like_path("C:") && looks_like_path("d:/x") && looks_like_path("~\\x") && looks_like_path("%TEMP%"));
+        assert!(!looks_like_path("discord") && !looks_like_path("riot client") && !looks_like_path(r"\\server\share") && !looks_like_path("c:x"));
+        assert!(!is_local_path(r"\\server\share"));
+        assert!(open_path(r"\\server\share").is_err());
+    }
+
+    #[test]
+    fn real_paths_complete_folders_first() {
+        let root = std::env::temp_dir().join(format!("lumabar-path-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Projects")).unwrap();
+        std::fs::create_dir_all(root.join("Photos")).unwrap();
+        std::fs::write(root.join("plan.txt"), b"x").unwrap();
+        std::fs::write(root.join("other.txt"), b"x").unwrap();
+        let base = root.to_string_lossy().to_string();
+        let names = |q: &str| complete_path(q).into_iter().map(|h| (h.name, h.is_dir)).collect::<Vec<_>>();
+        assert_eq!(names(&format!(r"{base}\p")), vec![("Photos".into(), true), ("Projects".into(), true), ("plan.txt".into(), false)]);
+        // An exact folder is offered on its own; typing "\" lists what is inside.
+        assert_eq!(names(&format!(r"{base}\Projects")), vec![("Projects".into(), true)]);
+        let inside = complete_path(&format!(r"{base}\"));
+        assert!(inside[0].is_dir && inside[0].exact && inside.len() == 5 && inside[1..].iter().all(|h| !h.exact), "{inside:?}");
+        assert!(complete_path(&format!(r"{base}\Projects"))[0].exact);
+        assert!(complete_path(&format!(r"{base}\p")).iter().all(|h| !h.exact));
+        assert!(complete_path("discord").is_empty());
+        assert!(open_path(&format!(r"{base}\missing")).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn fixture() -> Vec<Entry> {
         vec![

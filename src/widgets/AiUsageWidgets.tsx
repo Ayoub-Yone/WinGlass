@@ -6,7 +6,8 @@ import { AlertTriangle } from "lucide-react";
 import { BrandGlyph, ProgressBar, ProviderState, WidgetCard, usageColor } from "../components/ui";
 import { useI18n, type I18n } from "../i18n";
 import { formatMoney, formatPercent, formatResetIn, formatTime, formatWeekdayShort } from "../lib/format";
-import { useNow, useProvider } from "../lib/hooks";
+import { useNow, useProvider, useSettings } from "../lib/hooks";
+import { aiAlertLevel } from "../engine/AutomationEngine";
 import type { AiUsageData, ProviderId, UsageTier, WidgetProps } from "../types/lumabar";
 
 const TIER_BASE: Record<string, string> = {
@@ -67,6 +68,7 @@ function AiUsageWidget(props: WidgetProps & { providerId: ProviderId; name: stri
   const { span, providerId, name } = props;
   const { t, td } = useI18n();
   const view = useProvider<AiUsageData>(providerId);
+  const settings = useSettings();
   const now = useNow(30_000);
   const glyph = <BrandGlyph id={providerId} size={span === "1x1" ? 26 : 22} />;
 
@@ -74,6 +76,8 @@ function AiUsageWidget(props: WidgetProps & { providerId: ProviderId; name: stri
     return <ProviderState span={span} providerId={providerId} glyph={glyph} name={name} status={view.status} error={view.error} />;
   }
   const data = view.data;
+  const peak = Math.max(0, ...data.tiers.map((tier) => tier.percent));
+  const alert = aiAlertLevel(peak, settings?.automations.aiLimitWarning);
   const balance =
     data.balance === undefined || data.budget === undefined
       ? undefined
@@ -85,7 +89,7 @@ function AiUsageWidget(props: WidgetProps & { providerId: ProviderId; name: stri
   if (span === "1x1") {
     const top = [...data.tiers].sort((a, b) => b.percent - a.percent)[0];
     return (
-      <WidgetCard span={span} title={view.error ?? t("ai.usage", { name })}>
+      <WidgetCard span={span} alert={alert} title={view.error ?? t("ai.usage", { name })}>
         <div className="flex w-full items-center gap-2">
           {glyph}
           <div className="min-w-0 flex-1 leading-tight">
@@ -103,7 +107,7 @@ function AiUsageWidget(props: WidgetProps & { providerId: ProviderId; name: stri
 
   const tiers = data.tiers.slice(0, 3);
   return (
-    <WidgetCard span={span} title={view.error ?? t("ai.usage", { name })}>
+    <WidgetCard span={span} alert={alert} title={view.error ?? t("ai.usage", { name })}>
       <div className="flex w-full min-w-0 items-center gap-2">
         {glyph}
         <div className="flex min-w-0 flex-1 flex-col justify-center gap-[2px]">

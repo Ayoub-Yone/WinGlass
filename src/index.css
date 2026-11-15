@@ -291,3 +291,17 @@ html[data-hidden="true"] *::after {
 .lb-menu-row:hover {
   background: var(--lb-card-hover);
 }
+
+/* AI quota highlight (automation « Alerte de quota IA »): amber at the threshold, red when critical. */
+.lb-card[data-alert="warn"] {
+  box-shadow: inset 0 0 0 1.5px rgba(255, 159, 10, 0.8), 0 0 14px rgba(255, 159, 10, 0.28);
+}
+.lb-card[data-alert="critical"] {
+  box-shadow: inset 0 0 0 1.5px rgba(255, 69, 58, 0.9), 0 0 16px rgba(255, 69, 58, 0.35);
+  animation: lb-alert-pulse 2.4s ease-in-out infinite;
+}
+@keyframes lb-alert-pulse {
+  50% {
+    box-shadow: inset 0 0 0 1.5px rgba(255, 69, 58, 0.55), 0 0 6px rgba(255, 69, 58, 0.15);
+  }
+}

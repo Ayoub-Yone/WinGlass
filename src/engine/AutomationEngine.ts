@@ -6,7 +6,7 @@
 import { bus } from "./EventBus";
 import { getHub } from "./DataHub";
 import { broadcast, ipc } from "../lib/ipc";
-import { formatDayTime, formatMoney, formatRelativeDay, formatTime } from "../lib/format";
+import { formatDayTime, formatMoney, formatPercent, formatRelativeDay, formatTime } from "../lib/format";
 import { getLang, t, translateDynamic } from "../i18n";
 import type {
   AiUsageData,
@@ -44,6 +44,14 @@ function save(key: string, value: unknown): void {
 }
 
 export const RENEWAL_REVENUE_PROVIDERS: ProviderId[] = ["stripe", "polar", "dodo"];
+
+/** Warning level of an AI tier under the quota rule (also drives the tile highlight). */
+export function aiAlertLevel(percent: number, rule: AutomationSettings["aiLimitWarning"] | null | undefined): "warn" | "critical" | null {
+  if (!rule?.enabled) return null;
+  if (percent >= (rule.criticalPercent ?? 95)) return "critical";
+  if (percent >= rule.thresholdPercent) return "warn";
+  return null;
+}
 
 export interface RuleTestResult {
   ok: boolean;
@@ -135,14 +143,19 @@ class AutomationEngineImpl {
 
   private fireRenewal(up: UpcomingEvent): void {
     const start = new Date(up.event.start);
+    const when = up.event.allDay ? up.startTimeFormatted : t("toast.renewal.subtitle", { time: formatTime(start) });
+    // Keep or cancel: « Garder » simply acknowledges (this occurrence never fires again);
+    // « Résilier » opens the subscription's page from the event, else the calendar.
     this.toast({
       id: `renewal-${up.event.uid}`,
       kind: "renewal",
       title: t("toast.renewal.title", { title: up.event.title, day: formatRelativeDay(start) }),
-      subtitle: up.event.allDay ? up.startTimeFormatted : t("toast.renewal.subtitle", { time: formatTime(start) }),
-      actionLabel: t("toast.renewal.action"),
-      action: { kind: "open", target: up.event.url ?? "calendar-app" },
-      durationMs: 12_000,
+      subtitle: `${when} · ${t(up.event.recurring ? "toast.renewal.promptRecurring" : "toast.renewal.prompt")}`,
+      actionLabel: t("toast.renewal.keep"),
+      action: { kind: "dismiss" },
+      secondaryLabel: t("toast.renewal.cancel"),
+      secondaryAction: { kind: "open", target: up.event.url ?? "calendar-app" },
+      durationMs: 20_000,
     });
   }
 
@@ -183,22 +196,25 @@ class AutomationEngineImpl {
       const hoursLeft = depletion ? (depletion - Date.now()) / 3_600_000 : null;
       const runsOutBeforeReset = depletion !== null && (resetAt === null || depletion < resetAt);
       const projected = hoursLeft !== null && hoursLeft < rule.horizonHours && runsOutBeforeReset;
-      if (tier.percent < rule.thresholdPercent && !projected) continue;
-      if (!this.once(`ai:${key}:${tier.resetsAt ?? "none"}`)) continue;
-      this.fireAiWarning(data.provider, tier.key, tier.label, tier.percent, depletion, tier.resetsAt);
+      const level = aiAlertLevel(tier.percent, rule);
+      if (!level && !projected) continue;
+      // One toast per level (85 % then 95 %) per reset window.
+      if (!this.once(`ai:${key}:${tier.resetsAt ?? "none"}:${level ?? "projected"}`)) continue;
+      this.fireAiWarning(data.provider, tier.key, tier.label, tier.percent, depletion, tier.resetsAt, level === "critical");
     }
   }
 
-  private fireAiWarning(provider: string, tierKey: string, tierLabel: string, percent: number, depletion: number | null, resetsAt: string | null): void {
+  private fireAiWarning(provider: string, tierKey: string, tierLabel: string, percent: number, depletion: number | null, resetsAt: string | null, critical = false): void {
     // Tier names come from the backend in English; known tiers are localized by key.
     const tier = translateDynamic(getLang(), `tier.${tierKey}`, tierLabel);
     let title: string;
     if (percent >= 100) title = t("toast.ai.reached", { provider, tier });
+    else if (critical) title = t("toast.ai.critical", { provider, tier, percent: formatPercent(percent) });
     else if (depletion !== null) title = t("toast.ai.title", { provider, tier, when: formatDayTime(new Date(depletion)) });
     else title = t("toast.ai.titleSoon", { provider, tier });
     const reset = resetsAt ? formatDayTime(new Date(resetsAt)) : t("toast.ai.nextCycle");
     this.toast({
-      id: `ai-${provider}-${tierKey}`,
+      id: `ai-${provider}-${tierKey}${critical ? "-critical" : ""}`,
       kind: "ai",
       title,
       subtitle: t("toast.ai.subtitle", { reset }),
@@ -262,7 +278,7 @@ class AutomationEngineImpl {
       case "renewalReminder": {
         const start = new Date(now + 20 * 3_600_000);
         this.fireRenewal({
-          event: { uid: `test-renewal-${now}`, title: t("toast.test.sampleRenewal"), start: start.toISOString(), end: start.toISOString(), allDay: false, location: null, url: null, calendar: null },
+          event: { uid: `test-renewal-${now}`, title: t("toast.test.sampleRenewal"), start: start.toISOString(), end: start.toISOString(), allDay: false, location: null, url: null, calendar: null, recurring: true },
           minutesUntil: 20 * 60,
           startTimeFormatted: formatTime(start),
         });

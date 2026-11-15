@@ -13,7 +13,7 @@ pub struct PreMeetingRule {
 }
 impl Default for PreMeetingRule {
     fn default() -> Self {
-        Self { enabled: true, minutes: 5 }
+        Self { enabled: true, minutes: 2 }
     }
 }
 
@@ -22,11 +22,13 @@ impl Default for PreMeetingRule {
 pub struct AiLimitRule {
     pub enabled: bool,
     pub threshold_percent: f64,
+    /// Second, louder warning (once per reset window as well).
+    pub critical_percent: f64,
     pub horizon_hours: f64,
 }
 impl Default for AiLimitRule {
     fn default() -> Self {
-        Self { enabled: true, threshold_percent: 85.0, horizon_hours: 24.0 }
+        Self { enabled: true, threshold_percent: 85.0, critical_percent: 95.0, horizon_hours: 24.0 }
     }
 }
 
@@ -124,7 +126,7 @@ impl Default for ProviderConfig {
 }
 
 /// Current settings document revision.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -215,6 +217,11 @@ impl Settings {
             // "native" (explicit choice, or set by the emergency hotkey) is left alone.
             settings.taskbar_mode = "completely_hidden".into();
         }
+        if stored < 3 && settings.automations.pre_meeting_pause.minutes == 5 {
+            // Revision 3: media pauses 2 minutes before a meeting (the old default was 5). A value
+            // the user picked themselves is kept.
+            settings.automations.pre_meeting_pause.minutes = 2;
+        }
         settings.schema = SCHEMA;
         (settings, migrated)
     }
@@ -273,6 +280,19 @@ mod tests {
         let (s, changed) = Settings::parse(&current);
         assert!(!changed);
         assert_eq!(s.taskbar_mode, "auto_hide");
+    }
+
+    #[test]
+    fn meeting_pause_moves_to_two_minutes_and_ai_warnings_gain_a_critical_level() {
+        let (s, changed) = Settings::parse(r#"{"schema":2,"automations":{"preMeetingPause":{"enabled":true,"minutes":5}}}"#);
+        assert!(changed);
+        assert_eq!(s.automations.pre_meeting_pause.minutes, 2);
+        assert_eq!(s.automations.ai_limit_warning.threshold_percent, 85.0);
+        assert_eq!(s.automations.ai_limit_warning.critical_percent, 95.0);
+        // A custom lead time survives.
+        let (s, _) = Settings::parse(r#"{"schema":2,"automations":{"preMeetingPause":{"enabled":true,"minutes":10}}}"#);
+        assert_eq!(s.automations.pre_meeting_pause.minutes, 10);
+        assert_eq!(Settings::default().automations.pre_meeting_pause.minutes, 2);
     }
 
     #[test]

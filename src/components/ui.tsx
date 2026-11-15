@@ -27,14 +27,17 @@ export function WidgetCard(props: {
   title?: string;
   cardRef?: RefObject<HTMLDivElement | null>;
   padded?: boolean;
+  /** Highlight (AI quota warnings): amber ring for "warn", red for "critical". */
+  alert?: "warn" | "critical" | null;
 }) {
-  const { span, children, onClick, onWheel, className = "", title, cardRef, padded = true } = props;
+  const { span, children, onClick, onWheel, className = "", title, cardRef, padded = true, alert } = props;
   return (
     <div
       ref={cardRef}
       title={title}
       onClick={onClick}
       onWheel={onWheel}
+      data-alert={alert ?? undefined}
       className={`lb-card relative flex shrink-0 items-center overflow-hidden ${padded ? "px-2.5" : ""} ${className}`}
       style={spanCss(span)}
     >

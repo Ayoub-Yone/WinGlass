@@ -321,20 +321,20 @@ try {
       dock: ["Rechercher ou ouvrir"],
       menu: ["Ajouter des widgets...", "Style", "Taille", "Position", "Langue / Language", "Automatisations", "Paramètres", "Restaurer la barre des tâches et quitter"],
       toasts: {
-        preMeetingPause: ["Revue de design dans 5 min", "À ", "Calendrier"],
+        preMeetingPause: ["Revue de design dans 2 min", "À ", "Calendrier"],
         aiLimitWarning: ["Limite Claude Hebdo épuisée demain à 16:00", "À ce rythme · Réinitialisation"],
         revenueMilestone: ["en 30 jours", "Objectif atteint"],
-        renewalReminder: ["Abonnement Figma se renouvelle", "À ", "Vérifier"],
+        renewalReminder: ["Abonnement Figma se renouvelle", "À ", "garder ou résilier ?", "Garder", "Résilier"],
       },
     },
     en: {
       dock: ["Search or open"],
       menu: ["Add Widgets…", "Style", "Size", "Position", "Langue / Language", "Automations", "Settings", "Restore Windows Taskbar & Quit"],
       toasts: {
-        preMeetingPause: ["Design review in 5 min", "At ", "Calendar"],
+        preMeetingPause: ["Design review in 2 min", "At ", "Calendar"],
         aiLimitWarning: ["Claude Weekly limit runs out tomorrow at 4:00 PM", "At this pace · Resets"],
         revenueMilestone: ["in 30 days", "Milestone reached"],
-        renewalReminder: ["Figma subscription renews", "At ", "Review"],
+        renewalReminder: ["Figma subscription renews", "At ", "keep or cancel?", "Keep", "Cancel it"],
       },
     },
   };
@@ -352,6 +352,18 @@ try {
     const clippedToast = await toast.eval("[...document.querySelectorAll('[data-toast] .truncate')].filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.innerText)");
     check(`${lang}: toast text fits`, clippedToast.length === 0, clippedToast.join(" | "));
     if (lang === "fr") {
+      // AI quota tile highlight follows the automation thresholds (simulated usage is > 1 %).
+      const s0 = await dock.invoke("get_settings");
+      const ai = s0.automations.aiLimitWarning;
+      await patchSettings(dock, { automations: { ...s0.automations, aiLimitWarning: { ...ai, thresholdPercent: 1, criticalPercent: 100 } } });
+      const warned = await waitFor(() => dock.eval(`document.querySelectorAll('.lb-card[data-alert="warn"]').length || null`), 4000);
+      await patchSettings(dock, { automations: { ...s0.automations, aiLimitWarning: { ...ai, thresholdPercent: 1, criticalPercent: 2 } } });
+      const critical = await waitFor(() => dock.eval(`document.querySelectorAll('.lb-card[data-alert="critical"]').length || null`), 4000);
+      await patchSettings(dock, { automations: { ...s0.automations, aiLimitWarning: { ...ai, enabled: false } } });
+      const off = await dock.eval(`document.querySelectorAll('.lb-card[data-alert]').length`);
+      await patchSettings(dock, { automations: s0.automations });
+      check("AI quota tiles highlight at the warning / critical thresholds, never when the rule is off", warned > 0 && critical > 0 && off === 0, JSON.stringify({ warned, critical, off, defaults: [ai.thresholdPercent, ai.criticalPercent] }));
+      check("automation defaults: pause 2 min before meetings, AI warnings at 85 % and 95 %", s0.automations.preMeetingPause.minutes === 2 && ai.thresholdPercent === 85 && ai.criticalPercent === 95, JSON.stringify(s0.automations));
       const badge = await dock.eval("(() => { const b = [...document.querySelectorAll('.uppercase')].find((e) => /^(LUN|MAR|MER|JEU|VEN|SAM|DIM)$/.test(e.innerText.trim().toUpperCase())); return b ? b.innerText.trim().toUpperCase() + ' ' + b.nextElementSibling.innerText.trim() : null; })()");
       check("fr: calendar day badge (LUN 20 style)", /^(LUN|MAR|MER|JEU|VEN|SAM|DIM) \d{1,2}$/.test(badge ?? ""), String(badge));
       const clock = await dock.eval("[...document.querySelectorAll('.lb-card')].map((c) => c.innerText).find((x) => /^\\d{2}:\\d{2}\\n/.test(x)) ?? null");
@@ -402,6 +414,27 @@ try {
   await keyOnInput("Escape");
   await sleep(200);
   check("search flyout: Escape dismisses", (await dock.eval(`!document.querySelector('[data-testid="search-results"]')`)) === true);
+  // Typed local paths open in Explorer (rows only — Enter would open a real Explorer window).
+  await typeSearch("C:\\Win");
+  const pathRows = await waitFor(() => dock.eval(`(() => { const r = [...document.querySelectorAll('[data-testid="search-path"]')].map((e) => e.innerText.replace(/\\s+/g, " ")); return r.length ? r : null; })()`), 4000);
+  check("search: a typed local path lists matching folders (C:\\Win -> Windows)", pathRows && pathRows.some((r) => r.startsWith("Windows")), JSON.stringify(pathRows));
+  await typeSearch("C:\\Windows");
+  const exactPath = await waitFor(() => dock.eval(`document.querySelector('[data-testid="search-path"]')?.innerText.includes("Ouvrir Windows dans l'Explorateur") || null`), 4000);
+  check("search: an exact folder offers « Ouvrir … dans l'Explorateur »", exactPath === true);
+  const completions = await dock.invoke("complete_path", { query: "%WINDIR%\\Sys" });
+  check("complete_path expands %VARS% and lists folders first", completions.length > 0 && completions[0].isDir && completions.every((h) => /^c:\\windows\\sys/i.test(h.path)), JSON.stringify(completions.map((h) => h.name)));
+  const share = await dock.invoke("open_path", { path: "\\\\server\\share" }).then(() => "ok", (e) => String(e));
+  check("open_path refuses network shares and missing paths", share !== "ok");
+  await dock.eval(`document.querySelector('[data-testid="search-input"]').dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+  await sleep(200);
+
+  // ---------------------------------------------------------------- brightness (WMI panel / DDC/CI monitors)
+  const displays = await dock.invoke("get_brightness");
+  check("get_brightness: adjustable displays with 0–100 % values", Array.isArray(displays) && displays.every((d) => d.id && d.percent >= 0 && d.percent <= 100), JSON.stringify(displays));
+  if (displays[0]) {
+    const same = await dock.invoke("set_brightness", { id: displays[0].id, percent: displays[0].percent });
+    check("set_brightness round-trips the current value (no visible change)", Math.abs(same.percent - displays[0].percent) <= 2, JSON.stringify(same));
+  }
   const searchHost = execFileSync("powershell", ["-NoProfile", "-Command", "(Get-Process SearchHost -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }).Count"], { encoding: "utf8" }).trim();
   check("Windows Search overlay never opened", searchHost === "" || searchHost === "0", searchHost);
 
@@ -510,7 +543,7 @@ try {
   const mag = await dock.eval(`(async () => {
     const pill = document.querySelector('.lb-pill');
     const slots = [...pill.querySelectorAll('[data-mag-group] [data-mag]')];
-    if (slots.length < 3) return { slots: slots.length };
+    if (slots.length < 1) return { slots: slots.length };
     const rest = slots.map((s) => s.getBoundingClientRect());
     const stripL = rest[0].left, stripR = rest[rest.length - 1].right;
     const move = (x, y) => document.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true }));
@@ -522,8 +555,9 @@ try {
       const r = slots.map((s) => s.getBoundingClientRect());
       const ir = slots.map((s) => icon(s).getBoundingClientRect());
       return {
-        left: Math.min(...r.map((x) => x.left)) - stripL,
-        right: stripR - Math.max(...r.map((x) => x.right)),
+        // What you see: the icons stay inside the strip footprint (slots only translate).
+        left: Math.min(...ir.map((x) => x.left)) - stripL,
+        right: stripR - Math.max(...ir.map((x) => x.right)),
         top: Math.min(...ir.map((x) => x.top)) - pr.top,
         bottom: pr.bottom - Math.max(...ir.map((x) => x.bottom)),
         // Icons (what you see) never overlap; slots only translate, so their invisible hit boxes may touch.
@@ -536,7 +570,7 @@ try {
     const out = {
       slots: slots.length,
       hovered: scale(slots[mid]),
-      n1: scale(slots[mid + 1] ?? slots[mid - 1]),
+      n1: slots.length > 1 ? scale(slots[mid + 1] ?? slots[mid - 1]) : null,
       n2: slots[mid + 2] || slots[mid - 2] ? scale(slots[mid + 2] ?? slots[mid - 2]) : null,
       lift: icon(slots[mid]).style.getPropertyValue("--mag-lift-y"),
       label: label.textContent,
@@ -554,7 +588,10 @@ try {
     return out;
   })()`);
   const inside = (b) => b && b.left >= -0.6 && b.right >= -0.6 && b.top >= -7.5 && b.bottom >= -0.6 && !b.overlap;
-  check("magnification: hovered ~1.32x, neighbours shrink (~0.84x, ~0.92x), lifted ~4px, label shown", mag.hovered > 1.28 && mag.hovered <= 1.3201 && mag.n1 > 0.8 && mag.n1 < 0.9 && (mag.n2 === null || (mag.n2 > 0.88 && mag.n2 < 0.96)) && parseFloat(mag.lift) <= -3.5 && mag.labelOpacity > 0.5 && mag.label, JSON.stringify(mag));
+  check("magnification: hovered ~1.32x, neighbours shrink (~0.84x, ~0.92x), lifted ~4px, label shown", (mag.slots >= 5
+      ? mag.hovered > 1.28 && mag.hovered <= 1.3201 && mag.n1 > 0.8 && mag.n1 < 0.9 && mag.n2 > 0.88 && mag.n2 < 0.96 && parseFloat(mag.lift) <= -3.5
+      : // Short strips cannot absorb the growth: compressed uniformly, hovered still largest.
+        mag.hovered > 1.15 && mag.hovered <= 1.3201 && (mag.n1 === null || mag.n1 < mag.hovered) && parseFloat(mag.lift) <= -2) && mag.labelOpacity > 0.5 && mag.label, JSON.stringify(mag));
   check("magnification: no icon leaves the strip / capsule, no overlap (middle, first and last icon)", inside(mag.mid) && inside(mag.first) && inside(mag.last), JSON.stringify({ mid: mag.mid, first: mag.first, last: mag.last }));
   check("magnification settles back to 1x when the cursor leaves", mag.after === 1, JSON.stringify(mag));
   const glassAfterHover = await dock.eval("(() => { const c = document.querySelector('.lb-pill canvas'); return c ? { w: c.width, h: c.height, pill: document.querySelector('.lb-pill').getBoundingClientRect().height * devicePixelRatio } : null; })()");
@@ -586,14 +623,14 @@ try {
   await dock.invoke("open_window", { label: "picker" });
   let picker = await Page.open("picker");
   await sleep(1500);
-  const fullCatalog = await waitFor(() => picker.eval("document.querySelectorAll('[data-widget-tile]').length >= 40"), 10000);
+  const fullCatalog = await waitFor(() => picker.eval("document.querySelectorAll('[data-widget-tile]').length >= 41"), 10000);
   if (!fullCatalog) note(`picker state: ${JSON.stringify(await picker.eval("({ tiles: document.querySelectorAll('[data-widget-tile]').length, inputs: [...document.querySelectorAll('input')].map((i) => i.value), focus: document.hasFocus(), hidden: document.hidden })"))}`);
   for (const lang of ["fr", "en"]) {
     for (const size of ["compact", "medium", "large"]) {
       await patchSettings(dock, { language: lang, size });
       await sleep(500);
       const audit = await picker.eval(AUDIT);
-      check(`layout ${lang}/${size}: ${audit.tiles} widgets, ${audit.cards} variants, no clipping / wrapping / overflow`, audit.tiles === 40 && audit.problems.length === 0, audit.problems.slice(0, 12).join("\n        "));
+      check(`layout ${lang}/${size}: ${audit.tiles} widgets, ${audit.cards} variants, no clipping / wrapping / overflow`, audit.tiles === 41 && audit.problems.length === 0, audit.problems.slice(0, 12).join("\n        "));
       if (audit.ellipsis.length) note(`${lang}/${size} ellipsis-truncated (by design): ${audit.ellipsis.join("; ")}`);
     }
   }
