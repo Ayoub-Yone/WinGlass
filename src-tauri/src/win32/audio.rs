@@ -1,6 +1,6 @@
 //! System volume over Windows Core Audio (WASAPI endpoint volume).
 //!
-//! One worker thread ("lumabar-audio", COM MTA) owns every Core Audio object (invariant 5):
+//! One worker thread ("winglass-audio", COM MTA) owns every Core Audio object (invariant 5):
 //! the device enumerator, the default render endpoint's `IAudioEndpointVolume` and the two
 //! callbacks. Tauri commands talk to it over a channel; it answers with the fresh state.
 //!
@@ -39,8 +39,8 @@ use super::apps_enum;
 const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY =
     PROPERTYKEY { fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0), pid: 14 };
 
-/// Event context stamped on lumabar's own changes (purely informational).
-const LUMABAR_CONTEXT: GUID = GUID::from_u128(0x4c554d41_4241_5200_0000_766f6c756d65);
+/// Event context stamped on winglass's own changes (purely informational).
+const WINGLASS_CONTEXT: GUID = GUID::from_u128(0x4c554d41_4241_5200_0000_766f6c756d65);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -485,11 +485,11 @@ fn apply_session_command(bound: Option<&Bound>, command: Command) {
             let _ = reply.send(read_sessions(bound));
         }
         Command::SetAppVolume(pid, v, reply) => {
-            let result = for_app_group(bound, pid, |s| unsafe { s.SetMasterVolume(v as f32 / 100.0, &LUMABAR_CONTEXT) });
+            let result = for_app_group(bound, pid, |s| unsafe { s.SetMasterVolume(v as f32 / 100.0, &WINGLASS_CONTEXT) });
             let _ = reply.send(result.and_then(|_| read_sessions(bound)));
         }
         Command::SetAppMute(pid, m, reply) => {
-            let result = for_app_group(bound, pid, |s| unsafe { s.SetMute(m, &LUMABAR_CONTEXT) });
+            let result = for_app_group(bound, pid, |s| unsafe { s.SetMute(m, &WINGLASS_CONTEXT) });
             let _ = reply.send(result.and_then(|_| read_sessions(bound)));
         }
         _ => {}
@@ -512,15 +512,15 @@ fn apply(enumerator: &IMMDeviceEnumerator, bound: &mut Option<Bound>, command: C
     unsafe {
         match command {
             Command::SetVolume(v) => {
-                b.endpoint.SetMasterVolumeLevelScalar(v as f32 / 100.0, &LUMABAR_CONTEXT).map_err(|e| e.to_string())?;
+                b.endpoint.SetMasterVolumeLevelScalar(v as f32 / 100.0, &WINGLASS_CONTEXT).map_err(|e| e.to_string())?;
             }
             Command::Step(delta) => {
                 let current = b.endpoint.GetMasterVolumeLevelScalar().map(scalar_to_percent).map_err(|e| e.to_string())?;
                 let next = stepped(current, delta);
-                b.endpoint.SetMasterVolumeLevelScalar(next as f32 / 100.0, &LUMABAR_CONTEXT).map_err(|e| e.to_string())?;
+                b.endpoint.SetMasterVolumeLevelScalar(next as f32 / 100.0, &WINGLASS_CONTEXT).map_err(|e| e.to_string())?;
                 // Scrolling up from mute un-mutes, like the Windows flyout.
                 if delta > 0 && b.endpoint.GetMute().map(|m| m.as_bool()).unwrap_or(false) {
-                    b.endpoint.SetMute(false, &LUMABAR_CONTEXT).map_err(|e| e.to_string())?;
+                    b.endpoint.SetMute(false, &WINGLASS_CONTEXT).map_err(|e| e.to_string())?;
                 }
             }
             Command::SetMute(muted) => {
@@ -528,7 +528,7 @@ fn apply(enumerator: &IMMDeviceEnumerator, bound: &mut Option<Bound>, command: C
                     Some(m) => m,
                     None => !b.endpoint.GetMute().map(|m| m.as_bool()).unwrap_or(false),
                 };
-                b.endpoint.SetMute(target, &LUMABAR_CONTEXT).map_err(|e| e.to_string())?;
+                b.endpoint.SetMute(target, &WINGLASS_CONTEXT).map_err(|e| e.to_string())?;
             }
             Command::Rebind | Command::SetDefault(_) | Command::Sessions(_) | Command::SetAppVolume(..) | Command::SetAppMute(..) => {}
         }
@@ -543,7 +543,7 @@ fn run(rx: Receiver<(Command, Option<Reply>)>) {
     let enumerator: IMMDeviceEnumerator = match unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) } {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("[lumabar] Core Audio unavailable: {err}");
+            eprintln!("[winglass] Core Audio unavailable: {err}");
             // Keep answering so commands fail fast instead of timing out.
             for (_, reply) in rx {
                 if let Some(reply) = reply {
@@ -586,7 +586,7 @@ pub fn start(app: AppHandle) {
     if TX.set(Mutex::new(tx)).is_err() {
         return;
     }
-    std::thread::Builder::new().name("lumabar-audio".into()).spawn(move || run(rx)).expect("spawn audio thread");
+    std::thread::Builder::new().name("winglass-audio".into()).spawn(move || run(rx)).expect("spawn audio thread");
 }
 
 #[cfg(test)]
@@ -650,8 +650,8 @@ mod tests {
         let before = read_sessions(Some(&bound)).expect("enumerate sessions");
         for app in &before {
             assert!(app.is_system || !app.name.is_empty());
-            for_app_group(Some(&bound), app.pid, |s| unsafe { s.SetMasterVolume(app.volume as f32 / 100.0, &LUMABAR_CONTEXT) }).expect("set app volume");
-            for_app_group(Some(&bound), app.pid, |s| unsafe { s.SetMute(app.muted, &LUMABAR_CONTEXT) }).expect("set app mute");
+            for_app_group(Some(&bound), app.pid, |s| unsafe { s.SetMasterVolume(app.volume as f32 / 100.0, &WINGLASS_CONTEXT) }).expect("set app volume");
+            for_app_group(Some(&bound), app.pid, |s| unsafe { s.SetMute(app.muted, &WINGLASS_CONTEXT) }).expect("set app mute");
         }
         let after = read_sessions(Some(&bound)).expect("re-enumerate");
         for app in &before {

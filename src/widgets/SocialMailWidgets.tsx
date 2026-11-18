@@ -5,7 +5,7 @@ import { useI18n } from "../i18n";
 import { formatCount, formatSigned } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { usePreview, useProvider } from "../lib/hooks";
-import type { GmailData, ProviderId, SocialData, WidgetProps } from "../types/lumabar";
+import type { GmailData, ProviderId, SocialData, WidgetProps } from "../types/winglass";
 
 export function GmailWidget({ span }: WidgetProps) {
   const { t } = useI18n();

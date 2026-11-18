@@ -1,4 +1,4 @@
-//! Local-first SQLite store at `%APPDATA%\lumabar\lumabar.db`.
+//! Local-first SQLite store at `%APPDATA%\winglass\winglass.db`.
 
 use std::path::PathBuf;
 
@@ -42,7 +42,7 @@ pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("lumabar")
+    base.join("winglass")
 }
 
 const SCHEMA: &str = r#"
@@ -90,7 +90,7 @@ impl Db {
     pub fn open() -> rusqlite::Result<Db> {
         let dir = data_dir();
         let _ = std::fs::create_dir_all(&dir);
-        let conn = Connection::open(dir.join("lumabar.db"))?;
+        let conn = Connection::open(dir.join("winglass.db"))?;
         conn.execute_batch(SCHEMA)?;
         Ok(Db { conn: Mutex::new(conn) })
     }

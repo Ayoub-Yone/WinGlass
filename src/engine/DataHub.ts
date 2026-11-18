@@ -17,7 +17,7 @@ import type {
   Settings,
   TelemetrySample,
   UpcomingEvent,
-} from "../types/lumabar";
+} from "../types/winglass";
 
 export const AI_PROVIDERS: ProviderId[] = ["claude", "chatgpt", "gemini", "grok", "deepseek", "glm"];
 export const REVENUE_PROVIDERS: ProviderId[] = ["stripe", "polar", "dodo", "datafast"];

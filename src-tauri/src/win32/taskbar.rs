@@ -2,7 +2,7 @@
 //!
 //! Safety invariants (see CLAUDE.md):
 //! * The original AppBar state is captured once, before any modification, and mirrored to
-//!   `%APPDATA%\lumabar\taskbar_state.json` so a hard-killed session can be repaired on next launch.
+//!   `%APPDATA%\winglass\taskbar_state.json` so a hard-killed session can be repaired on next launch.
 //! * `restore()` is idempotent, lock-free on the hot path and safe to call from panic hooks,
 //!   console handlers and session-end messages.
 
@@ -50,12 +50,12 @@ static ORIGINAL_STATE: AtomicU32 = AtomicU32::new(u32::MAX);
 static MODIFIED: AtomicBool = AtomicBool::new(false);
 /// 0 = native, 1 = auto_hide, 2 = completely_hidden
 static CURRENT_MODE: AtomicI64 = AtomicI64::new(0);
-/// Latched by `restore_for_exit`: once lumabar is quitting nothing may hide the taskbar again
+/// Latched by `restore_for_exit`: once winglass is quitting nothing may hide the taskbar again
 /// (the state file is already gone, so a later hard kill could not repair it).
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
 fn state_file() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("lumabar").join("taskbar_state.json"))
+    std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("winglass").join("taskbar_state.json"))
 }
 
 fn persist_original(state: u32) {
@@ -146,7 +146,7 @@ fn hide_all() {
     }
 }
 
-/// Used by the guardian process after lumabar died: if the state file still exists, lumabar never
+/// Used by the guardian process after winglass died: if the state file still exists, winglass never
 /// restored, so put the taskbar back exactly as it was. Returns true when a repair happened.
 pub fn repair_from_persisted() -> bool {
     match read_persisted() {

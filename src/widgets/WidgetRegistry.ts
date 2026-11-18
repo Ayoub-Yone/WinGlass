@@ -34,7 +34,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import type { I18n } from "../i18n";
-import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/lumabar";
+import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/winglass";
 import { ChatGptWidget, ClaudeWidget, DeepSeekWidget, GeminiWidget, GlmWidget, GrokWidget } from "./AiUsageWidgets";
 import { CalendarWidget } from "./CalendarWidget";
 import { ApiCounterWidget, GithubWidget, LeetcodeWidget } from "./DevWidgets";

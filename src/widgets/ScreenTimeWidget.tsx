@@ -7,7 +7,7 @@ import { useI18n } from "../i18n";
 import { formatDuration } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
-import type { ScreenTimeDay, WidgetProps } from "../types/lumabar";
+import type { ScreenTimeDay, WidgetProps } from "../types/winglass";
 
 const SAMPLE: ScreenTimeDay = {
   day: "",

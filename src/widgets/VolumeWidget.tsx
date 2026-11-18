@@ -15,7 +15,7 @@ import { Popover, WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc, on } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
-import type { AppAudio, AudioState, WidgetProps } from "../types/lumabar";
+import type { AppAudio, AudioState, WidgetProps } from "../types/winglass";
 
 const EMPTY: AudioState = { available: false, volume: 0, muted: false, deviceId: "", deviceName: "", devices: [] };
 const SAMPLE: AudioState = {

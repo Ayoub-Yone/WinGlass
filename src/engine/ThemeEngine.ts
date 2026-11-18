@@ -1,6 +1,6 @@
 // 5 surface themes + 3 size presets, applied as CSS custom properties on <html>.
 
-import type { SizePreset, SizeTokens, ThemeId, ThemeTokens } from "../types/lumabar";
+import type { SizePreset, SizeTokens, ThemeId, ThemeTokens } from "../types/winglass";
 
 export const THEMES: Record<ThemeId, ThemeTokens> = {
   // iOS Liquid Glass (default): the shader refracts the live desktop through a curved, clear lens.

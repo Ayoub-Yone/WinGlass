@@ -19,7 +19,7 @@ L'application n'est pas signée : à l'avertissement SmartScreen, clique sur **I
 
 - **Ctrl + Alt + Shift + R** restaure la barre des tâches de Windows à tout moment (aussi : clic droit sur le dock › « Restaurer et quitter »).
 - **Masquer automatiquement le dock** (Paramètres › Dock) : la barre se cache quand le curseur s'éloigne et revient au bord bas de n'importe quel écran.
-- Aucune télémétrie. Les données restent dans `%APPDATA%\lumabar`.
+- Aucune télémétrie. Les données restent dans `%APPDATA%\winglass`.
 
 ## Développer
 

@@ -10,7 +10,7 @@ import { WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc } from "../lib/ipc";
 import { useMedia, usePreview } from "../lib/hooks";
-import type { WidgetProps } from "../types/lumabar";
+import type { WidgetProps } from "../types/winglass";
 
 function sourceName(aumid: string): string {
   const base = aumid.split("!").pop() ?? aumid;

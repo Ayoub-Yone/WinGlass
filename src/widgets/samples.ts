@@ -14,7 +14,7 @@ import type {
   SocialData,
   TelemetrySample,
   WeatherData,
-} from "../types/lumabar";
+} from "../types/winglass";
 
 const hours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
 

@@ -226,7 +226,7 @@ fn render(surface: &mut Option<Surface>, rect: &RECT) -> Result<Option<u64>, Str
 
 pub fn start(app: AppHandle) {
     std::thread::Builder::new()
-        .name("lumabar-backdrop".into())
+        .name("winglass-backdrop".into())
         .spawn(move || {
             let mut surface: Option<Surface> = None;
             let mut rendered: Option<RECT> = None;

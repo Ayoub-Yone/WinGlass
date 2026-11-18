@@ -406,7 +406,7 @@ fn index() -> Arc<Vec<Entry>> {
     match cached {
         Some((at, entries)) => {
             if at.elapsed() >= INDEX_TTL && !REFRESHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                let _ = std::thread::Builder::new().name("lumabar-app-index".into()).spawn(|| {
+                let _ = std::thread::Builder::new().name("winglass-app-index".into()).spawn(|| {
                     rebuild();
                     REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
                     super::memory::request_trim(Duration::from_secs(2));
@@ -420,7 +420,7 @@ fn index() -> Arc<Vec<Entry>> {
 
 /// Build the index in the background so the first keystroke is instant.
 pub fn warm() {
-    let _ = std::thread::Builder::new().name("lumabar-app-index".into()).spawn(|| {
+    let _ = std::thread::Builder::new().name("winglass-app-index".into()).spawn(|| {
         let _ = index();
         // Walking thousands of shortcuts and registry keys leaves the working set inflated.
         super::memory::request_trim(Duration::from_secs(2));
@@ -574,9 +574,9 @@ mod tests {
         };
         assert_eq!(expand_path(r"~\Documents", env), r"C:\Users\me\Documents");
         assert_eq!(expand_path("~", env), r"C:\Users\me");
-        assert_eq!(expand_path(r"%APPDATA%\lumabar", env), r"C:\Users\me\AppData\Roaming\lumabar");
+        assert_eq!(expand_path(r"%APPDATA%\winglass", env), r"C:\Users\me\AppData\Roaming\winglass");
         assert_eq!(expand_path(r"%NOPE%\x", env), r"%NOPE%\x");
-        assert_eq!(expand_path("c:/Projects/lumabar", env), r"c:\Projects\lumabar");
+        assert_eq!(expand_path("c:/Projects/winglass", env), r"c:\Projects\winglass");
         assert_eq!(expand_path("\"C:\\Program Files\"", env), r"C:\Program Files");
         assert!(looks_like_path(r"C:\Projects") && looks_like_path("C:") && looks_like_path("d:/x") && looks_like_path("~\\x") && looks_like_path("%TEMP%"));
         assert!(!looks_like_path("discord") && !looks_like_path("riot client") && !looks_like_path(r"\\server\share") && !looks_like_path("c:x"));
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn real_paths_complete_folders_first() {
-        let root = std::env::temp_dir().join(format!("lumabar-path-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("winglass-path-{}", std::process::id()));
         std::fs::create_dir_all(root.join("Projects")).unwrap();
         std::fs::create_dir_all(root.join("Photos")).unwrap();
         std::fs::write(root.join("plan.txt"), b"x").unwrap();

@@ -6,9 +6,9 @@ use windows::Win32::Security::Cryptography::{
 };
 use windows::core::w;
 
-/// Fixed application entropy so blobs written by lumabar cannot be trivially unprotected by
+/// Fixed application entropy so blobs written by winglass cannot be trivially unprotected by
 /// another process that happens to call CryptUnprotectData without it.
-const ENTROPY: &[u8] = b"lumabar.secret.v1";
+const ENTROPY: &[u8] = b"winglass.secret.v1";
 
 fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
     CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 }
@@ -33,7 +33,7 @@ pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
         CryptProtectData(
             &input,
-            w!("lumabar secret"),
+            w!("winglass secret"),
             Some(&entropy),
             None,
             None,

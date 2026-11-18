@@ -277,7 +277,7 @@ fn internal_set(percent: u32) -> Result<Display, String> {
 // API
 // ---------------------------------------------------------------------------------------------
 
-/// Every display whose brightness lumabar can change: the internal panel first, then DDC/CI monitors.
+/// Every display whose brightness winglass can change: the internal panel first, then DDC/CI monitors.
 pub fn list() -> Vec<Display> {
     let _bus = BUS.lock();
     let _com = Com::init();

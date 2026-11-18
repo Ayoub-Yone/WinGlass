@@ -23,7 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 
-# lumabar
+# winglass
 node_modules/
 dist/
 src-tauri/target/

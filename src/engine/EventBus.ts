@@ -12,7 +12,7 @@ import type {
   RevenueData,
   TelemetrySample,
   ToastSpec,
-} from "../types/lumabar";
+} from "../types/winglass";
 
 export interface BusEvents {
   "calendar:tick": CalendarTick;
@@ -59,7 +59,7 @@ class TypedEventBus {
       try {
         (handler as Handler<BusEvents[K]>)(payload);
       } catch (err) {
-        console.error(`[lumabar] bus handler for ${String(event)} failed`, err);
+        console.error(`[winglass] bus handler for ${String(event)} failed`, err);
       }
     }
   }

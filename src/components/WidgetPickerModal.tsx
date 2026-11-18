@@ -7,7 +7,7 @@ import { useI18n } from "../i18n";
 import { PreviewContext } from "../lib/hooks";
 import { errorMessage, ipc, subscribe } from "../lib/ipc";
 import { CATEGORIES, WIDGETS, categoryLabel, newInstance, sanitizeLayout, searchWidgets, widgetDescription, widgetName } from "../widgets/WidgetRegistry";
-import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/lumabar";
+import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/winglass";
 
 function PreviewStrip({ def, span }: { def: WidgetDefinition; span: Span }) {
   const Component = def.component;

@@ -4,7 +4,7 @@
 //! 1. Windows 11 records every app that ever showed a tray icon under
 //!    `HKCU\Control Panel\NotifyIconSettings\<id>` (`ExecutablePath` — possibly prefixed with a
 //!    Known Folder GUID —, `InitialTooltip`, `IsPromoted`, `IconSnapshot`). An entry is live when
-//!    its executable is running. lumabar's own entry is listed too (`is_self`).
+//!    its executable is running. winglass's own entry is listed too (`is_self`).
 //! 2. UI Automation (`TreeScope_Descendants`) reads `NotifyItemIcon`s from `Shell_TrayWnd` and the
 //!    overflow (`TopLevelWindowForOverflowXamlIsland`) **only when Windows already exposes them**
 //!    (taskbar on screen, flyout opened by the user): live names, and with the overflow open,
@@ -24,7 +24,7 @@
 //!   the executable (single-instance tray apps surface their window); else show its hidden window.
 //! * Quit — `WM_CLOSE` to every top-level window of the app's processes, then, once no visible
 //!   window remains, terminate what is still running (a visible "save changes?" prompt is left alone).
-//! lumabar's own entry is handled by the dock (Settings modal / restore-and-quit).
+//! winglass's own entry is handled by the dock (Settings modal / restore-and-quit).
 //!
 //! UIA objects live only on a per-call worker thread that initializes COM itself (invariant 5).
 
@@ -81,14 +81,14 @@ pub struct TrayIcon {
     pub icon_png: Option<String>,
     /// Lives in the "hidden icons" overflow rather than on the taskbar.
     pub is_hidden_overflow: bool,
-    /// lumabar's own tray entry (the dock handles Open / Settings / Quit itself).
+    /// winglass's own tray entry (the dock handles Open / Settings / Quit itself).
     pub is_self: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Open,
-    /// The app's main window to the front (lumabar's own Settings are opened by the dock).
+    /// The app's main window to the front (winglass's own Settings are opened by the dock).
     Settings,
     Quit,
 }
@@ -730,7 +730,7 @@ fn silent_invoke(candidates: &[String]) -> Result<bool, String> {
 /// Run `f` on a fresh COM-MTA thread (UIA objects never leave it).
 fn on_uia_thread<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     std::thread::Builder::new()
-        .name("lumabar-tray-uia".into())
+        .name("winglass-tray-uia".into())
         .spawn(move || {
             let init = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
             let out = f();
@@ -937,12 +937,12 @@ fn target_by_id(id: &str) -> Result<Target, String> {
     Ok(Target { pids: pids_of(&lower).into_iter().collect(), candidates: candidates_for(&e.exe, &e.tooltip), exe: e.exe, toolbar })
 }
 
-/// Open / Settings / Quit for a tray app. lumabar's own entry is refused (the dock opens its
+/// Open / Settings / Quit for a tray app. winglass's own entry is refused (the dock opens its
 /// Settings modal or runs the restore-and-quit path itself).
 pub fn act(id: &str, action: Action) -> Result<Outcome, String> {
     let target = target_by_id(id)?;
     if target.exe.to_ascii_lowercase() == own_exe() || target.pids.contains(&std::process::id()) {
-        return Err("lumabar's own entry is handled by the dock".into());
+        return Err("winglass's own entry is handled by the dock".into());
     }
     match action {
         Action::Open | Action::Settings => open_target(&target),
@@ -1033,9 +1033,9 @@ mod tests {
     }
 
     /// Real enumeration on this machine: silent (the shell UI and cursor are untouched), every
-    /// entry is a running non-shell app with a unique id, and a running lumabar is listed.
+    /// entry is a running non-shell app with a unique id, and a running winglass is listed.
     #[test]
-    fn real_tray_enumeration_is_silent_and_includes_lumabar() {
+    fn real_tray_enumeration_is_silent_and_includes_winglass() {
         let before = shell_state();
         let icons = list();
         let after = shell_state();
@@ -1055,8 +1055,8 @@ mod tests {
             assert!(!is_shell_owned(&t.exe.to_ascii_lowercase()));
             assert!(!t.name.is_empty(), "{}", t.exe);
         }
-        // The dev / release binary is lumabar.exe, the bundled app WinGlass.exe.
-        let is_app = |p: &str| p.ends_with("\\lumabar.exe") || p.ends_with("\\winglass.exe");
+        // The dev / release binary is winglass.exe, the bundled app WinGlass.exe.
+        let is_app = |p: &str| p.ends_with("\\winglass.exe") || p.ends_with("\\winglass.exe");
         if procs.iter().any(|p| is_app(p)) {
             assert!(icons.iter().any(|t| is_app(&t.exe.to_ascii_lowercase())), "a running WinGlass must list itself");
         }
@@ -1071,7 +1071,7 @@ mod tests {
     #[test]
     #[ignore]
     fn open_and_quit_act_on_the_app_never_on_the_shell() {
-        let title = format!("lumabar-tray-test-{}", std::process::id());
+        let title = format!("winglass-tray-test-{}", std::process::id());
         let script = format!(
             "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form; $f.Text = '{title}'; $f.ShowInTaskbar = $false; [System.Windows.Forms.Application]::Run($f)"
         );

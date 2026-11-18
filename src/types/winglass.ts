@@ -1,4 +1,4 @@
-// Shared TypeScript contracts between the Rust backend and every lumabar window.
+// Shared TypeScript contracts between the Rust backend and every winglass window.
 
 import type { ComponentType } from "react";
 import type { LucideIcon } from "lucide-react";
@@ -358,7 +358,7 @@ export interface TrayIcon {
   /** PNG data URL. */
   iconPng: string | null;
   isHiddenOverflow: boolean;
-  /** lumabar's own entry: the dock handles Open / Settings / Quit itself. */
+  /** winglass's own entry: the dock handles Open / Settings / Quit itself. */
   isSelf: boolean;
 }
 

@@ -358,7 +358,7 @@ impl Capture {
 
 pub fn start(app: AppHandle) {
     std::thread::Builder::new()
-        .name("lumabar-dxgi".into())
+        .name("winglass-dxgi".into())
         .spawn(move || {
             let mut capture: Option<Capture> = None;
             let frame_budget = Duration::from_millis(1000 / MAX_FPS);

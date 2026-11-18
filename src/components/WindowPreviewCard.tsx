@@ -14,7 +14,7 @@ import { clamp } from "../lib/format";
 import { useHitRegion } from "../lib/hitRegions";
 import { MAG_HEADROOM } from "../lib/magnify";
 import { ipc } from "../lib/ipc";
-import type { AppEntry, WindowPreview } from "../types/lumabar";
+import type { AppEntry, WindowPreview } from "../types/winglass";
 
 /** Thumbnail box (CSS px); the backend renders at 2x for HiDPI. */
 const THUMB_W = 200;

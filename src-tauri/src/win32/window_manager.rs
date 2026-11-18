@@ -388,7 +388,7 @@ pub fn start_hit_testing() {
         return;
     }
     std::thread::Builder::new()
-        .name("lumabar-hittest".into())
+        .name("winglass-hittest".into())
         .spawn(|| loop {
             hit_test_tick();
             std::thread::sleep(Duration::from_millis(33));
@@ -789,7 +789,7 @@ fn show_overlays(dock: &WebviewWindow, toast: Option<&WebviewWindow>) {
 /// enforcement and display-change relayout.
 pub fn start_fullscreen_watch(app: AppHandle) {
     std::thread::Builder::new()
-        .name("lumabar-fullscreen".into())
+        .name("winglass-fullscreen".into())
         .spawn(move || {
             let mut hidden = false;
             let mut last_monitor: Option<(i32, i32, u32, u32, u64)> = None;
@@ -1056,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn maximized_windows_lumabar_and_other_monitors_never_hide_the_dock() {
+    fn maximized_windows_winglass_and_other_monitors_never_hide_the_dock() {
         let maximized = ForegroundInfo { zoomed: true, has_caption: true, ..fg("ConsoleWindowClass", MON) };
         assert!(!should_hide_for(Some(&maximized), MON, false));
         // Regression: a game left running keeps QUNS at D3D-fullscreen; a maximized window in
@@ -1079,7 +1079,7 @@ mod tests {
         unsafe {
             let (w_, h_) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
             let make = |style| {
-                CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!("lumabar-test"), style, 0, 0, w_, h_, None, None, None, None)
+                CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!("winglass-test"), style, 0, 0, w_, h_, None, None, None, None)
                     .expect("create test window")
             };
             let popup = make(WS_POPUP);

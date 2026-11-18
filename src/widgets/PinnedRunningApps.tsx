@@ -10,7 +10,7 @@ import { getHub } from "../engine/DataHub";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc, subscribe } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
-import type { AppEntry, WidgetProps } from "../types/lumabar";
+import type { AppEntry, WidgetProps } from "../types/winglass";
 
 /** Successful icons only; misses are retried (the backend may be busy or the file still loading). */
 const iconCache = new Map<string, string>();

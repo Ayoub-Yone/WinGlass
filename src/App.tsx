@@ -83,7 +83,7 @@ export default function App() {
   const kind = currentWindow();
   useEffect(() => {
     document.documentElement.dataset.window = kind;
-    // Native context menu would look foreign in every lumabar window.
+    // Native context menu would look foreign in every winglass window.
     const block = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest("input, textarea")) e.preventDefault();
     };

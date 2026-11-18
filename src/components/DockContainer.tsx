@@ -31,7 +31,7 @@ import { ipc, subscribe } from "../lib/ipc";
 import { clamp } from "../lib/format";
 import { useAmbientColors } from "../lib/useAmbient";
 import { getWidget, sanitizeLayout, widgetName } from "../widgets/WidgetRegistry";
-import type { LayoutItem, Span } from "../types/lumabar";
+import type { LayoutItem, Span } from "../types/winglass";
 
 const SPRING = "transform 280ms cubic-bezier(0.2, 0.9, 0.3, 1.15)";
 

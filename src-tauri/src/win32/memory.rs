@@ -1,6 +1,6 @@
 //! Physical working-set trimming.
 //!
-//! lumabar runs 24/7 and is idle almost all of the time, so pages touched during startup or while
+//! winglass runs 24/7 and is idle almost all of the time, so pages touched during startup or while
 //! a modal was open are handed back to Windows: right after startup, whenever the picker / settings
 //! window is destroyed, and every five minutes. Trimmed pages stay on the standby list and fault
 //! back in cheaply if they are needed again.
@@ -105,7 +105,7 @@ pub fn start() {
         return;
     }
     std::thread::Builder::new()
-        .name("lumabar-memory".into())
+        .name("winglass-memory".into())
         .spawn(move || {
             let mut due = Instant::now() + STARTUP_TRIM_DELAY;
             loop {

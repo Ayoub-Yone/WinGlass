@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for all lumabar windows",
+  "description": "Capability for all winglass windows",
   "windows": ["dock", "toast", "picker", "settings"],
   "permissions": [
     "core:default",

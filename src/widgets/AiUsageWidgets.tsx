@@ -8,7 +8,7 @@ import { useI18n, type I18n } from "../i18n";
 import { formatMoney, formatPercent, formatResetIn, formatTime, formatWeekdayShort } from "../lib/format";
 import { useNow, useProvider, useSettings } from "../lib/hooks";
 import { aiAlertLevel } from "../engine/AutomationEngine";
-import type { AiUsageData, ProviderId, UsageTier, WidgetProps } from "../types/lumabar";
+import type { AiUsageData, ProviderId, UsageTier, WidgetProps } from "../types/winglass";
 
 const TIER_BASE: Record<string, string> = {
   five_hour: "var(--lb-green)",

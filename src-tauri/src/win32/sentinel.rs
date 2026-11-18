@@ -44,7 +44,7 @@ static CALLBACK: OnceCell<Callback> = OnceCell::new();
 static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
 static LAST_EXTERNAL_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
 
-/// Last foreground window that does not belong to lumabar.
+/// Last foreground window that does not belong to winglass.
 pub fn last_external_foreground() -> isize {
     LAST_EXTERNAL_FOREGROUND.load(Ordering::SeqCst)
 }
@@ -96,7 +96,7 @@ unsafe extern "system" fn foreground_hook(
     _thread: u32,
     _time: u32,
 ) {
-    // OBJID_WINDOW == 0; WINEVENT_SKIPOWNPROCESS already filters lumabar's own windows.
+    // OBJID_WINDOW == 0; WINEVENT_SKIPOWNPROCESS already filters winglass's own windows.
     if id_object == 0 && !hwnd.is_invalid() {
         LAST_EXTERNAL_FOREGROUND.store(hwnd.0 as isize, Ordering::SeqCst);
         dispatch(SentinelEvent::ForegroundChanged(hwnd.0 as isize));
@@ -108,10 +108,10 @@ unsafe extern "system" fn foreground_hook(
 pub fn start(callback: Callback) {
     let _ = CALLBACK.set(callback);
     std::thread::Builder::new()
-        .name("lumabar-sentinel".into())
+        .name("winglass-sentinel".into())
         .spawn(|| unsafe {
             let instance = GetModuleHandleW(None).unwrap_or_default();
-            let class_name = w!("LumabarSentinelWindow");
+            let class_name = w!("WinGlassSentinelWindow");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(wnd_proc),
                 hInstance: instance.into(),
@@ -128,7 +128,7 @@ pub fn start(callback: Callback) {
             let hwnd = match CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
                 class_name,
-                w!("lumabar sentinel"),
+                w!("winglass sentinel"),
                 WS_POPUP,
                 -32000,
                 -32000,
@@ -141,7 +141,7 @@ pub fn start(callback: Callback) {
             ) {
                 Ok(h) => h,
                 Err(err) => {
-                    eprintln!("[lumabar] sentinel window creation failed: {err}");
+                    eprintln!("[winglass] sentinel window creation failed: {err}");
                     return;
                 }
             };
@@ -155,7 +155,7 @@ pub fn start(callback: Callback) {
                 MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT,
                 u32::from(b'R'),
             ) {
-                eprintln!("[lumabar] could not register Ctrl+Alt+Shift+R: {err}");
+                eprintln!("[winglass] could not register Ctrl+Alt+Shift+R: {err}");
             }
 
             SetWinEventHook(

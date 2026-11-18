@@ -1,8 +1,8 @@
 //! One-click AI account sign-in and local CLI credential auto-detection.
 //!
-//! lumabar never runs its own OAuth client. "Se connecter avec …" opens the provider's official
+//! winglass never runs its own OAuth client. "Se connecter avec …" opens the provider's official
 //! CLI login (`claude auth login`, `codex login`, `gemini`) in a console; the browser flow writes
-//! the CLI's credential file, which lumabar watches and then reads:
+//! the CLI's credential file, which winglass watches and then reads:
 //!
 //! * Claude Code — `%USERPROFILE%\.claude\.credentials.json` (`claudeAiOauth.accessToken`). When the
 //!   access token is expired it is refreshed with the stored `refreshToken` exactly as Claude Code
@@ -63,7 +63,7 @@ fn str_at<'a>(v: &'a Value, pointer: &str) -> Option<&'a str> {
 /// Write next to the original, then rename over it: a crash never leaves a half-written file.
 fn write_atomic(path: &PathBuf, value: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.lumabar-tmp");
+    let tmp = path.with_extension("json.winglass-tmp");
     std::fs::write(&tmp, text).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -342,13 +342,13 @@ mod tests {
 
     #[test]
     fn atomic_write_replaces_the_file() {
-        let dir = std::env::temp_dir().join(format!("lumabar-accounts-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("winglass-accounts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".credentials.json");
         std::fs::write(&path, "{}").unwrap();
         write_atomic(&path, &creds(5)).unwrap();
         assert_eq!(read_json(&path).unwrap(), creds(5));
-        assert!(!path.with_extension("json.lumabar-tmp").exists());
+        assert!(!path.with_extension("json.winglass-tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

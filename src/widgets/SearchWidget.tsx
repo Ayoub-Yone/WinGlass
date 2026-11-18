@@ -1,4 +1,4 @@
-// Integrated launcher: replaces the Windows Search (Win+S) overlay, which never opens over lumabar.
+// Integrated launcher: replaces the Windows Search (Win+S) overlay, which never opens over winglass.
 // The backend indexes Start Menu / Desktop shortcuts and App Paths executables
 // (`search_installed_apps`, fuzzy + prefix: "riot" -> Client Riot, VALORANT, League of Legends);
 // results render in a frosted popover directly above (or below, top dock) the search card.
@@ -12,7 +12,7 @@ import { AppIcon } from "../components/AppIcon";
 import { Popover, WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc } from "../lib/ipc";
-import type { AppHit, PathHit, WidgetProps } from "../types/lumabar";
+import type { AppHit, PathHit, WidgetProps } from "../types/winglass";
 
 type Item =
   | { kind: "path"; hit: PathHit }

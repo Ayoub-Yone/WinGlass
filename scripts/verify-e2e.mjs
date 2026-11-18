@@ -1,10 +1,10 @@
-// End-to-end verification of a lumabar release build, driven through the WebView2 DevTools
+// End-to-end verification of a winglass release build, driven through the WebView2 DevTools
 // protocol. Needs a binary built with a debugging port (wry ignores
 // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS), i.e. with a TAURI_CONFIG overlay that appends
 // `--remote-debugging-port=9333 --remote-allow-origins=*` to both windows' additionalBrowserArgs:
 //
 //   TAURI_CONFIG="$(cat overlay.json)" cargo build --release      # verification build
-//   node scripts/verify-e2e.mjs [path-to-lumabar.exe]
+//   node scripts/verify-e2e.mjs [path-to-winglass.exe]
 //   cargo build --release                                         # rebuild without the port
 //
 // The app runs against a throw-away profile (APPDATA / LOCALAPPDATA redirected to a temp
@@ -18,15 +18,15 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const exe = resolve(process.argv[2] ?? join(here, "..", "src-tauri", "target", "release", "lumabar.exe"));
+const exe = resolve(process.argv[2] ?? join(here, "..", "src-tauri", "target", "release", "winglass.exe"));
 const helper = join(here, "win-helper.ps1");
 const PORT = 9333;
-const profile = mkdtempSync(join(tmpdir(), "lumabar-verify-"));
+const profile = mkdtempSync(join(tmpdir(), "winglass-verify-"));
 const roaming = join(profile, "Roaming");
 const local = join(profile, "Local");
 mkdirSync(roaming, { recursive: true });
 mkdirSync(local, { recursive: true });
-const stateFile = join(roaming, "lumabar", "taskbar_state.json");
+const stateFile = join(roaming, "winglass", "taskbar_state.json");
 
 const results = [];
 const notes = [];
@@ -244,8 +244,8 @@ try {
   if (!existsSync(exe)) throw new Error(`missing ${exe}`);
   // A second instance exits immediately (single-instance mutex) and the checks would silently
   // run against whatever is already on the debugging port.
-  if (/lumabar.exe/i.test(execFileSync("tasklist", ["/FI", "IMAGENAME eq lumabar.exe", "/NH"], { encoding: "utf8" }))) {
-    throw new Error("lumabar.exe is already running — quit it before verifying");
+  if (/winglass.exe/i.test(execFileSync("tasklist", ["/FI", "IMAGENAME eq winglass.exe", "/NH"], { encoding: "utf8" }))) {
+    throw new Error("winglass.exe is already running — quit it before verifying");
   }
 
   // ---------------------------------------------------------------- first launch
@@ -418,7 +418,7 @@ try {
   await sleep(3000);
   const idle = memory(pid);
   note(`idle: host working set ${idle.hostWorkingSetMb} MB (private ${idle.hostPrivateMb} MB), ${idle.webviewCount} WebView2 processes, ${idle.childWorkingSetMb} MB`);
-  check("idle host working set < 40 MB (Get-Process lumabar)", idle.hostWorkingSetMb < 40, `${idle.hostWorkingSetMb} MB`);
+  check("idle host working set < 40 MB (Get-Process winglass)", idle.hostWorkingSetMb < 40, `${idle.hostWorkingSetMb} MB`);
 
   // ---------------------------------------------------------------- integrated launcher (no Win+S)
   const apps = await dock.invoke("search_installed_apps", { query: "a" });
@@ -541,7 +541,7 @@ try {
 
   // ---------------------------------------------------------------- hidden-icons chevron + tray card (no tray strip in the bar)
   const tray = await dock.invoke("get_tray_icons");
-  check("get_tray_icons: running tray apps, never the shell, lumabar listed as itself", Array.isArray(tray) && tray.every((t) => t.id && t.name && !/\\explorer\.exe$/i.test(t.exe)) && tray.some((t) => t.isSelf && /lumabar\.exe$/i.test(t.exe)), JSON.stringify(tray.map((t) => `${t.name}${t.isSelf ? "*" : ""}`)));
+  check("get_tray_icons: running tray apps, never the shell, winglass listed as itself", Array.isArray(tray) && tray.every((t) => t.id && t.name && !/\\explorer\.exe$/i.test(t.exe)) && tray.some((t) => t.isSelf && /winglass\.exe$/i.test(t.exe)), JSON.stringify(tray.map((t) => `${t.name}${t.isSelf ? "*" : ""}`)));
   const chevron = await waitFor(() => dock.eval(`(() => {
     const c = document.querySelector('.lb-pill [data-testid="tray-chevron"]');
     if (!c) return null;
@@ -563,18 +563,18 @@ try {
     return { radius: cs.borderTopLeftRadius, bg: cs.backgroundColor, border: cs.borderTopColor, padding: cs.paddingTop, columns: gs.gridTemplateColumns.split(' ').length, gap: gs.columnGap, cells: cells.length, self: grid.querySelectorAll('[data-self]').length, gapAbove: Math.round(ch.top - cr.bottom), icon: img ? Math.round(img.width) : 0, labelsUnderIcons: grid.innerText.trim().length };
   })()`), 3000);
   check("tray card: 22px radius, rgba(24,24,26,0.92), 1px rgba(255,255,255,0.08) border, 22px padding, ~10px above the chevron", card && card.radius === "22px" && card.bg === "rgba(24, 24, 26, 0.92)" && card.border === "rgba(255, 255, 255, 0.08)" && card.padding === "22px" && Math.abs(card.gapAbove - 10) <= 1, JSON.stringify(card));
-  check("tray card: 5-column grid, 22px gaps, 28–30px icons, every tray app incl. lumabar, no text labels", card && card.columns === 5 && card.gap === "22px" && card.icon >= 26 && card.icon <= 30 && card.cells === tray.length && card.self === 1 && card.labelsUnderIcons === 0, JSON.stringify(card));
+  check("tray card: 5-column grid, 22px gaps, 28–30px icons, every tray app incl. winglass, no text labels", card && card.columns === 5 && card.gap === "22px" && card.icon >= 26 && card.icon <= 30 && card.cells === tray.length && card.self === 1 && card.labelsUnderIcons === 0, JSON.stringify(card));
   const tip = await dock.eval(`(() => { const b = document.querySelector('[data-testid="tray-grid"] [data-testid="tray-icon"]'); b.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); return new Promise((r) => setTimeout(() => r({ want: b.getAttribute('aria-label'), got: document.querySelector('[data-testid="tray-tooltip"]')?.textContent ?? null }), 120)); })()`);
   check("hovering a tray icon shows a floating app-name tooltip", tip.got === tip.want, JSON.stringify(tip));
-  // Right click on lumabar's own icon: lumabar's glass menu, never the Windows tray.
+  // Right click on winglass's own icon: winglass's glass menu, never the Windows tray.
   await dock.eval(`document.querySelector('[data-testid="tray-grid"] [data-self]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))`);
   const trayMenu = await waitFor(() => dock.eval(`(() => { const m = document.querySelector('[data-testid="tray-menu"]'); return m ? { header: m.querySelector('[data-testid="tray-menu-header"]').innerText.trim(), items: [...m.querySelectorAll('[role="menuitem"]')].map((i) => i.innerText.trim()), cardClosed: !document.querySelector('[data-testid="tray-card"]') } : null; })()`), 3000);
-  check("right click: lumabar menu with the app's name + Ouvrir / Paramètres / Quitter", trayMenu && trayMenu.header === "lumabar" && JSON.stringify(trayMenu.items) === JSON.stringify(["Ouvrir", "Paramètres", "Quitter"]), JSON.stringify(trayMenu));
+  check("right click: winglass menu with the app's name + Ouvrir / Paramètres / Quitter", trayMenu && trayMenu.header === "winglass" && JSON.stringify(trayMenu.items) === JSON.stringify(["Ouvrir", "Paramètres", "Quitter"]), JSON.stringify(trayMenu));
   const shellAfterMenu = taskbar();
   check("right click never shows Shell_TrayWnd or an overflow window", shellAfterMenu.visible === shellBefore.visible && shellAfterMenu.overflow === false, JSON.stringify({ before: shellBefore, after: shellAfterMenu }));
   await dock.eval(`document.querySelector('[data-testid="tray-menu-settings"]').click()`);
   const settingsFromTray = await waitFor(async () => ((await findTarget("settings")) ? true : null), 8000);
-  check("Paramètres on lumabar opens lumabar's Settings", settingsFromTray === true);
+  check("Paramètres on winglass opens winglass's Settings", settingsFromTray === true);
   await dock.invoke("close_window", { label: "settings" }).catch(() => undefined);
   await sleep(500);
   // Escape / outside click dismiss the card; the menu closes on Escape.
@@ -591,7 +591,7 @@ try {
   const bad = await dock.invoke("tray_icon_action", { id: "no-such-id", action: "quit" }).then(() => "ok", (e) => String(e));
   const selfEntry = tray.find((t) => t.isSelf);
   const selfAct = selfEntry ? await dock.invoke("tray_icon_action", { id: selfEntry.id, action: "quit" }).then(() => "ok", (e) => String(e)) : "no self";
-  check("tray_icon_action rejects unknown items and never quits lumabar behind the dock's back", bad !== "ok" && selfAct !== "ok" && taskbar().overflow === false, `${bad} | ${selfAct}`);
+  check("tray_icon_action rejects unknown items and never quits winglass behind the dock's back", bad !== "ok" && selfAct !== "ok" && taskbar().overflow === false, `${bad} | ${selfAct}`);
 
   // ---------------------------------------------------------------- dock magnification (local compression) + glass bulge
   const mag = await dock.eval(`(async () => {
@@ -662,7 +662,7 @@ try {
     return { x: Math.round(window.screenX + (r.left + r.width / 2) * devicePixelRatio), y: Math.round(window.screenY + (r.top + r.height / 2) * devicePixelRatio) };
   })()`);
   const hover = psArgs("hover", ["-ProcessId", String(pid), "-X", String(pillCenter.x), "-Y", String(pillCenter.y)]);
-  check("hover: IsWindowVisible stays true on lumabar, false on Shell_TrayWnd", hover.duringHover >= 1 && hover.afterHover >= 1 && hover.trayVisible === false, JSON.stringify(hover));
+  check("hover: IsWindowVisible stays true on winglass, false on Shell_TrayWnd", hover.duringHover >= 1 && hover.afterHover >= 1 && hover.trayVisible === false, JSON.stringify(hover));
   await patchSettings(dock, { hideOnFullscreen: true });
   const fs = psArgs("fullscreen", ["-ProcessId", String(pid)]);
   await patchSettings(dock, { hideOnFullscreen: false });
@@ -731,7 +731,7 @@ try {
     return t.autoHide === original.autoHide && t.visible ? t : null;
   }, 5000);
   check("Ctrl+Alt+Shift+R restores the taskbar", Boolean(restoredByHotkey), JSON.stringify(taskbar()));
-  check("lumabar keeps running after the hotkey, mode persisted as native", alive(pid) && (await dock.invoke("get_settings")).taskbarMode === "native");
+  check("winglass keeps running after the hotkey, mode persisted as native", alive(pid) && (await dock.invoke("get_settings")).taskbarMode === "native");
   check("state file removed once restored", !existsSync(stateFile));
 
   // ---------------------------------------------------------------- restore: graceful exit

@@ -10,7 +10,7 @@ import { useI18n } from "../i18n";
 import { formatPercent } from "../lib/format";
 import { errorMessage, ipc } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
-import type { BrightnessDisplay, WidgetProps } from "../types/lumabar";
+import type { BrightnessDisplay, WidgetProps } from "../types/winglass";
 
 const SAMPLE: BrightnessDisplay[] = [{ id: "internal", name: "", internal: true, percent: 70 }];
 const WHEEL_STEP = 5;

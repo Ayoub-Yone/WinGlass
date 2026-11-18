@@ -1,6 +1,6 @@
 // The Windows button at the far left of the dock, right against the app icons, and its system
 // menu: connectivity tiles (Wi-Fi, Ethernet, Bluetooth), Mode Clear / Ambiance Musique / Do not
-// disturb switches, lumabar and Windows settings, and power (lock, sleep, restart and shut down,
+// disturb switches, winglass and Windows settings, and power (lock, sleep, restart and shut down,
 // the last two behind an in-menu confirmation). Closes on an outside click or Escape.
 
 import {
@@ -307,9 +307,9 @@ function SystemMenuBody({ onClose }: { onClose: () => void }) {
 
       <SectionLabel>{t("sysmenu.settings")}</SectionLabel>
       <LinkRow
-        testId="sysmenu-lumabar-settings"
+        testId="sysmenu-winglass-settings"
         icon={SlidersHorizontal}
-        label={t("sysmenu.lumabarSettings")}
+        label={t("sysmenu.winglassSettings")}
         onClick={() => {
           onClose();
           openSettings("general");

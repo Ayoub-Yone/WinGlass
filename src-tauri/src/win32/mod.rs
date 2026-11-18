@@ -29,10 +29,10 @@ pub struct SingleInstanceGuard(#[allow(dead_code)] HANDLE);
 unsafe impl Send for SingleInstanceGuard {}
 unsafe impl Sync for SingleInstanceGuard {}
 
-/// Acquire `Global\LumabarSingleInstanceMutex`. Returns `None` when another instance owns it.
+/// Acquire `Global\WinGlassSingleInstanceMutex`. Returns `None` when another instance owns it.
 pub fn acquire_single_instance() -> Option<SingleInstanceGuard> {
     unsafe {
-        let handle = CreateMutexW(None, true, w!("Global\\LumabarSingleInstanceMutex")).ok()?;
+        let handle = CreateMutexW(None, true, w!("Global\\WinGlassSingleInstanceMutex")).ok()?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return None;
         }
@@ -40,11 +40,11 @@ pub fn acquire_single_instance() -> Option<SingleInstanceGuard> {
     }
 }
 
-/// Why lumabar is exiting, appended to `%APPDATA%\lumabar\exit.log` (local only, capped at 64 KB):
+/// Why winglass is exiting, appended to `%APPDATA%\winglass\exit.log` (local only, capped at 64 KB):
 /// a dock that disappears can then be told apart from a crash, a quit command or a session end.
 pub fn exit_log(reason: &str) {
     use std::io::Write;
-    let Some(dir) = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("lumabar")) else { return };
+    let Some(dir) = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("winglass")) else { return };
     let path = dir.join("exit.log");
     if std::fs::metadata(&path).map(|m| m.len() > 64 * 1024).unwrap_or(false) {
         let _ = std::fs::remove_file(&path);
@@ -72,7 +72,7 @@ pub fn install_crash_guards() {
     }));
     unsafe {
         if let Err(err) = SetConsoleCtrlHandler(Some(console_ctrl_handler), true) {
-            eprintln!("[lumabar] SetConsoleCtrlHandler failed: {err}");
+            eprintln!("[winglass] SetConsoleCtrlHandler failed: {err}");
         }
     }
 }
@@ -81,14 +81,14 @@ static EXIT_WATCHDOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Called once the taskbar has been restored for exit: if WebView2 / COM teardown stalls, end the
-/// process after `EXIT_GRACE` instead of lingering (a lingering lumabar holds the single-instance
+/// process after `EXIT_GRACE` instead of lingering (a lingering winglass holds the single-instance
 /// mutex and blocks the next launch). Safe because restoration already happened.
 pub fn arm_exit_watchdog() {
     use std::sync::atomic::Ordering;
     if EXIT_WATCHDOG.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = std::thread::Builder::new().name("lumabar-exit-watchdog".into()).spawn(|| {
+    let _ = std::thread::Builder::new().name("winglass-exit-watchdog".into()).spawn(|| {
         std::thread::sleep(EXIT_GRACE);
         taskbar::restore();
         unsafe {
@@ -97,10 +97,10 @@ pub fn arm_exit_watchdog() {
     });
 }
 
-/// Add/remove lumabar from `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+/// Add/remove winglass from `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 pub fn set_launch_at_login(enabled: bool) -> Result<(), String> {
     let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    let value_name = wide("lumabar");
+    let value_name = wide("winglass");
     unsafe {
         if enabled {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;

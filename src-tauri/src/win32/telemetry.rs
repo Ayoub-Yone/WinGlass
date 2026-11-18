@@ -438,7 +438,7 @@ pub fn set_hotspot(on: bool) -> Result<(), String> {
 
 pub fn start(app: AppHandle) {
     std::thread::Builder::new()
-        .name("lumabar-telemetry".into())
+        .name("winglass-telemetry".into())
         .spawn(move || {
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);

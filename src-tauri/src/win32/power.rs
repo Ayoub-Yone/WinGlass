@@ -1,5 +1,5 @@
 //! Windows-button power section: lock, sleep, restart, shut down. Restart and shut down are only
-//! sent after the in-menu confirmation step. `LUMABAR_POWER_DRY_RUN=1` logs the action to
+//! sent after the in-menu confirmation step. `WINGLASS_POWER_DRY_RUN=1` logs the action to
 //! exit.log instead of running it (end-to-end checks never power the machine off).
 
 use std::os::windows::process::CommandExt;
@@ -40,7 +40,7 @@ impl PowerAction {
 }
 
 fn dry_run() -> bool {
-    std::env::var("LUMABAR_POWER_DRY_RUN").is_ok_and(|v| v == "1")
+    std::env::var("WINGLASS_POWER_DRY_RUN").is_ok_and(|v| v == "1")
 }
 
 pub fn run(action: PowerAction) -> Result<(), String> {

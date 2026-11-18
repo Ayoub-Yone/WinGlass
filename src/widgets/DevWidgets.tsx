@@ -6,7 +6,7 @@ import { useI18n } from "../i18n";
 import { formatCount, formatSigned } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { usePreview, useProvider } from "../lib/hooks";
-import type { ApiCounterData, GithubData, LeetcodeData, WidgetProps } from "../types/lumabar";
+import type { ApiCounterData, GithubData, LeetcodeData, WidgetProps } from "../types/winglass";
 
 const GREENS = ["var(--lb-track)", "#0E4429", "#006D32", "#26A641", "#39D353"];
 

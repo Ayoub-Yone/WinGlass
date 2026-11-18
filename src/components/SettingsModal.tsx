@@ -29,7 +29,7 @@ import { DEFAULT_FROST_LEVEL, SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../
 import { patchSettings, useSettings } from "../lib/hooks";
 import { formatPercent } from "../lib/format";
 import { broadcast, errorMessage, ipc, subscribe } from "../lib/ipc";
-import type { AccountStatus, AutomationSettings, GlassBackdrop, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
+import type { AccountStatus, AutomationSettings, GlassBackdrop, Language, ProviderId, Settings, TaskbarMode } from "../types/winglass";
 
 type Tab = "general" | "accounts" | "calendar" | "integrations" | "automations" | "advanced";
 
@@ -787,7 +787,7 @@ function AdvancedTab({ s }: { s: Settings }) {
           <CommitInput type="number" width={70} value={s.providers.pollMinutes} onCommit={(v) => update((x) => ({ ...x, providers: { ...x.providers, pollMinutes: Math.max(1, Math.min(120, Math.round(Number(v) || 5))) } }))} />
         </Row>
         <Row label={t("settings.storage")} hint={t("settings.storageHint")}>
-          <span className="text-[11.5px] lb-muted">%APPDATA%\lumabar\lumabar.db</span>
+          <span className="text-[11.5px] lb-muted">%APPDATA%\winglass\winglass.db</span>
         </Row>
         <Row label={t("settings.glassCapture")} hint={t("settings.glassCaptureHint")}>
           <span className="max-w-[260px] truncate text-[11.5px] lb-muted" title={glass}>{glass || "—"}</span>

@@ -32,7 +32,7 @@ import { useI18n, type TranslationKey } from "../i18n";
 import { formatClock, formatDateTime, formatHour, formatMediumDate, formatNumericDate, formatTime } from "../lib/format";
 import { broadcast, errorMessage, ipc } from "../lib/ipc";
 import { useLocalState, useNow, useProvider, useSettings } from "../lib/hooks";
-import type { Todo, WeatherData, WidgetProps } from "../types/lumabar";
+import type { Todo, WeatherData, WidgetProps } from "../types/winglass";
 
 // ---------------------------------------------------------------- Pomodoro
 
@@ -49,7 +49,7 @@ export function PomodoroWidget({ span, instance, preview }: WidgetProps) {
   const { t } = useI18n();
   const focusMs = (settings?.pomodoroFocusMinutes ?? 25) * 60_000;
   const breakMs = (settings?.pomodoroBreakMinutes ?? 5) * 60_000;
-  const [state, setState] = useLocalState<PomodoroState>(`lumabar.pomodoro.${instance.instanceId}`, {
+  const [state, setState] = useLocalState<PomodoroState>(`winglass.pomodoro.${instance.instanceId}`, {
     phase: "focus",
     round: 1,
     running: false,
@@ -120,7 +120,7 @@ export function PomodoroWidget({ span, instance, preview }: WidgetProps) {
 
 export function StopwatchWidget({ span, instance, preview }: WidgetProps) {
   const { t } = useI18n();
-  const [state, setState] = useLocalState(`lumabar.stopwatch.${instance.instanceId}`, {
+  const [state, setState] = useLocalState(`winglass.stopwatch.${instance.instanceId}`, {
     running: false,
     startedAt: 0,
     accumulatedMs: 0,

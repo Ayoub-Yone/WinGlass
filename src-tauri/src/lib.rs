@@ -20,7 +20,7 @@ use win32::window_manager;
 
 pub use win32::guardian::GUARDIAN_FLAG;
 
-const TRAY_ID: &str = "lumabar-tray";
+const TRAY_ID: &str = "winglass-tray";
 
 /// Entry point of the out-of-process taskbar guardian (see win32/guardian.rs).
 pub fn run_guardian(pid: u32) {
@@ -86,7 +86,7 @@ fn build_tray(app: &AppHandle, lang: Lang) -> tauri::Result<()> {
             // Menu events arrive on the main thread, where creating a window is safe.
             label @ ("settings" | "picker") => {
                 if let Err(err) = window_manager::open_modal(app, label, None) {
-                    eprintln!("[lumabar] {err}");
+                    eprintln!("[winglass] {err}");
                 }
             }
             "restore" => emergency_restore(app),
@@ -104,7 +104,7 @@ pub fn refresh_tray_language(app: &AppHandle, language: &str) {
         Ok(menu) => {
             let _ = tray.set_menu(Some(menu));
         }
-        Err(err) => eprintln!("[lumabar] could not rebuild the tray menu: {err}"),
+        Err(err) => eprintln!("[winglass] could not rebuild the tray menu: {err}"),
     }
 }
 
@@ -118,21 +118,21 @@ pub fn run() {
     taskbar::init();
     win32::guardian::spawn();
 
-    // lumabar's async work is a handful of HTTPS polls and short blocking commands: two workers
+    // winglass's async work is a handful of HTTPS polls and short blocking commands: two workers
     // are plenty, and far cheaper than Tokio's default of one thread (and stack) per logical core.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(8)
-        .thread_name("lumabar-async")
+        .thread_name("winglass-async")
         .enable_all()
         .build()
         .expect("build the async runtime");
     tauri::async_runtime::set(runtime.handle().clone());
 
-    let db = Db::open().expect(r"open %APPDATA%\lumabar\lumabar.db");
+    let db = Db::open().expect(r"open %APPDATA%\winglass\winglass.db");
     let settings = Settings::load(&db);
     // Autostart follows the setting (on for a fresh install) and is re-pointed at this exe on every
-    // start, so a moved or renamed copy (lumabar.exe -> WinGlass.exe) keeps launching with Windows.
+    // start, so a moved or renamed copy (winglass.exe -> WinGlass.exe) keeps launching with Windows.
     // Builds run from cargo's `target\` (dev, e2e) never register implicitly; the Settings toggle still does.
     let build_output = std::env::current_exe().map(|p| p.components().any(|c| c.as_os_str().eq_ignore_ascii_case("target"))).unwrap_or(true);
     if settings.launch_at_login && !build_output {
@@ -267,7 +267,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("build lumabar");
+        .expect("build winglass");
 
     app.run(|_app, event| {
         if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {

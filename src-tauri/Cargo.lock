@@ -2030,28 +2030,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
-name = "lumabar"
-version = "0.4.2"
-dependencies = [
- "base64 0.23.1",
- "chrono",
- "chrono-tz",
- "ical",
- "image",
- "once_cell",
- "parking_lot 0.13.0",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
- "windows",
- "windows-core",
-]
-
-[[package]]
 name = "markup5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5067,6 +5045,28 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "winglass"
+version = "0.4.2"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "ical",
+ "image",
+ "once_cell",
+ "parking_lot 0.13.0",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "windows",
+ "windows-core",
+]
 
 [[package]]
 name = "winnow"

@@ -9,7 +9,7 @@ import { useI18n } from "../i18n";
 import { usePreview } from "../lib/hooks";
 import { useHub } from "../engine/DataHub";
 import { clamp } from "../lib/format";
-import type { ProviderId, Span } from "../types/lumabar";
+import type { ProviderId, Span } from "../types/winglass";
 
 export function spanCss(span: Span): CSSProperties {
   const units = span === "1x1" ? 1 : span === "2x1" ? 2 : span === "3x1" ? 3 : 0;

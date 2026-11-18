@@ -26,7 +26,7 @@ import type {
   Todo,
   ToastSpec,
   WindowPreview,
-} from "../types/lumabar";
+} from "../types/winglass";
 
 export type HitRect = [number, number, number, number];
 

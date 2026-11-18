@@ -89,11 +89,11 @@ type StaJob = Box<dyn FnOnce() + Send>;
 static STA: Lazy<Mutex<std::sync::mpsc::Sender<StaJob>>> = Lazy::new(|| {
     let (tx, rx) = std::sync::mpsc::channel::<StaJob>();
     std::thread::Builder::new()
-        .name("lumabar-shell-sta".into())
+        .name("winglass-shell-sta".into())
         .spawn(move || {
             let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
             if hr.is_err() && hr != RPC_E_CHANGED_MODE {
-                eprintln!("[lumabar] shell STA init failed: {hr:?}");
+                eprintln!("[winglass] shell STA init failed: {hr:?}");
             }
             for job in rx {
                 job();

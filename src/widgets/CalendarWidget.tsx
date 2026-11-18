@@ -18,7 +18,7 @@ import {
 } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { useNow, usePreview, useProvider } from "../lib/hooks";
-import type { CalendarData, CalendarEvent, WidgetProps } from "../types/lumabar";
+import type { CalendarData, CalendarEvent, WidgetProps } from "../types/winglass";
 
 /** The backend loads feeds for this many days ahead (providers/ical_parser.rs). */
 const LOADED_DAYS = 14;

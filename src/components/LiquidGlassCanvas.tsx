@@ -634,7 +634,7 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
     try {
       renderer = new GlassRenderer(canvas);
     } catch (err) {
-      console.warn("[lumabar] liquid glass disabled:", err);
+      console.warn("[winglass] liquid glass disabled:", err);
       activeCb.current(false);
       return;
     }
@@ -709,7 +709,7 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
         }
         fetched = seq;
       } catch (err) {
-        console.warn("[lumabar] glass frame fetch failed", err);
+        console.warn("[winglass] glass frame fetch failed", err);
       } finally {
         inflight = false;
         if (wanted !== fetched) void pull();

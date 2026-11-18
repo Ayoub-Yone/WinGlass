@@ -8,7 +8,7 @@ import { useHub } from "../engine/DataHub";
 import { useI18n } from "../i18n";
 import { useHitRegion } from "../lib/hitRegions";
 import { ipc, subscribe } from "../lib/ipc";
-import type { ToastSpec } from "../types/lumabar";
+import type { ToastSpec } from "../types/winglass";
 
 const MAX_VISIBLE = 3;
 const DEFAULT_DURATION = 8000;

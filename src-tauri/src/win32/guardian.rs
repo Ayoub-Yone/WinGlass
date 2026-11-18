@@ -1,9 +1,9 @@
 //! Out-of-process taskbar guardian.
 //!
-//! In-process hooks cannot run when lumabar is hard-killed (Task Manager "End task",
+//! In-process hooks cannot run when winglass is hard-killed (Task Manager "End task",
 //! `taskkill /F`, a debugger stop, a fatal fault). The guardian is a second, windowless copy of the
-//! same executable that waits on lumabar's process handle; the moment lumabar exits, it repairs
-//! the taskbar from the persisted original state if lumabar did not already restore it.
+//! same executable that waits on winglass's process handle; the moment winglass exits, it repairs
+//! the taskbar from the persisted original state if winglass did not already restore it.
 
 use std::os::windows::process::CommandExt;
 use std::process::Command;
@@ -15,7 +15,7 @@ use windows::Win32::System::Threading::{
 
 use super::taskbar;
 
-pub const GUARDIAN_FLAG: &str = "--lumabar-guardian";
+pub const GUARDIAN_FLAG: &str = "--winglass-guardian";
 
 /// Launch the guardian for the current process. Failure is logged, never fatal.
 pub fn spawn() {
@@ -26,7 +26,7 @@ pub fn spawn() {
         .creation_flags(CREATE_NO_WINDOW.0 | DETACHED_PROCESS.0)
         .spawn();
     if let Err(err) = result {
-        eprintln!("[lumabar] could not start taskbar guardian: {err}");
+        eprintln!("[winglass] could not start taskbar guardian: {err}");
     }
 }
 
@@ -44,7 +44,7 @@ pub fn run(pid: u32) {
         let _ = CloseHandle(handle);
         if waited == WAIT_OBJECT_0 {
             // Exit code 0 after a logged quit is normal; anything else is a crash or a hard kill.
-            super::exit_log(&format!("guardian: lumabar pid {pid} ended with exit code {code:#x}"));
+            super::exit_log(&format!("guardian: winglass pid {pid} ended with exit code {code:#x}"));
             taskbar::repair_from_persisted();
         }
     }

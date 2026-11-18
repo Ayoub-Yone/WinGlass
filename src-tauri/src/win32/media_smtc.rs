@@ -544,7 +544,7 @@ pub fn start(app: AppHandle) {
     let _ = SENDER.set(parking_lot::Mutex::new(tx));
     let _ = LATEST.set(parking_lot::Mutex::new(MediaState::default()));
     std::thread::Builder::new()
-        .name("lumabar-media".into())
+        .name("winglass-media".into())
         .spawn(move || run(app, rx))
         .expect("spawn media thread");
 }

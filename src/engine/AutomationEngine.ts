@@ -17,11 +17,11 @@ import type {
   RevenueData,
   ToastSpec,
   UpcomingEvent,
-} from "../types/lumabar";
+} from "../types/winglass";
 
-const FIRED_KEY = "lumabar.automation.fired.v1";
-const REVENUE_KEY = "lumabar.automation.revenue.v1";
-const BURN_KEY = "lumabar.automation.burn.v1";
+const FIRED_KEY = "winglass.automation.fired.v1";
+const REVENUE_KEY = "winglass.automation.revenue.v1";
+const BURN_KEY = "winglass.automation.burn.v1";
 
 type Fired = Record<string, number>;
 type BurnSample = { t: number; p: number; reset: string | null };
@@ -127,7 +127,7 @@ class AutomationEngineImpl {
   }
 
   private firePreMeeting(up: UpcomingEvent, minutes: number): void {
-    void ipc.mediaPause().catch((err) => console.warn("[lumabar] media_pause failed", err));
+    void ipc.mediaPause().catch((err) => console.warn("[winglass] media_pause failed", err));
     this.toast({
       id: `meeting-${up.event.uid}`,
       kind: "calendar",

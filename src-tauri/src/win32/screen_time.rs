@@ -72,7 +72,7 @@ fn app_label(exe: &str) -> String {
 
 pub fn start(app: AppHandle) {
     std::thread::Builder::new()
-        .name("lumabar-screentime".into())
+        .name("winglass-screentime".into())
         .spawn(move || {
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -93,7 +93,7 @@ pub fn start(app: AppHandle) {
                     if let Some(exe) = process_image_path(pid) {
                         let label = app_label(&exe);
                         let lower = label.to_ascii_lowercase();
-                        // Our own windows never count, whatever the executable is called (lumabar.exe / WinGlass.exe).
+                        // Our own windows never count, whatever the executable is called (winglass.exe / WinGlass.exe).
                         if lower != "lockapp" && pid != std::process::id() {
                             let mut domain = String::new();
                             if BROWSERS.contains(&lower.as_str()) {
@@ -123,7 +123,7 @@ pub fn start(app: AppHandle) {
                         pending.drain().map(|((d, h, a, dm), s)| (d, h, a, dm, s)).collect();
                     let db = &app.state::<AppState>().db;
                     if let Err(err) = db.add_screen_time(&entries) {
-                        eprintln!("[lumabar] screen time flush failed: {err}");
+                        eprintln!("[winglass] screen time flush failed: {err}");
                     }
                     last_flush = Instant::now();
                 }

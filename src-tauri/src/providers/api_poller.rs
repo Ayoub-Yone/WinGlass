@@ -1092,7 +1092,7 @@ pub async fn refresh(app: &AppHandle, id: &str) -> ProviderResult {
 }
 
 /// Sequential on purpose: unconfigured providers return instantly, and serial requests keep
-/// lumabar a polite API citizen.
+/// winglass a polite API citizen.
 pub async fn refresh_all(app: &AppHandle) {
     for id in PROVIDERS {
         refresh(app, id).await;

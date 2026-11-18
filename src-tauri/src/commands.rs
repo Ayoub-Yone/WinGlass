@@ -396,7 +396,7 @@ pub async fn get_app_window_previews(app_id: String) -> Result<Vec<crate::win32:
 }
 
 /// Preview click: that window to the front (restored when minimized). Not `close_window`, which
-/// closes lumabar's own modal windows.
+/// closes winglass's own modal windows.
 #[tauri::command]
 pub async fn focus_app_window(hwnd: i64) -> Result<(), String> {
     blocking(move || crate::win32::window_previews::focus(hwnd)).await

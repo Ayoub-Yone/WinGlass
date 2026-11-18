@@ -1,12 +1,12 @@
 // « Afficher les icônes cachées »: one rounded glass tile with a chevron (^ docked at the bottom, v at
 // the top), directly left of the clock tile. No tray icon lives in the bar itself; the chevron opens
-// a dark frosted card floating 10px above it with every notification-area app — lumabar included —
+// a dark frosted card floating 10px above it with every notification-area app — winglass included —
 // in a 5-column grid of crisp icons (name tooltip on hover).
 //
-// Left click opens / restores the app. Right click opens lumabar's own glass menu (app icon + name,
+// Left click opens / restores the app. Right click opens winglass's own glass menu (app icon + name,
 // Ouvrir · Paramètres · Quitter). Everything acts on the application itself (win32/tray_icons.rs):
-// the Windows taskbar, its tray and its overflow flyout are never shown or clicked. lumabar's own
-// entry opens lumabar's Settings modal or runs the restore-taskbar-and-quit path.
+// the Windows taskbar, its tray and its overflow flyout are never shown or clicked. winglass's own
+// entry opens winglass's Settings modal or runs the restore-taskbar-and-quit path.
 
 import { AppWindow, ChevronDown, ChevronUp, ExternalLink, Power, Settings, type LucideIcon } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -17,7 +17,7 @@ import { useI18n } from "../i18n";
 import { useCapture } from "../lib/hitRegions";
 import { errorMessage, ipc } from "../lib/ipc";
 import { usePreview } from "../lib/hooks";
-import type { TrayAction, TrayIcon, WidgetProps } from "../types/lumabar";
+import type { TrayAction, TrayIcon, WidgetProps } from "../types/winglass";
 
 const SAMPLE: TrayIcon[] = [
   { id: "s0", name: "WinGlass", exe: "", iconPng: null, isHiddenOverflow: true, isSelf: true },
@@ -263,7 +263,7 @@ export function HiddenTrayButton({ preview: previewProp }: WidgetProps) {
                     run(icon, "open");
                   }}
                   onContextMenu={(e) => {
-                    // lumabar's own menu for the app — never the Windows tray.
+                    // winglass's own menu for the app — never the Windows tray.
                     e.preventDefault();
                     e.stopPropagation();
                     const rect = e.currentTarget.getBoundingClientRect();

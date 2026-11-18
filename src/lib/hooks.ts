@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { getHub, setHub, useHub } from "../engine/DataHub";
 import { SAMPLE_MEDIA, SAMPLE_PROVIDER_DATA, sampleTelemetry } from "../widgets/samples";
 import { ipc } from "./ipc";
-import type { MediaState, ProviderId, ProviderResult, Settings, TelemetrySample } from "../types/lumabar";
+import type { MediaState, ProviderId, ProviderResult, Settings, TelemetrySample } from "../types/winglass";
 
 /** True inside the widget picker: hooks fall back to sample data so previews are never empty. */
 export const PreviewContext = createContext(false);

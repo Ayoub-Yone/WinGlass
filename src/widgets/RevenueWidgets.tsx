@@ -5,7 +5,7 @@ import { BrandGlyph, ProviderState, Ring, Sparkline, WidgetCard } from "../compo
 import { useI18n } from "../i18n";
 import { formatMoney, formatPercent } from "../lib/format";
 import { useProvider } from "../lib/hooks";
-import type { ProviderId, RevenueData, WidgetProps } from "../types/lumabar";
+import type { ProviderId, RevenueData, WidgetProps } from "../types/winglass";
 
 function Delta({ value }: { value: number }) {
   const up = value >= 0;

@@ -27,7 +27,7 @@ import { useI18n, type Translate, type TranslationKey } from "../i18n";
 import { formatBytesPerSecond, formatGb, formatPercent } from "../lib/format";
 import { broadcast, errorMessage, ipc } from "../lib/ipc";
 import { patchSettings, usePreview, useSettings, useTelemetry } from "../lib/hooks";
-import type { TelemetrySample, WidgetProps } from "../types/lumabar";
+import type { TelemetrySample, WidgetProps } from "../types/winglass";
 
 // ---------------------------------------------------------------- quick toggles
 
