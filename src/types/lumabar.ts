@@ -88,6 +88,8 @@ export interface Settings {
   monitor: string | null;
   taskbarMode: TaskbarMode;
   hideOnFullscreen: boolean;
+  /** « Masquer automatiquement le dock »: slides away when the cursor leaves, back at the screen edge. */
+  autoHideDock: boolean;
   simulation: boolean;
   doNotDisturb: boolean;
   launchAtLogin: boolean;

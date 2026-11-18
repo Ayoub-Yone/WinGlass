@@ -45,7 +45,7 @@ export function WindowPreviewCard(props: {
   const ref = useRef<HTMLDivElement | null>(null);
   const [items, setItems] = useState<WindowPreview[]>(() => cache.get(app.id) ?? app.windows.map((w) => ({ ...w, thumbnail: null })));
   const [left, setLeft] = useState<number | null>(null);
-  useHitRegion(ref, true);
+  useHitRegion(ref, true, true);
 
   // Fresh thumbnails now and while the card stays open.
   useEffect(() => {

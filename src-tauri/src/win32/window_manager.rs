@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
 use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{
     QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
 };
@@ -291,13 +292,15 @@ struct HitEntry {
     hwnd: isize,
     rects: Vec<HitRect>,
     capture_all: bool,
+    /// A flyout / menu / preview is open or a text field has focus: auto-hide must wait.
+    hold: bool,
     interactive: Option<bool>,
 }
 
 static HIT_REGIONS: Lazy<Mutex<HashMap<String, HitEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static HIT_THREAD_STARTED: AtomicBool = AtomicBool::new(false);
 
-pub fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>, capture_all: bool) {
+pub fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>, capture_all: bool, hold: bool) {
     let label = window.label().to_string();
     let hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
     let mut map = HIT_REGIONS.lock();
@@ -305,12 +308,13 @@ pub fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>, capture_all: 
         Some(entry) => {
             entry.rects = rects;
             entry.capture_all = capture_all;
+            entry.hold = hold;
             if hwnd != 0 {
                 entry.hwnd = hwnd;
             }
         }
         None => {
-            map.insert(label, HitEntry { hwnd, rects, capture_all, interactive: None });
+            map.insert(label, HitEntry { hwnd, rects, capture_all, hold, interactive: None });
         }
     }
 }
@@ -322,6 +326,26 @@ fn hwnd_rect(hwnd: isize) -> Option<RECT> {
     let mut rect = RECT::default();
     unsafe { GetWindowRect(HWND(hwnd as *mut core::ffi::c_void), &mut rect).ok()? };
     Some(rect)
+}
+
+/// The dock's interactive rects in screen coordinates, and whether the dock asks to stay open
+/// (open flyout, menu, drag, focused text field — whole-window capture counts as a hold).
+fn dock_hit_state() -> (Vec<RECT>, bool) {
+    let map = HIT_REGIONS.lock();
+    let Some(entry) = map.get("dock") else { return (Vec::new(), false) };
+    let hold = entry.hold || entry.capture_all;
+    let Some(win) = hwnd_rect(entry.hwnd) else { return (Vec::new(), hold) };
+    let rects = entry
+        .rects
+        .iter()
+        .map(|r| RECT {
+            left: win.left + r[0] as i32,
+            top: win.top + r[1] as i32,
+            right: win.left + (r[0] + r[2]) as i32,
+            bottom: win.top + (r[1] + r[3]) as i32,
+        })
+        .collect();
+    (rects, hold)
 }
 
 fn hit_test_tick() {
@@ -568,6 +592,147 @@ const HOUSEKEEPING_EVERY: Duration = Duration::from_millis(500);
 /// Slide-out animation length before the dock is truly hidden.
 const SLIDE_OUT: Duration = Duration::from_millis(300);
 
+// ---------------------------------------------------------------------------------------------
+// Auto-hide (« Masquer automatiquement le dock »)
+// ---------------------------------------------------------------------------------------------
+
+/// Cursor poll cadence while auto-hide is on (reveal must feel instant at the edge).
+pub const AUTO_HIDE_POLL: Duration = Duration::from_millis(35);
+/// How long the cursor must stay away before the dock slides out.
+pub const AUTO_HIDE_GRACE: Duration = Duration::from_millis(400);
+/// Hysteresis around the dock's interactive rects, logical px.
+pub const AUTO_HIDE_MARGIN: f64 = 24.0;
+/// Reveal band: distance in px from the docked edge's last pixel row.
+pub const EDGE_REVEAL_PX: i32 = 3;
+
+/// Is the cursor within `margin` px of any of the rects?
+pub fn near_any(cursor: POINT, rects: &[RECT], margin: i32) -> bool {
+    rects.iter().any(|r| {
+        cursor.x >= r.left - margin && cursor.x < r.right + margin && cursor.y >= r.top - margin && cursor.y < r.bottom + margin
+    })
+}
+
+/// Is the cursor touching the docked edge of `monitor` (<= `EDGE_REVEAL_PX`) within `span` (x range)?
+pub fn at_reveal_edge(cursor: POINT, monitor: RECT, span: (i32, i32), edge: DockEdge) -> bool {
+    if cursor.x < span.0 || cursor.x >= span.1 || cursor.y < monitor.top || cursor.y >= monitor.bottom {
+        return false;
+    }
+    match edge {
+        DockEdge::Bottom => monitor.bottom - 1 - cursor.y <= EDGE_REVEAL_PX,
+        DockEdge::Top => cursor.y - monitor.top <= EDGE_REVEAL_PX,
+    }
+}
+
+/// One cursor sample for the auto-hide state machine.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AutoHideSample {
+    /// Cursor is more than the margin away from every interactive rect (false when none is known).
+    pub away: bool,
+    /// Cursor touches the docked screen edge within the dock's span.
+    pub at_edge: bool,
+    /// A flyout / menu / preview / focused field / Settings or picker window keeps the dock open.
+    pub hold: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoHideEffect {
+    /// Start the slide-out (webview animation, hit regions dropped, capture paused).
+    StartHide,
+    /// Slide finished: truly hide the window.
+    FinishHide,
+    /// Show again (raw Win32) and slide in.
+    Reveal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum AutoHidePhase {
+    #[default]
+    Shown,
+    Leaving(Instant),
+    Hidden,
+}
+
+/// Pure auto-hide state machine: hide after `AUTO_HIDE_GRACE` away (never while held), reveal
+/// only at the screen edge.
+#[derive(Debug, Default)]
+pub struct AutoHide {
+    phase: AutoHidePhase,
+    away_since: Option<Instant>,
+}
+
+impl AutoHide {
+    pub fn is_hidden(&self) -> bool {
+        self.phase != AutoHidePhase::Shown
+    }
+
+    /// A fullscreen hide took over mid-slide: the window is hidden now, so a slide is finished.
+    pub fn settle(&mut self) {
+        if let AutoHidePhase::Leaving(_) = self.phase {
+            self.phase = AutoHidePhase::Hidden;
+        }
+    }
+
+    pub fn step(&mut self, enabled: bool, s: AutoHideSample, now: Instant) -> Option<AutoHideEffect> {
+        if !enabled || s.hold {
+            self.away_since = None;
+            if self.phase == AutoHidePhase::Shown {
+                return None;
+            }
+            self.phase = AutoHidePhase::Shown;
+            return Some(AutoHideEffect::Reveal);
+        }
+        match self.phase {
+            AutoHidePhase::Shown => {
+                // Resting on the edge counts as "near": no hide/reveal ping-pong there.
+                if !s.away || s.at_edge {
+                    self.away_since = None;
+                    return None;
+                }
+                let since = *self.away_since.get_or_insert(now);
+                if now.duration_since(since) < AUTO_HIDE_GRACE {
+                    return None;
+                }
+                self.away_since = None;
+                self.phase = AutoHidePhase::Leaving(now);
+                Some(AutoHideEffect::StartHide)
+            }
+            AutoHidePhase::Leaving(_) | AutoHidePhase::Hidden if s.at_edge => {
+                self.phase = AutoHidePhase::Shown;
+                Some(AutoHideEffect::Reveal)
+            }
+            AutoHidePhase::Leaving(since) if now.duration_since(since) >= SLIDE_OUT => {
+                self.phase = AutoHidePhase::Hidden;
+                Some(AutoHideEffect::FinishHide)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Read the cursor, the dock's rects and holds for one auto-hide step.
+fn sample_auto_hide(app: &AppHandle, dock_hwnd: HWND, edge: DockEdge) -> Option<AutoHideSample> {
+    let mut cursor = POINT::default();
+    unsafe { GetCursorPos(&mut cursor) }.ok()?;
+    let monitor = monitor_rect_of(dock_hwnd)?;
+    let window = hwnd_rect(dock_hwnd.0 as isize)?;
+    let (rects, held) = dock_hit_state();
+    let scale = unsafe { GetDpiForWindow(dock_hwnd) }.max(96) as f64 / 96.0;
+    let margin = (AUTO_HIDE_MARGIN * scale).round() as i32;
+    let modal_open = app.get_webview_window("settings").is_some() || app.get_webview_window("picker").is_some();
+    Some(AutoHideSample {
+        away: !rects.is_empty() && !near_any(cursor, &rects, margin),
+        at_edge: at_reveal_edge(cursor, monitor, (window.left, window.right), edge),
+        hold: held || modal_open,
+    })
+}
+
+/// Tell the webviews whether to slide away. Auto-hide only concerns the dock: the toast window
+/// keeps animating (and showing automation toasts) while the dock is tucked away.
+fn emit_hidden(app: &AppHandle, fullscreen: bool, auto_hidden: bool) {
+    let _ = app.emit_to("dock", "dock:fullscreen", fullscreen || auto_hidden);
+    let _ = app.emit_to("toast", "dock:fullscreen", fullscreen);
+}
+
 fn show_overlays(dock: &WebviewWindow, toast: Option<&WebviewWindow>) {
     show_no_activate(dock);
     if let Some(t) = toast {
@@ -586,8 +751,12 @@ pub fn start_fullscreen_watch(app: AppHandle) {
             let mut cached_hwnd: isize = 0;
             let mut last_housekeeping = Instant::now() - HOUSEKEEPING_EVERY;
             let mut last_broadcast = Instant::now();
+            let mut auto = AutoHide::default();
+            let mut fullscreen = false;
+            let mut last_fullscreen_check = Instant::now() - FULLSCREEN_POLL;
             loop {
-                let foreground_changed = wait_foreground_change(FULLSCREEN_POLL);
+                let auto_on = app.state::<AppState>().settings.read().auto_hide_dock;
+                let foreground_changed = wait_foreground_change(if auto_on { AUTO_HIDE_POLL } else { FULLSCREEN_POLL });
 
                 let Some(dock) = app.get_webview_window("dock") else { continue };
                 if cached_hwnd == 0 {
@@ -620,29 +789,62 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                 if last_broadcast.elapsed() >= Duration::from_secs(5) {
                     // Periodic re-broadcast so a reloaded webview resyncs its slide state.
                     last_broadcast = Instant::now();
-                    let _ = app.emit("dock:fullscreen", hidden);
+                    emit_hidden(&app, hidden, auto.is_hidden());
                 }
 
-                let enabled = app.state::<AppState>().settings.read().hide_on_fullscreen;
-                let fullscreen = enabled && fullscreen_in_front(dock_hwnd);
+                let (enabled, auto_on, edge) = {
+                    let s = app.state::<AppState>();
+                    let s = s.settings.read();
+                    (s.hide_on_fullscreen, s.auto_hide_dock, DockEdge::parse(&s.position))
+                };
+                // The fullscreen rule keeps its own cadence even while auto-hide polls at 35 ms.
+                if foreground_changed || last_fullscreen_check.elapsed() >= FULLSCREEN_POLL {
+                    last_fullscreen_check = Instant::now();
+                    fullscreen = enabled && fullscreen_in_front(dock_hwnd);
+                }
                 let toast = app.get_webview_window("toast");
 
                 if fullscreen == hidden {
-                    if !hidden && foreground_changed {
-                        // The app that just lost the foreground may have been topmost: keep the
-                        // dock above whatever took over (raw Win32, never activates).
-                        show_overlays(&dock, toast.as_ref());
+                    if !hidden {
+                        // Auto-hide only runs while no fullscreen app already has the dock hidden.
+                        let sample = if auto_on { sample_auto_hide(&app, dock_hwnd, edge) } else { Some(AutoHideSample::default()) };
+                        match sample.and_then(|s| auto.step(auto_on, s, Instant::now())) {
+                            Some(AutoHideEffect::StartHide) => emit_hidden(&app, false, true),
+                            Some(AutoHideEffect::FinishHide) => {
+                                // Window truly hidden: clicks reach the windows below, nothing is captured.
+                                graphics::set_paused(true);
+                                hide_overlay(&dock);
+                            }
+                            Some(AutoHideEffect::Reveal) => {
+                                show_no_activate(&dock);
+                                graphics::set_paused(false);
+                                emit_hidden(&app, false, false);
+                            }
+                            None => {}
+                        }
+                        if foreground_changed {
+                            // The app that just lost the foreground may have been topmost: keep the
+                            // overlays above whatever took over (raw Win32, never activates).
+                            if auto.is_hidden() {
+                                if let Some(t) = &toast {
+                                    show_no_activate(t);
+                                }
+                            } else {
+                                show_overlays(&dock, toast.as_ref());
+                            }
+                        }
                     }
                     continue;
                 }
 
                 if fullscreen {
-                    let _ = app.emit("dock:fullscreen", true);
+                    emit_hidden(&app, true, auto.is_hidden());
                     // Let the slide-out finish, but abort if the foreground moves on meanwhile
                     // (Alt+Tab straight out of the game): hiding follows the current foreground only.
                     let interrupted = wait_foreground_change(SLIDE_OUT);
                     if interrupted && !(enabled && fullscreen_in_front(dock_hwnd)) {
-                        let _ = app.emit("dock:fullscreen", false);
+                        fullscreen = false;
+                        emit_hidden(&app, false, auto.is_hidden());
                         continue;
                     }
                     hidden = true;
@@ -656,10 +858,18 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                     }
                 } else {
                     hidden = false;
-                    // Instant wake: Alt+Tab, Win key, desktop, any windowed app.
-                    show_overlays(&dock, toast.as_ref());
-                    graphics::set_paused(false);
-                    let _ = app.emit("dock:fullscreen", false);
+                    // An auto-hidden dock stays tucked away; the fullscreen hide finished its slide.
+                    auto.settle();
+                    if auto.is_hidden() {
+                        if let Some(t) = &toast {
+                            show_no_activate(t);
+                        }
+                    } else {
+                        // Instant wake: Alt+Tab, Win key, desktop, any windowed app.
+                        show_overlays(&dock, toast.as_ref());
+                        graphics::set_paused(false);
+                    }
+                    emit_hidden(&app, false, auto.is_hidden());
                 }
             }
         })
@@ -849,6 +1059,126 @@ mod tests {
         notify_foreground_changed();
         assert!(wait_foreground_change(Duration::from_millis(10)));
         assert!(!wait_foreground_change(Duration::from_millis(10)));
+    }
+
+    const PILL: RECT = RECT { left: 700, top: 1012, right: 1220, bottom: 1070 };
+    const SPAN: (i32, i32) = (38, 1881);
+
+    fn pt(x: i32, y: i32) -> POINT {
+        POINT { x, y }
+    }
+
+    #[test]
+    fn auto_hide_hysteresis_is_24px_around_the_dock() {
+        assert!(near_any(pt(800, 1040), &[PILL], 24));
+        assert!(near_any(pt(700 - 24, 1040), &[PILL], 24));
+        assert!(near_any(pt(900, 1012 - 24), &[PILL], 24));
+        assert!(!near_any(pt(700 - 25, 1040), &[PILL], 24));
+        assert!(!near_any(pt(900, 1012 - 25), &[PILL], 24));
+        // An open flyout's rect extends the "near" area.
+        let flyout = RECT { left: 760, top: 600, right: 1100, bottom: 1000 };
+        assert!(near_any(pt(900, 620), &[PILL, flyout], 24));
+        assert!(!near_any(pt(900, 620), &[PILL], 24));
+    }
+
+    #[test]
+    fn reveal_only_within_3px_of_the_docked_edge() {
+        // Bottom: last pixel row is 1079.
+        for y in 1076..=1079 {
+            assert!(at_reveal_edge(pt(900, y), MON, SPAN, DockEdge::Bottom), "y={y}");
+        }
+        assert!(!at_reveal_edge(pt(900, 1075), MON, SPAN, DockEdge::Bottom));
+        assert!(!at_reveal_edge(pt(900, 1079), MON, SPAN, DockEdge::Top));
+        // Top.
+        for y in 0..=3 {
+            assert!(at_reveal_edge(pt(900, y), MON, SPAN, DockEdge::Top), "y={y}");
+        }
+        assert!(!at_reveal_edge(pt(900, 4), MON, SPAN, DockEdge::Top));
+        // Outside the dock's horizontal span or on another monitor below.
+        assert!(!at_reveal_edge(pt(10, 1079), MON, SPAN, DockEdge::Bottom));
+        assert!(!at_reveal_edge(pt(1900, 1079), MON, SPAN, DockEdge::Bottom));
+        assert!(!at_reveal_edge(pt(900, 1080), MON, SPAN, DockEdge::Bottom));
+    }
+
+    fn away() -> AutoHideSample {
+        AutoHideSample { away: true, ..Default::default() }
+    }
+
+    #[test]
+    fn auto_hide_waits_for_the_grace_delay_then_slides_out() {
+        let t0 = Instant::now();
+        let mut a = AutoHide::default();
+        assert_eq!(a.step(true, away(), t0), None);
+        assert_eq!(a.step(true, away(), t0 + Duration::from_millis(399)), None);
+        // Coming back resets the grace timer.
+        assert_eq!(a.step(true, AutoHideSample::default(), t0 + Duration::from_millis(420)), None);
+        assert_eq!(a.step(true, away(), t0 + Duration::from_millis(500)), None);
+        assert_eq!(a.step(true, away(), t0 + Duration::from_millis(899)), None);
+        let t1 = t0 + Duration::from_millis(900);
+        assert_eq!(a.step(true, away(), t1), Some(AutoHideEffect::StartHide));
+        assert!(a.is_hidden());
+        assert_eq!(a.step(true, away(), t1 + Duration::from_millis(100)), None);
+        assert_eq!(a.step(true, away(), t1 + SLIDE_OUT), Some(AutoHideEffect::FinishHide));
+        assert_eq!(a.step(true, away(), t1 + SLIDE_OUT * 3), None);
+    }
+
+    #[test]
+    fn auto_hide_reveals_only_at_the_edge() {
+        let t0 = Instant::now();
+        let mut a = AutoHide::default();
+        a.step(true, away(), t0);
+        a.step(true, away(), t0 + AUTO_HIDE_GRACE);
+        a.step(true, away(), t0 + AUTO_HIDE_GRACE + SLIDE_OUT);
+        // Hovering where the pill used to be (no rects while hidden -> not "away") does nothing.
+        assert_eq!(a.step(true, AutoHideSample::default(), t0 + Duration::from_secs(2)), None);
+        assert!(a.is_hidden());
+        let edge = AutoHideSample { at_edge: true, away: true, hold: false };
+        assert_eq!(a.step(true, edge, t0 + Duration::from_secs(3)), Some(AutoHideEffect::Reveal));
+        assert!(!a.is_hidden());
+        // Resting on the edge away from the pill never re-hides (no ping-pong).
+        assert_eq!(a.step(true, edge, t0 + Duration::from_secs(10)), None);
+        // Touching the edge mid-slide also brings it back.
+        let mut b = AutoHide::default();
+        b.step(true, away(), t0);
+        assert_eq!(b.step(true, away(), t0 + AUTO_HIDE_GRACE), Some(AutoHideEffect::StartHide));
+        assert_eq!(b.step(true, edge, t0 + AUTO_HIDE_GRACE + Duration::from_millis(50)), Some(AutoHideEffect::Reveal));
+    }
+
+    #[test]
+    fn open_flyouts_and_modals_lock_the_dock_open() {
+        let t0 = Instant::now();
+        let held = AutoHideSample { away: true, hold: true, at_edge: false };
+        let mut a = AutoHide::default();
+        for ms in [0, 400, 5000] {
+            assert_eq!(a.step(true, held, t0 + Duration::from_millis(ms)), None);
+        }
+        assert!(!a.is_hidden());
+        // Releasing the hold starts a fresh grace period.
+        let t1 = t0 + Duration::from_secs(6);
+        assert_eq!(a.step(true, away(), t1), None);
+        assert_eq!(a.step(true, away(), t1 + AUTO_HIDE_GRACE), Some(AutoHideEffect::StartHide));
+        // A hold that appears while hidden (Settings opened from the tray) reveals it.
+        assert_eq!(a.step(true, held, t1 + Duration::from_secs(1)), Some(AutoHideEffect::Reveal));
+    }
+
+    #[test]
+    fn turning_auto_hide_off_restores_the_dock_immediately() {
+        let t0 = Instant::now();
+        let mut a = AutoHide::default();
+        a.step(true, away(), t0);
+        a.step(true, away(), t0 + AUTO_HIDE_GRACE);
+        assert_eq!(a.step(false, away(), t0 + Duration::from_secs(1)), Some(AutoHideEffect::Reveal));
+        for s in 2..5 {
+            assert_eq!(a.step(false, away(), t0 + Duration::from_secs(s)), None);
+        }
+        assert!(!a.is_hidden());
+        // A fullscreen hide that interrupts the slide leaves it hidden, not half-way.
+        let mut b = AutoHide::default();
+        b.step(true, away(), t0);
+        b.step(true, away(), t0 + AUTO_HIDE_GRACE);
+        b.settle();
+        assert_eq!(b.step(true, away(), t0 + Duration::from_secs(5)), None);
+        assert!(b.is_hidden());
     }
 
     #[test]

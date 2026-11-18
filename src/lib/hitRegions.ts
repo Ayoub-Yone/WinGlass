@@ -1,12 +1,14 @@
 // Interactive-region bookkeeping for click-through overlay windows (dock + toast).
 // Every registered element's bounding box (physical px) is sent to the backend, which toggles
 // set_ignore_cursor_events as the cursor enters/leaves them. "Capture" mode makes the entire
-// window interactive (drags, open context menus).
+// window interactive (drags, open context menus). "Hold" tells the auto-hide engine to keep the dock
+// shown: a flyout / preview / menu is open or a text field has focus.
 
 import { useEffect, type RefObject } from "react";
 import { ipc, type HitRect } from "./ipc";
 
 const elements = new Set<HTMLElement>();
+const holdElements = new Set<HTMLElement>();
 let captureCount = 0;
 let lastSent = "";
 let frame = 0;
@@ -28,10 +30,13 @@ function flush(): void {
     ]);
   }
   const capture = captureCount > 0;
-  const key = JSON.stringify([rects, capture]);
+  const active = document.activeElement;
+  const typing = document.hasFocus() && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement);
+  const hold = capture || typing || [...holdElements].some((el) => el.isConnected);
+  const key = JSON.stringify([rects, capture, hold]);
   if (key === lastSent) return;
   lastSent = key;
-  void ipc.setHitRegions(rects, capture).catch(() => {
+  void ipc.setHitRegions(rects, capture, hold).catch(() => {
     lastSent = "";
   });
 }
@@ -46,17 +51,23 @@ function ensureStarted(): void {
   // Catch CSS transitions / layout shifts that no observer reports.
   window.setInterval(scheduleHitFlush, 250);
   window.addEventListener("resize", scheduleHitFlush);
+  window.addEventListener("focusin", scheduleHitFlush);
+  window.addEventListener("focusout", scheduleHitFlush);
+  window.addEventListener("blur", scheduleHitFlush);
 }
 
-export function registerHitElement(el: HTMLElement): () => void {
+/** `hold`: while registered, the element keeps an auto-hiding dock shown (flyouts, previews). */
+export function registerHitElement(el: HTMLElement, hold = false): () => void {
   ensureStarted();
   elements.add(el);
+  if (hold) holdElements.add(el);
   const ro = new ResizeObserver(scheduleHitFlush);
   ro.observe(el);
   scheduleHitFlush();
   return () => {
     ro.disconnect();
     elements.delete(el);
+    holdElements.delete(el);
     scheduleHitFlush();
   };
 }
@@ -75,12 +86,12 @@ export function pushCapture(): () => void {
   };
 }
 
-export function useHitRegion(ref: RefObject<HTMLElement | null>, enabled = true): void {
+export function useHitRegion(ref: RefObject<HTMLElement | null>, enabled = true, hold = false): void {
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled) return;
-    return registerHitElement(el);
-  }, [ref, enabled]);
+    return registerHitElement(el, hold);
+  }, [ref, enabled, hold]);
 }
 
 export function useCapture(active: boolean): void {

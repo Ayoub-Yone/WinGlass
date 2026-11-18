@@ -34,7 +34,8 @@ export const ipc = {
   getSettings: () => invoke<Settings>("get_settings"),
   updateSettings: (settings: Settings) => invoke<Settings>("update_settings", { settings }),
   getDockLayout: () => invoke<DockLayout>("get_dock_layout"),
-  setHitRegions: (rects: HitRect[], captureAll: boolean) => invoke<void>("set_hit_regions", { rects, captureAll }),
+  setHitRegions: (rects: HitRect[], captureAll: boolean, hold: boolean) =>
+    invoke<void>("set_hit_regions", { rects, captureAll, hold }),
   snapDockToCursor: () => invoke<DockPosition>("snap_dock_to_cursor"),
   setDockPosition: (position: DockPosition) => invoke<void>("set_dock_position", { position }),
   setTaskbarMode: (mode: TaskbarMode) => invoke<void>("set_taskbar_mode", { mode }),

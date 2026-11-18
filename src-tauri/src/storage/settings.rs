@@ -137,6 +137,8 @@ pub struct Settings {
     pub monitor: Option<String>,
     pub taskbar_mode: String,
     pub hide_on_fullscreen: bool,
+    /// « Masquer automatiquement le dock »: slide away when the cursor leaves, reveal at the screen edge.
+    pub auto_hide_dock: bool,
     pub simulation: bool,
     pub do_not_disturb: bool,
     pub launch_at_login: bool,
@@ -175,6 +177,7 @@ impl Default for Settings {
             monitor: None,
             taskbar_mode: "completely_hidden".into(),
             hide_on_fullscreen: true,
+            auto_hide_dock: false,
             simulation: false,
             do_not_disturb: false,
             launch_at_login: false,

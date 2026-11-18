@@ -80,8 +80,8 @@ pub fn get_dock_layout(app: AppHandle) -> Result<DockLayout, String> {
 /// `rects` are physical pixels relative to the calling window. `capture_all` makes the whole
 /// window interactive (used during drags and while a menu is open).
 #[tauri::command]
-pub fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>, capture_all: bool) {
-    window_manager::set_hit_regions(window, rects, capture_all);
+pub fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>, capture_all: bool, hold: bool) {
+    window_manager::set_hit_regions(window, rects, capture_all, hold);
 }
 
 #[tauri::command]

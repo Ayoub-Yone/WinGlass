@@ -234,6 +234,9 @@ function GeneralTab({ s }: { s: Settings }) {
         <Row label={t("settings.hideFullscreen")} hint={t("settings.hideFullscreenHint")}>
           <Toggle checked={s.hideOnFullscreen} onChange={(v) => update((x) => ({ ...x, hideOnFullscreen: v }))} />
         </Row>
+        <Row label={t("settings.autoHideDock")} hint={t("settings.autoHideDockHint")}>
+          <Toggle checked={s.autoHideDock} onChange={(v) => update((x) => ({ ...x, autoHideDock: v }))} />
+        </Row>
         <Row label={t("settings.launchAtLogin")}>
           <Toggle checked={s.launchAtLogin} onChange={(v) => update((x) => ({ ...x, launchAtLogin: v }))} />
         </Row>

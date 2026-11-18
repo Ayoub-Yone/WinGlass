@@ -179,7 +179,7 @@ export function Popover(props: {
   const position = useHub((s) => s.position);
   const ref = useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
-  useHitRegion(ref, open);
+  useHitRegion(ref, open, true);
 
   useLayoutEffect(() => {
     if (!open || !anchor.current) return;
