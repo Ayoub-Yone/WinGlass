@@ -53,7 +53,7 @@ static CACHE: Lazy<Mutex<HashMap<String, ProviderResult>>> = Lazy::new(|| Mutex:
 pub(crate) static CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent(concat!("lumabar/", env!("CARGO_PKG_VERSION"), " (Windows)"))
+        .user_agent(concat!("WinGlass/", env!("CARGO_PKG_VERSION"), " (Windows)"))
         .build()
         .expect("build HTTP client")
 });
@@ -996,9 +996,9 @@ fn simulate(id: &str, settings: &Settings) -> Option<Value> {
         "dodo" => sim_revenue("Dodo Payments", 1180.0, goal),
         "datafast" => sim_revenue("DataFast", 2980.0, goal),
         "gmail" => json!({ "unread": 4, "today": 9, "account": "you@example.com" }),
-        "x" => json!({ "followers": 12480 + (wave(900.0, 0.0) * 8.0) as i64, "deltaToday": 37, "handle": "@lumabar", "metric": "followers" }),
-        "youtube" => json!({ "followers": 48210, "deltaToday": 112, "handle": "lumabar", "metric": "subscribers" }),
-        "instagram" => json!({ "followers": 9031, "deltaToday": 14, "handle": "@lumabar", "metric": "followers" }),
+        "x" => json!({ "followers": 12480 + (wave(900.0, 0.0) * 8.0) as i64, "deltaToday": 37, "handle": "@winglass", "metric": "followers" }),
+        "youtube" => json!({ "followers": 48210, "deltaToday": 112, "handle": "winglass", "metric": "subscribers" }),
+        "instagram" => json!({ "followers": 9031, "deltaToday": 14, "handle": "@winglass", "metric": "followers" }),
         "github" => {
             let weeks: Vec<Vec<f64>> = (0..52)
                 .map(|w| (0..7).map(|d| {
@@ -1010,7 +1010,7 @@ fn simulate(id: &str, settings: &Settings) -> Option<Value> {
             let total: f64 = weeks.iter().flatten().sum();
             json!({ "login": "octocat", "weeks": weeks, "total": total, "notifications": 7, "notificationsMore": false })
         }
-        "leetcode" => json!({ "username": "lumabar", "solved": 412, "easy": 160, "medium": 210, "hard": 42, "streak": 14, "maxStreak": 61 }),
+        "leetcode" => json!({ "username": "winglass", "solved": 412, "easy": 160, "medium": 210, "hard": 42, "streak": 14, "maxStreak": 61 }),
         "api_counter" => json!({ "value": 128400 + (Utc::now().timestamp() % 3600), "deltaToday": 2314, "label": settings.providers.api_counter_label }),
         "weather" => {
             let now = Local::now();

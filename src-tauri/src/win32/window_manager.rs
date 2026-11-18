@@ -15,7 +15,9 @@ use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MONITORINFOEXW, MonitorFromPoint, MonitorFromWindow,
+};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{
@@ -709,8 +711,33 @@ impl AutoHide {
     }
 }
 
-/// Read the cursor, the dock's rects and holds for one auto-hide step.
-fn sample_auto_hide(app: &AppHandle, dock_hwnd: HWND, edge: DockEdge) -> Option<AutoHideSample> {
+/// Horizontal span the dock window would cover on `monitor` (centered, `MAX_WIDTH_RATIO`).
+pub fn dock_span_on(monitor: RECT) -> (i32, i32) {
+    let width = monitor.right - monitor.left;
+    let inset = ((width as f64 * (1.0 - MAX_WIDTH_RATIO)) / 2.0).round() as i32;
+    (monitor.left + inset, monitor.right - inset)
+}
+
+/// Monitor under the cursor: bounds and device name (`\.\DISPLAY2`, as Tauri names monitors).
+fn monitor_at(cursor: POINT) -> Option<(RECT, String)> {
+    unsafe {
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONULL);
+        if monitor.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if !GetMonitorInfoW(monitor, &mut info.monitorInfo).as_bool() {
+            return None;
+        }
+        let len = info.szDevice.iter().position(|&c| c == 0).unwrap_or(info.szDevice.len());
+        Some((info.monitorInfo.rcMonitor, from_wide(&info.szDevice[..len])))
+    }
+}
+
+/// Read the cursor, the dock's rects and holds for one auto-hide step. The second value names
+/// another monitor whose docked edge the cursor touches: the dock moves there.
+fn sample_auto_hide(app: &AppHandle, dock_hwnd: HWND, edge: DockEdge) -> Option<(AutoHideSample, Option<String>)> {
     let mut cursor = POINT::default();
     unsafe { GetCursorPos(&mut cursor) }.ok()?;
     let monitor = monitor_rect_of(dock_hwnd)?;
@@ -719,11 +746,29 @@ fn sample_auto_hide(app: &AppHandle, dock_hwnd: HWND, edge: DockEdge) -> Option<
     let scale = unsafe { GetDpiForWindow(dock_hwnd) }.max(96) as f64 / 96.0;
     let margin = (AUTO_HIDE_MARGIN * scale).round() as i32;
     let modal_open = app.get_webview_window("settings").is_some() || app.get_webview_window("picker").is_some();
-    Some(AutoHideSample {
-        away: !rects.is_empty() && !near_any(cursor, &rects, margin),
-        at_edge: at_reveal_edge(cursor, monitor, (window.left, window.right), edge),
-        hold: held || modal_open,
-    })
+    let mut at_edge = at_reveal_edge(cursor, monitor, (window.left, window.right), edge);
+    let mut move_to = None;
+    if !at_edge {
+        if let Some((other, name)) = monitor_at(cursor).filter(|(r, _)| *r != monitor) {
+            if at_reveal_edge(cursor, other, dock_span_on(other), edge) {
+                at_edge = true;
+                move_to = Some(name);
+            }
+        }
+    }
+    let sample = AutoHideSample { away: !rects.is_empty() && !near_any(cursor, &rects, margin), at_edge, hold: held || modal_open };
+    Some((sample, move_to))
+}
+
+/// Put the dock on another monitor (same edge) and remember it, like a drag-snap does.
+fn move_dock_to(app: &AppHandle, monitor_name: String) {
+    {
+        let state = app.state::<AppState>();
+        let mut settings = state.settings.write();
+        settings.monitor = Some(monitor_name);
+        let _ = settings.save(&state.db);
+    }
+    relayout_and_broadcast(app);
 }
 
 /// Tell the webviews whether to slide away. Global events: the JS `listen()` used by DataHub does
@@ -807,7 +852,14 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                 if fullscreen == hidden {
                     if !hidden {
                         // Auto-hide only runs while no fullscreen app already has the dock hidden.
-                        let sample = if auto_on { sample_auto_hide(&app, dock_hwnd, edge) } else { Some(AutoHideSample::default()) };
+                        let sample = if auto_on { sample_auto_hide(&app, dock_hwnd, edge) } else { Some((AutoHideSample::default(), None)) };
+                        let sample = sample.map(|(s, move_to)| {
+                            if let Some(name) = move_to {
+                                // Second screen: the dock follows the cursor to the edge it touches.
+                                move_dock_to(&app, name);
+                            }
+                            s
+                        });
                         match sample.and_then(|s| auto.step(auto_on, s, Instant::now())) {
                             Some(AutoHideEffect::StartHide) => emit_hidden(&app, false, true),
                             Some(AutoHideEffect::FinishHide) => {
@@ -1058,6 +1110,19 @@ mod tests {
 
     fn pt(x: i32, y: i32) -> POINT {
         POINT { x, y }
+    }
+
+    #[test]
+    fn other_monitors_reveal_within_their_own_centered_span() {
+        // Second screen to the left of the main one, 1920 wide.
+        let left = RECT { left: -1920, top: 120, right: 0, bottom: 1200 };
+        let span = dock_span_on(left);
+        assert_eq!(span, (-1882, -38));
+        assert!(at_reveal_edge(pt(-960, 1199), left, span, DockEdge::Bottom));
+        assert!(at_reveal_edge(pt(-960, 120), left, span, DockEdge::Top));
+        assert!(!at_reveal_edge(pt(-960, 1195), left, span, DockEdge::Bottom));
+        assert!(!at_reveal_edge(pt(-1910, 1199), left, span, DockEdge::Bottom));
+        assert_eq!(dock_span_on(MON), (38, 1882));
     }
 
     #[test]

@@ -20,7 +20,7 @@ import { usePreview } from "../lib/hooks";
 import type { TrayAction, TrayIcon, WidgetProps } from "../types/lumabar";
 
 const SAMPLE: TrayIcon[] = [
-  { id: "s0", name: "lumabar", exe: "", iconPng: null, isHiddenOverflow: true, isSelf: true },
+  { id: "s0", name: "WinGlass", exe: "", iconPng: null, isHiddenOverflow: true, isSelf: true },
   { id: "s1", name: "Riot Client", exe: "", iconPng: null, isHiddenOverflow: true, isSelf: false },
   { id: "s2", name: "Discord", exe: "", iconPng: null, isHiddenOverflow: true, isSelf: false },
   { id: "s3", name: "AMD Software", exe: "", iconPng: null, isHiddenOverflow: true, isSelf: false },

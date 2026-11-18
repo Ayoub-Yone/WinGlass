@@ -61,9 +61,9 @@ export const SAMPLE_PROVIDER_DATA: Partial<Record<ProviderId, unknown>> = {
   dodo: revenue("Dodo Payments", 1180),
   datafast: revenue("DataFast", 2980),
   gmail: { unread: 4, today: 9, account: "you@example.com" } satisfies GmailData,
-  x: social("@lumabar", 12480, 37),
-  youtube: social("lumabar", 48210, 112, "subscribers"),
-  instagram: social("@lumabar", 9031, 14),
+  x: social("@winglass", 12480, 37),
+  youtube: social("winglass", 48210, 112, "subscribers"),
+  instagram: social("@winglass", 9031, 14),
   github: {
     login: "octocat",
     weeks: Array.from({ length: 52 }, (_, w) =>
@@ -77,7 +77,7 @@ export const SAMPLE_PROVIDER_DATA: Partial<Record<ProviderId, unknown>> = {
     notifications: 7,
     notificationsMore: false,
   } satisfies GithubData,
-  leetcode: { username: "lumabar", solved: 412, easy: 160, medium: 210, hard: 42, streak: 14, maxStreak: 61 } satisfies LeetcodeData,
+  leetcode: { username: "winglass", solved: 412, easy: 160, medium: 210, hard: 42, streak: 14, maxStreak: 61 } satisfies LeetcodeData,
   api_counter: { value: 128_400, deltaToday: 2314, label: "API calls" } satisfies ApiCounterData,
   weather: {
     city: "New York",

@@ -256,9 +256,9 @@ pub fn start_login(app: &AppHandle, provider: &str) -> Result<(), String> {
     let command = login_command(provider, find_cli(provider).as_ref(), has_npx)
         .ok_or("CLI introuvable : installez Node.js (npx) ou la CLI officielle du fournisseur")?;
     let title = match provider {
-        "claude" => "lumabar - Claude",
-        "chatgpt" => "lumabar - ChatGPT",
-        _ => "lumabar - Gemini",
+        "claude" => "WinGlass - Claude",
+        "chatgpt" => "WinGlass - ChatGPT",
+        _ => "WinGlass - Gemini",
     };
     apps_enum::shell_open("cmd.exe", Some(&format!("/k title {title} & {command}")))?;
 

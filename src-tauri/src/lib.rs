@@ -77,7 +77,7 @@ fn tray_menu(app: &AppHandle, lang: Lang) -> tauri::Result<Menu<tauri::Wry>> {
 
 fn build_tray(app: &AppHandle, lang: Lang) -> tauri::Result<()> {
     let menu = tray_menu(app, lang)?;
-    let mut builder = TrayIconBuilder::with_id(TRAY_ID).tooltip("lumabar").menu(&menu);
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID).tooltip("WinGlass").menu(&menu);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }

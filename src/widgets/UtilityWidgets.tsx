@@ -159,7 +159,7 @@ export function StopwatchWidget({ span, instance, preview }: WidgetProps) {
 
 const SAMPLE_TODO_KEYS: TranslationKey[] = ["todos.sample1", "todos.sample2", "todos.sample3"];
 const SAMPLE_TODOS: Todo[] = [
-  { id: 1, listId: "", text: "Ship lumabar", done: false, position: 0, createdAt: 0 },
+  { id: 1, listId: "", text: "Ship WinGlass", done: false, position: 0, createdAt: 0 },
   { id: 2, listId: "", text: "Reply to design feedback", done: false, position: 1, createdAt: 0 },
   { id: 3, listId: "", text: "Book flights", done: true, position: 2, createdAt: 0 },
 ];
