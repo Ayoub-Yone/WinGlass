@@ -5,12 +5,11 @@ import type { LucideIcon } from "lucide-react";
 
 // ---------------------------------------------------------------- themes & sizes
 
-export type ThemeId = "liquid-glass" | "ios-glass" | "white" | "black" | "midnight";
+export type ThemeId = "liquid-glass" | "matte-glass" | "midnight" | "white" | "black";
 export type SizePreset = "compact" | "medium" | "large";
 export type DockPosition = "bottom" | "top";
 export type TaskbarMode = "native" | "auto_hide" | "completely_hidden";
 export type Language = "fr" | "en";
-export type GlassFrost = "subtle" | "balanced" | "deep";
 export type GlassBackdrop = "live" | "wallpaper";
 
 export interface ThemeTokens {
@@ -95,7 +94,8 @@ export interface Settings {
   launchAtLogin: boolean;
   accent: string;
   language: Language;
-  glassFrost: GlassFrost;
+  /** « Clair ↔ Givré »: 0 ultra-clear optical glass .. 1 deep matte frost (liquid-glass themes). */
+  glassFrostLevel: number;
   glassBackdrop: GlassBackdrop;
   /** « Mode Clear »: no bar background, each widget floats in its own capsule. */
   clearMode: boolean;

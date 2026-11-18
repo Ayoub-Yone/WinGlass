@@ -59,7 +59,7 @@ function MenuList(props: { items: MenuItem[]; onClose: () => void; style: CSSPro
               }}
               role="menuitem"
               disabled={item.disabled}
-              className="mx-1.5 flex h-[28px] w-[calc(100%-12px)] items-center gap-2 rounded-[7px] border-none bg-transparent px-2 text-left"
+              className="mx-1.5 flex h-[28px] w-[calc(100%-12px)] items-center gap-2 rounded-[calc(var(--lb-menu-radius)-6px)] border-none bg-transparent px-2 text-left"
               style={{
                 color: item.danger ? "var(--lb-red)" : item.disabled ? "var(--lb-faint)" : "inherit",
                 background: openSub === item.id ? "var(--lb-card-hover)" : undefined,

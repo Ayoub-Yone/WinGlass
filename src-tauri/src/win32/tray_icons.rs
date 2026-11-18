@@ -1055,9 +1055,10 @@ mod tests {
             assert!(!is_shell_owned(&t.exe.to_ascii_lowercase()));
             assert!(!t.name.is_empty(), "{}", t.exe);
         }
-        let lumabar_running = procs.iter().any(|p| p.ends_with("\\lumabar.exe"));
-        if lumabar_running {
-            assert!(icons.iter().any(|t| t.exe.to_ascii_lowercase().ends_with("\\lumabar.exe")), "a running lumabar must list itself");
+        // The dev / release binary is lumabar.exe, the bundled app WinGlass.exe.
+        let is_app = |p: &str| p.ends_with("\\lumabar.exe") || p.ends_with("\\winglass.exe");
+        if procs.iter().any(|p| is_app(p)) {
+            assert!(icons.iter().any(|t| is_app(&t.exe.to_ascii_lowercase())), "a running WinGlass must list itself");
         }
         // Windows 11 has no legacy toolbar; the scan must simply come back empty there.
         let _ = toolbar_items();

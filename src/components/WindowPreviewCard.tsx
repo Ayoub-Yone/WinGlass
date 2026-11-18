@@ -20,8 +20,8 @@ import type { AppEntry, WindowPreview } from "../types/lumabar";
 const THUMB_W = 200;
 const THUMB_H = 120;
 const GAP = 6;
-/** Card radius 18, padding 8 -> item radius 10; item padding 6 -> image radius 4 (concentric). */
-const CARD_RADIUS = 18;
+/** Card radius 22, padding 8 -> item radius 14; item padding 6 -> image radius 8 (concentric). */
+const CARD_RADIUS = 22;
 const CARD_PAD = 8;
 const ITEM_RADIUS = CARD_RADIUS - CARD_PAD;
 const ITEM_PAD = 6;
@@ -157,7 +157,7 @@ export function WindowPreviewCard(props: {
             <button
               data-testid="window-preview-close"
               className="lb-preview-close lb-focus absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center border-none"
-              style={{ borderRadius: 5 }}
+              style={{ borderRadius: ITEM_RADIUS - ITEM_PAD }}
               aria-label={t("preview.close", { title: w.title || app.name })}
               title={t("preview.close", { title: w.title || app.name })}
               onClick={(e) => {

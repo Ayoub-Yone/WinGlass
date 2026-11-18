@@ -1,9 +1,11 @@
 // Windows SMTC "Now Playing": album art, two-line metadata, prev / play-pause / next.
 // Liner (tryliner.fun) is prioritized by the backend; when it is the source the card shows a
 // subtle "Liner" pill and the artwork focuses the player window (or launches it).
+// With artwork the cover fills the whole tile edge to edge (iOS Now Playing): a 350 ms crossfade +
+// zoom between tracks, a multi-stop scrim and text shadows keep the controls readable on any cover.
 
 import { Music, Pause, Play, SkipBack, SkipForward } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc } from "../lib/ipc";
@@ -32,6 +34,27 @@ function LinerPill() {
       Liner
     </span>
   );
+}
+
+/** Full-bleed artwork: each new cover crossfades in over the previous one, which is then dropped. */
+function CoverArt({ src }: { src: string }) {
+  const [layers, setLayers] = useState([{ src, key: 0 }]);
+  useEffect(() => {
+    setLayers((l) => {
+      const top = l[l.length - 1];
+      return top.src === src ? l : [top, { src, key: top.key + 1 }];
+    });
+  }, [src]);
+  return layers.map((layer, i) => (
+    <img
+      key={layer.key}
+      src={layer.src}
+      alt=""
+      draggable={false}
+      className="lb-cover"
+      onAnimationEnd={i > 0 ? () => setLayers([layer]) : undefined}
+    />
+  ));
 }
 
 export function MediaController({ span }: WidgetProps) {
@@ -102,7 +125,7 @@ export function MediaController({ span }: WidgetProps) {
 
   const playButton = (
     <button
-      className="lb-icon-btn shrink-0"
+      className="lb-icon-btn pointer-events-auto shrink-0"
       style={{ width: 28, height: 28, background: "var(--lb-accent)", color: "#fff" }}
       onClick={(e) => {
         e.stopPropagation();
@@ -116,28 +139,78 @@ export function MediaController({ span }: WidgetProps) {
 
   const secondLine = media.artist || sourceName(media.sourceApp);
   const state = playing ? t("media.playing") : t("media.paused");
+  const transport = (
+    <>
+      {span === "3x1" && (
+        <button
+          className="lb-icon-btn pointer-events-auto h-6 w-6 shrink-0"
+          disabled={!media.canPrevious}
+          onClick={(e) => {
+            e.stopPropagation();
+            run("previous");
+          }}
+          aria-label={t("common.previous")}
+        >
+          <SkipBack size={13} fill="currentColor" />
+        </button>
+      )}
+      {playButton}
+      {span !== "1x1" && (
+        <button
+          className="lb-icon-btn pointer-events-auto h-6 w-6 shrink-0"
+          disabled={!media.canNext}
+          onClick={(e) => {
+            e.stopPropagation();
+            run("next");
+          }}
+          aria-label={t("common.next")}
+        >
+          <SkipForward size={13} fill="currentColor" />
+        </button>
+      )}
+    </>
+  );
+  const meta = (
+    <div className="min-w-0 flex-1 leading-tight">
+      <div className="truncate font-semibold">{media.title}</div>
+      <div className="flex min-w-0 items-center gap-1" style={{ fontSize: "var(--lb-small)" }}>
+        <span className="truncate lb-muted">{secondLine}</span>
+        {media.isLiner && span !== "1x1" && <LinerPill />}
+      </div>
+    </div>
+  );
+
+  if (media.thumbnail) {
+    return (
+      <WidgetCard span={span} title={error ?? `${media.title} — ${secondLine} · ${state}`} padded={false} className="lb-media-cover pl-3 pr-2">
+        <CoverArt src={media.thumbnail} />
+        <div aria-hidden className="lb-cover-scrim" />
+        {artOpensLiner && (
+          <button
+            className="lb-cover-hit lb-focus"
+            title={media.isLiner ? t("media.showLiner") : t("media.openLiner")}
+            aria-label={media.isLiner ? t("media.showLiner") : t("media.openLiner")}
+            onClick={(e) => {
+              e.stopPropagation();
+              openLiner();
+            }}
+          />
+        )}
+        {/* Clicks fall through to the artwork button except on the transport controls. */}
+        <div className="pointer-events-none relative flex h-full w-full min-w-0 items-center gap-2">
+          {meta}
+          {transport}
+        </div>
+      </WidgetCard>
+    );
+  }
+
   return (
     <WidgetCard span={span} title={error ?? `${media.title} — ${secondLine} · ${state}`} padded={false} className="pl-1 pr-2">
       <div className="flex h-full w-full items-center gap-2">
         {art}
-        <div className="min-w-0 flex-1 leading-tight">
-          <div className="truncate font-semibold">{media.title}</div>
-          <div className="flex min-w-0 items-center gap-1" style={{ fontSize: "var(--lb-small)" }}>
-            <span className="truncate lb-muted">{secondLine}</span>
-            {media.isLiner && span !== "1x1" && <LinerPill />}
-          </div>
-        </div>
-        {span === "3x1" && (
-          <button className="lb-icon-btn h-6 w-6 shrink-0" disabled={!media.canPrevious} onClick={() => run("previous")} aria-label={t("common.previous")}>
-            <SkipBack size={13} fill="currentColor" />
-          </button>
-        )}
-        {playButton}
-        {span !== "1x1" && (
-          <button className="lb-icon-btn h-6 w-6 shrink-0" disabled={!media.canNext} onClick={() => run("next")} aria-label={t("common.next")}>
-            <SkipForward size={13} fill="currentColor" />
-          </button>
-        )}
+        {meta}
+        {transport}
       </div>
     </WidgetCard>
   );

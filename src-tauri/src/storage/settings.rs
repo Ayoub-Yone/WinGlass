@@ -126,7 +126,7 @@ impl Default for ProviderConfig {
 }
 
 /// Current settings document revision.
-pub const SCHEMA: u32 = 3;
+pub const SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -145,8 +145,8 @@ pub struct Settings {
     pub accent: String,
     /// UI language: "fr" (default) | "en".
     pub language: String,
-    /// Liquid-glass frost intensity: "subtle" | "balanced" (default) | "deep".
-    pub glass_frost: String,
+    /// « Clair ↔ Givré »: 0.0 ultra-clear optical glass .. 1.0 deep matte frost (0.5 default).
+    pub glass_frost_level: f64,
     /// Liquid-glass backdrop source: "live" (default, desktop duplication) | "wallpaper".
     pub glass_backdrop: String,
     /// « Mode Clear »: no bar background, every widget floats in its own capsule.
@@ -183,7 +183,7 @@ impl Default for Settings {
             launch_at_login: false,
             accent: "#0A84FF".into(),
             language: "fr".into(),
-            glass_frost: "balanced".into(),
+            glass_frost_level: 0.5,
             glass_backdrop: "live".into(),
             clear_mode: false,
             music_ambiance: false,
@@ -215,10 +215,8 @@ impl Settings {
     pub fn parse(json: &str) -> (Settings, bool) {
         let Ok(mut settings) = serde_json::from_str::<Settings>(json) else { return (Settings::default(), false) };
         // `#[serde(default)]` fills a missing `schema` with the current one, so read it raw.
-        let stored = serde_json::from_str::<serde_json::Value>(json)
-            .ok()
-            .and_then(|v| v.get("schema").and_then(|s| s.as_u64()))
-            .unwrap_or(1) as u32;
+        let raw = serde_json::from_str::<serde_json::Value>(json).ok();
+        let stored = raw.as_ref().and_then(|v| v.get("schema").and_then(|s| s.as_u64())).unwrap_or(1) as u32;
         let migrated = stored < SCHEMA;
         if stored < 2 && settings.taskbar_mode == "auto_hide" {
             // Revision 2: an auto-hidden Windows 11 taskbar still pops up over the dock when the
@@ -231,6 +229,20 @@ impl Settings {
             // the user picked themselves is kept.
             settings.automations.pre_meeting_pause.minutes = 2;
         }
+        if stored < 4 {
+            // Revision 4: the 3-stop frost picker became the continuous « Clair ↔ Givré » slider, and
+            // the CSS-only "ios-glass" theme gave way to the shader's Matte Liquid Glass.
+            let frost = raw.as_ref().and_then(|v| v.get("glassFrost").and_then(|f| f.as_str()));
+            settings.glass_frost_level = match frost {
+                Some("subtle") => 0.25,
+                Some("deep") => 0.9,
+                _ => 0.5,
+            };
+            if settings.theme == "ios-glass" {
+                settings.theme = "matte-glass".into();
+            }
+        }
+        settings.glass_frost_level = if settings.glass_frost_level.is_finite() { settings.glass_frost_level.clamp(0.0, 1.0) } else { 0.5 };
         settings.schema = SCHEMA;
         (settings, migrated)
     }
@@ -242,7 +254,7 @@ impl Settings {
 
     /// The liquid-glass backdrop is captured only while the bar itself is drawn: Mode Clear removes it.
     pub fn uses_glass_capture(&self) -> bool {
-        self.theme == "liquid-glass" && !self.clear_mode
+        matches!(self.theme.as_str(), "liquid-glass" | "matte-glass") && !self.clear_mode
     }
 
     /// Dock bar height in logical pixels for the size preset.
@@ -264,7 +276,7 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.language, "fr");
         assert_eq!(s.theme, "liquid-glass");
-        assert_eq!(s.glass_frost, "balanced");
+        assert_eq!(s.glass_frost_level, 0.5);
         assert_eq!(s.taskbar_mode, "completely_hidden");
         assert_eq!(s.glass_backdrop, "live");
         assert_eq!(s.position, "bottom");
@@ -277,7 +289,7 @@ mod tests {
         assert_eq!(s.theme, "midnight");
         assert_eq!(s.dock_height(), 70.0);
         assert_eq!(s.language, "fr");
-        assert_eq!(s.glass_frost, "balanced");
+        assert_eq!(s.glass_frost_level, 0.5);
     }
 
     #[test]
@@ -322,10 +334,25 @@ mod tests {
     fn language_round_trips_in_camel_case() {
         let mut s = Settings::default();
         s.language = "en".into();
-        s.glass_frost = "deep".into();
+        s.glass_frost_level = 0.75;
         let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains(r#""language":"en""#) && json.contains(r#""glassFrost":"deep""#));
+        assert!(json.contains(r#""language":"en""#) && json.contains(r#""glassFrostLevel":0.75"#));
         let back: Settings = serde_json::from_str(&json).expect("parse");
-        assert_eq!((back.language.as_str(), back.glass_frost.as_str()), ("en", "deep"));
+        assert_eq!((back.language.as_str(), back.glass_frost_level), ("en", 0.75));
+    }
+
+    #[test]
+    fn frost_presets_become_slider_levels_and_ios_glass_becomes_matte() {
+        for (frost, level) in [("subtle", 0.25), ("balanced", 0.5), ("deep", 0.9)] {
+            let (s, changed) = Settings::parse(&format!(r#"{{"schema":3,"theme":"ios-glass","glassFrost":"{frost}"}}"#));
+            assert!(changed);
+            assert_eq!((s.theme.as_str(), s.glass_frost_level), ("matte-glass", level));
+            assert!(s.uses_glass_capture());
+        }
+        // A current document keeps its level (clamped) and theme.
+        let (s, changed) = Settings::parse(r#"{"schema":4,"theme":"midnight","glassFrostLevel":3.0}"#);
+        assert!(!changed);
+        assert_eq!((s.theme.as_str(), s.glass_frost_level), ("midnight", 1.0));
+        assert!(!s.uses_glass_capture());
     }
 }

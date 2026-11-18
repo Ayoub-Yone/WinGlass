@@ -7,21 +7,22 @@
 //   --mag-scale    the icon's scale (on its `[data-mag-icon]` child)
 //   --mag-lift-y   the icon's lift toward the screen centre (−4 px docked bottom, +4 px top)
 //
-// Local compression, not expansion: the hovered icon grows to ~1.32× while its neighbours shrink
+// Local compression, not expansion: the hovered icon grows to ~1.34× while its neighbours shrink
 // (~0.84× at distance 1, ~0.92× at distance 2 — a Mexican-hat profile), so the strip keeps its
 // resting footprint. `layoutStrip` keeps the point under the cursor fixed (like the macOS dock) and
 // clamps the strip to its resting bounds: no icon is ever pushed into a neighbouring widget, past
 // the capsule's ends, or (vertical clamp from the measured geometry) above or below the capsule.
-// The loop also publishes a smoothed hover state that LiquidGlassCanvas turns into the glass bulge.
+// The loop also publishes the glass hover state LiquidGlassCanvas turns into the liquid bulge: the
+// cursor X through a critically damped spring (its velocity leans the droplet), Y and an envelope.
 
 /** Scale by distance from the cursor in slots: hovered, 1st neighbours, 2nd neighbours, rest. */
-export const MAG_PROFILE = [1.32, 0.84, 0.92, 1] as const;
+export const MAG_PROFILE = [1.34, 0.84, 0.92, 1] as const;
 export const MAG_PEAK = MAG_PROFILE[0];
 export const MAG_LIFT = 4;
-/** Transparent room above/below the pill inside the dock window (bulge + label never clip). */
-export const MAG_HEADROOM = 16;
+/** Transparent room above/below the pill inside the dock window (bulge, ripples + label never clip). */
+export const MAG_HEADROOM = 22;
 /** How far the glass capsule swells over the hovered icon (px, toward the screen centre). */
-export const GLASS_BULGE = 6.5;
+export const GLASS_BULGE = 8.5;
 
 /** Profile value at a (fractional) slot distance; cosine-eased between the key points. */
 export function magnifyScale(distanceInSlots: number): number {
@@ -106,15 +107,19 @@ export function maxIconScale(center: number, iconHalf: number, top: number, bott
 export interface GlassHover {
   /** 0..1, smoothed. */
   active: number;
-  /** Cursor X in CSS px from the pill's left edge. */
+  /** Spring-smoothed cursor X in CSS px from the pill's left edge. */
   x: number;
-  /** Bulge falloff radius in CSS px (≈ one icon slot; the pinch lands on the neighbours). */
+  /** Velocity of `x` in CSS px/s (leans the droplet toward the motion). */
+  vel: number;
+  /** Cursor Y across the pill: −1 at the screen-edge rim, +1 at the screen-centre rim. */
+  y: number;
+  /** Gaussian sigma of the bulge in CSS px (≈ 0.6 slot; the pinch lands between the neighbours). */
   radius: number;
   /** The capsule swells toward the screen centre: up when docked at the bottom. */
   edge: "bottom" | "top";
 }
 
-let glassHover: GlassHover = { active: 0, x: 0, radius: 48, edge: "bottom" };
+let glassHover: GlassHover = { active: 0, x: 0, vel: 0, y: 1, radius: 30, edge: "bottom" };
 const glassListeners = new Set<() => void>();
 
 export function getGlassHover(): GlassHover {
@@ -164,6 +169,16 @@ export interface MagnifierOptions {
 }
 
 const SPRING = 18; // 1/s — settles in ~0.22 s, no overshoot
+/** Angular frequency of the glass cursor spring (rad/s): ~45 px lag at a fast 1000 px/s swipe. */
+const GLASS_OMEGA = 45;
+
+/** One exact step of a critically damped spring toward `target` (no overshoot at any dt). */
+export function springStep(x: number, v: number, target: number, omega: number, dt: number): [number, number] {
+  const d = x - target;
+  const e = Math.exp(-omega * dt);
+  const c = (v + omega * d) * dt;
+  return [target + (d + c) * e, (v - c * omega) * e];
+}
 
 export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () => void {
   let raf = 0;
@@ -173,6 +188,9 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
   let inside = false;
   let strips: Strip[] = [];
   let glass = 0;
+  let glassX = 0;
+  let glassVel = 0;
+  let glassY = 1;
   let running = false;
 
   const measure = () => {
@@ -248,7 +266,7 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
       if (Math.abs(wTarget - s.weight) > 0.002) settled = false;
       if (over) {
         glassTarget = 1;
-        glassRadius = s.slot * 0.95;
+        glassRadius = s.slot * 0.6;
       }
 
       const cx = Math.min(s.right, Math.max(s.left, cursorX));
@@ -271,7 +289,15 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
 
     glass += (glassTarget - glass) * k;
     if (Math.abs(glassTarget - glass) > 0.003) settled = false;
-    publishGlass({ active: glass, x: cursorX - pr.left, radius: glassRadius, edge });
+    const gx = cursorX - pr.left;
+    // Entering from rest: start the spring under the cursor instead of sweeping in from afar.
+    if (glass < 0.02 && glassTarget > 0) [glassX, glassVel] = [gx, 0];
+    else [glassX, glassVel] = springStep(glassX, glassVel, gx, GLASS_OMEGA, dt);
+    if (Math.abs(glassVel) > 2) settled = false;
+    const half = Math.max(1, pr.height / 2);
+    const gy = Math.max(-1, Math.min(1, ((cursorY - (pr.top + half)) / half) * liftDir));
+    glassY += (gy - glassY) * k;
+    publishGlass({ active: glass, x: glassX, vel: glassVel, y: glassY, radius: glassRadius, edge });
 
     const label = opts.label;
     if (label) {

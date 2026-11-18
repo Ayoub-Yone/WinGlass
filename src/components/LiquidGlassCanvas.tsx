@@ -1,41 +1,39 @@
-// WebGL2 "matte liquid glass": the live desktop behind the dock, diffused into frosted glass.
+// WebGL2 liquid glass: the live desktop behind the dock seen through a curved, refracting capsule.
 //
-// Pipeline (renders only when a new backdrop frame arrives, the canvas resizes or the frost preset
-// changes — never on an idle rAF loop, so a static desktop costs zero GPU work):
+// Pipeline (renders only when a new backdrop frame arrives, the canvas resizes, the optics change,
+// the cursor moves over the dock or the adaptive luminance is still easing — never on an idle rAF
+// loop, so a static desktop costs zero GPU work):
 //   upload  glass://capture BGRA  ->  source texture (swizzled to RGB in the first pass)
-//           The live capture includes a margin around the pill (X-Inner says where the pill is),
-//           so the blur pulls in real colour from outside instead of smearing its edge pixels.
-//   pass 1  dual-Kawase blur pyramid: 5–6 downsample + matching upsample passes with wide sample
-//           offsets (~80–160px effective radius). Deep enough that windows, text and bright
-//           elements melt into smooth, creamy colour gradients — no shapes bleed through.
-//   pass 1b separable 25-tap Gaussian (horizontal + vertical) at half resolution on top of the
-//           pyramid: irons out the faint diamond / blocky Kawase artefacts so live windows behind
-//           the dock diffuse into one soft, continuous frost.
-//   pass 2  composite:
-//             · SDF rounded-box lens — UVs bend along the outer 10px perimeter with a circular
-//               bevel profile, ±0.0015 R/B chromatic dispersion at the rim
-//             · micro-grain diffusion — sub-pixel UV jitter + ~0.012 luminance grain (static, so
-//               it never forces a redraw) for a tactile matte finish instead of glossy plastic
-//             · adaptive contrast veil — the matte tint thickens over bright backgrounds so white
-//               text stays readable on a pure-white wallpaper, and a faint lift keeps the glass
-//               visible on pitch black
-//             · soft inner ambient shadow, crisp 1px specular light catch along the top edge
-//             · anti-aliased capsule mask
-//             · hover (iOS 26 liquid glass): the capsule's screen-centre edge swells over the
-//               hovered icon (+6.5px) with gentle inward pinches (≈−1.6px) over the shrunken
-//               neighbours — a Mexican-hat profile 11.5·e^(−u²) − 5·e^(−u²/4), u = (x−hx)/R —
-//               the backdrop inside the bulge is magnified by a radial lens with ±0.0032
-//               dispersion, and the rim light + a specular caustic trace the curved edge.
+//           The live capture includes a 64px margin around the pill (X-Inner says where the pill
+//           is), so the blur, the bulge and the shadow read real colour beyond the pill's edge.
+//   pass 1  dual-Kawase blur pyramid; depth and offset come from the « Clair ↔ Givré » slider
+//           (~8px effective radius when clear, ~170px when deeply frosted).
+//   pass 1b separable Gaussian at half resolution on top of the pyramid (irons out Kawase
+//           diamonds). The deepest pyramid level is read back (a few dozen texels) for the mean
+//           luminance behind the pill, eased over ~300ms.
+//   pass 2  composite, all from one deformed SDF `d` so rim, bevel, glint and shadow stay cohesive:
+//             · curved meniscus: an 18px convex bevel, height h = sqrt(1 − (1 − s)²); UVs bend
+//               inward along −∇d by (1 − h)^1.85 · refraction, so desktop lines bow and wrap round
+//               the capsule edge while the flat centre stays undistorted. The rim looks through the
+//               barely blurred first pyramid level (clear glass), the flat through the frost.
+//             · prism rim: R/B split ±0.0024..0.0040 along the normal, inside the meniscus only
+//             · liquid droplet: the screen-centre rim swells under the cursor (Gaussian, 8.5px)
+//               with capillary pinches (≈ −1.8px) on both sides; the motion leans it; the
+//               screen-edge rim swells a little when the cursor rides it; the ends stretch ~3px
+//             · dual-layer Fresnel: crisp 1px outer edge reflection + soft top-lip bevel light,
+//               plus a specular glint gliding along the warped rim with the cursor
+//             · vibrancy ×1.32 (luminance preserving), adaptive veil from the scene luminance,
+//               soft inner shadow, micro-grain, anti-aliased mask, drop shadow from the same SDF.
 //               Hover only re-runs this composite pass — the blur stays cached.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
-import { GLASS_TINT_RGB, type FrostPreset } from "../engine/ThemeEngine";
+import type { FrostPreset } from "../engine/ThemeEngine";
 import { subscribe } from "../lib/ipc";
-import { getGlassHover, onGlassHover } from "../lib/magnify";
+import { MAG_HEADROOM, getGlassHover, onGlassHover } from "../lib/magnify";
 
-/** Transparent CSS px above and below the pill so the bulge has room inside the canvas. */
-const BULGE_PAD = 10;
+/** Transparent CSS px around the pill inside the canvas: bulge, stretch and drop shadow room. */
+const PAD = MAG_HEADROOM;
 
 const VERT = `#version 300 es
 in vec2 a_pos;
@@ -109,18 +107,26 @@ const COMPOSITE = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 out vec4 o;
-uniform sampler2D u_blur;
-uniform vec2 u_size;      // canvas size in device px
-uniform float u_radius;   // corner radius in device px
+uniform sampler2D u_blur;     // frosted desktop
+uniform sampler2D u_sharp;    // first pyramid level: barely blurred desktop, seen through the rim
+uniform vec2 u_size;          // canvas size in device px
+uniform vec2 u_pad;           // device px of empty canvas left/right (x) and above/below (y) the pill
+uniform float u_radius;       // corner radius in device px
 uniform float u_dpr;
-uniform vec4 u_tint;      // matte veil colour + base opacity
-uniform vec4 u_inner;     // pill rect inside the blurred frame: xy = offset, zw = scale (uv units)
-uniform float u_grain;    // micro-grain amplitude (~0.012)
-uniform float u_pad;      // device px of empty canvas above and below the pill (bulge room)
-uniform float u_hoverActive;  // 0..1 (smoothed)
-uniform float u_hoverX;       // device px from the canvas' left edge
-uniform float u_hoverRadius;  // device px
-uniform float u_edgeDir;      // +1 docked at the bottom (swell upward), -1 docked at the top
+uniform vec4 u_tint;          // veil colour + base opacity
+uniform vec4 u_inner;         // pill rect inside the captured frame: xy = offset, zw = scale (uv)
+uniform float u_grain;        // micro-grain amplitude
+uniform float u_refract;      // inward rim displacement, device px
+uniform float u_clarity;      // 0..1, sharp desktop share at the rim
+uniform float u_rim;          // specular strength
+uniform float u_vibrancy;     // saturation boost
+uniform float u_lum;          // eased mean luminance behind the pill, 0..1
+uniform float u_hoverActive;  // 0..1 envelope
+uniform float u_hoverX;       // spring-smoothed cursor, device px from the canvas' left edge
+uniform float u_hoverY;       // −1 at the screen-edge rim .. +1 at the screen-centre rim
+uniform float u_hoverVel;     // CSS px/s
+uniform float u_hoverRadius;  // droplet sigma, device px
+uniform float u_edgeDir;      // +1 docked at the bottom (centre side = up), −1 docked at the top
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
@@ -134,109 +140,122 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// Pill-space uv -> blurred-frame uv (the frame has a capture margin around the pill).
-vec3 glass(vec2 uv) {
-  return texture(u_blur, u_inner.xy + uv * u_inner.zw).rgb;
+// Pill-space uv -> captured-frame uv (the frame has a capture margin around the pill).
+vec3 frost(vec2 uv) { return texture(u_blur, u_inner.xy + uv * u_inner.zw).rgb; }
+vec3 clear(vec2 uv) { return texture(u_sharp, u_inner.xy + uv * u_inner.zw).rgb; }
+
+float sigma() { return max(u_hoverRadius, 1.0); }
+// Cursor x in canvas-centred device px.
+float cursorX() { return u_hoverX - u_size.x * 0.5; }
+
+// Outward swell of the rim (device px): Gaussian droplet of 8.5px minus a wider Gaussian, so
+// capillary pinches (≈ −1.8px at ±2.5σ) flank it. Motion leans it: the trailing side stretches
+// (surface tension pulling a tail), the leading side steepens.
+float dropletPx(float x) {
+  float dx = x - cursorX();
+  float lean = clamp(u_hoverVel / 1400.0, -1.0, 1.0);
+  float R = sigma() * (1.0 - 0.3 * lean * tanh(1.5 * dx / sigma()));
+  float u2 = dx * dx / (R * R);
+  return u_hoverActive * u_dpr * (13.71 * exp(-0.5 * u2) - 5.21 * exp(-0.125 * u2));
 }
 
-// Distance from the cursor in bulge radii, at canvas-centred x.
-float hoverU(float x) {
-  return (x + u_size.x * 0.5 - u_hoverX) / max(u_hoverRadius, 1.0);
-}
-
-// Lens strength: Gaussian around the cursor.
-float hoverWeight(float x) {
-  float u = hoverU(x);
-  return u_hoverActive * exp(-u * u);
-}
-
-// Outline offset in device px: +6.5 over the cursor, a gentle pinch (min ≈ −1.6 at u ≈ 2) over
-// the shrunken neighbours, 0 far away.
-float bulgePx(float x) {
-  float u2 = hoverU(x);
-  u2 *= u2;
-  return u_hoverActive * u_dpr * (11.5 * exp(-u2) - 5.0 * exp(-0.25 * u2));
-}
-
-// The capsule with its screen-centre edge displaced by bulgePx (the screen-edge side stays put).
-float sdPill(vec2 p, vec2 half_pill, float r) {
-  float b = bulgePx(p.x);
-  float hy = half_pill.y + 0.5 * b;
-  vec2 q = p - vec2(0.0, u_edgeDir * 0.5 * b);
-  return sdRoundedBox(q, vec2(half_pill.x, hy), clamp(r + 0.5 * b, 0.0, hy));
+// The capsule deformed by the droplet. hp = resting half extents.
+float sdPill(vec2 p, vec2 hp, float r) {
+  float b = dropletPx(p.x);
+  float riding = smoothstep(0.1, 0.9, -u_hoverY);   // cursor near the screen-edge rim
+  float bc = b * (1.0 - 0.25 * riding);
+  float be = b * 0.32 * riding;                     // stays inside the 10px screen-edge margin
+  float bTop = u_edgeDir > 0.0 ? bc : be;
+  float bBot = u_edgeDir > 0.0 ? be : bc;
+  float cx = cursorX();
+  float reach = 2.5 * sigma();
+  float sR = u_hoverActive * 3.0 * u_dpr * smoothstep(hp.x - reach, hp.x, cx);
+  float sL = u_hoverActive * 3.0 * u_dpr * smoothstep(hp.x - reach, hp.x, -cx);
+  vec2 hb = vec2(hp.x + 0.5 * (sL + sR), hp.y + 0.5 * (bTop + bBot));
+  vec2 c = vec2(0.5 * (sR - sL), 0.5 * (bTop - bBot));
+  return sdRoundedBox(p - c, hb, clamp(r + 0.5 * (bTop + bBot), 0.0, hb.y));
 }
 
 void main() {
   vec2 half_size = u_size * 0.5;
-  vec2 half_pill = vec2(half_size.x, half_size.y - u_pad);
-  vec2 pill_size = half_pill * 2.0;
+  vec2 hp = half_size - u_pad;
+  vec2 pill_size = hp * 2.0;
   vec2 p = v_uv * u_size - half_size;
-  float r = min(u_radius, min(half_pill.x, half_pill.y));
-  float d = sdPill(p, half_pill, r);
+  float r = min(u_radius, min(hp.x, hp.y));
+  float d = sdPill(p, hp, r);
 
-  // Outward surface normal from the SDF gradient (follows the bulge's curve).
+  // Outward unit normal from the SDF gradient (follows the droplet's curve).
   vec2 e = vec2(1.0, 0.0);
-  vec2 n = vec2(
-    sdPill(p + e.xy, half_pill, r) - sdPill(p - e.xy, half_pill, r),
-    sdPill(p + e.yx, half_pill, r) - sdPill(p - e.yx, half_pill, r));
+  vec2 n = vec2(sdPill(p + e.xy, hp, r) - sdPill(p - e.xy, hp, r), sdPill(p + e.yx, hp, r) - sdPill(p - e.yx, hp, r));
   n = normalize(n + 1e-6);
-  float lensW = hoverWeight(p.x);
-  // Pill-space uv (0..1 across the resting pill; the bulge reads the capture margin beyond it).
-  vec2 puv = (p + half_pill) / pill_size;
 
-  // Optical edge: a 10px bevel with a circular profile, so the bend starts imperceptibly and
-  // steepens smoothly towards the rim (no visible seam where refraction begins).
-  float t = clamp(1.0 + d / (10.0 * u_dpr), 0.0, 1.0);
-  float bend = 1.0 - sqrt(max(1.0 - t * t, 0.0));
+  float dxc = p.x - cursorX();
+  float prox = u_hoverActive * exp(-0.5 * dxc * dxc / (sigma() * sigma()));
+  vec2 puv = (p + hp) / pill_size;
+
+  // Curved meniscus: glass height rises from 0 at the rim to 1 on the flat, 18px in.
+  float s = clamp(-d / (18.0 * u_dpr), 0.0, 1.0);
+  float h = sqrt(max(0.0, 1.0 - (1.0 - s) * (1.0 - s)));
+  float rimF = 1.0 - h;
+  float bend = pow(rimF, 1.85);
 
   // Frosted diffusion: every pixel looks through the glass at a slightly different angle.
   float g1 = hash12(gl_FragCoord.xy);
   float g2 = hash12(gl_FragCoord.xy + 61.7);
   vec2 scatter = (vec2(g1, g2) - 0.5) * (u_grain / 0.012) * (1.5 * u_dpr) / pill_size;
 
-  vec2 uv = puv - n * bend * (14.0 * u_dpr) / pill_size + scatter;
+  // Rays through the tilted rim bend inward, so the rim shows the desktop further inside.
+  vec2 uv = puv - n * bend * u_refract * (1.0 + 0.35 * prox) / pill_size + scatter;
 
-  // Liquid lens under the cursor: radial magnification of the backdrop toward the hover centre,
-  // strongest in the middle of the bulge.
-  vec2 lensCenter = vec2((u_hoverX - (u_size.x * 0.5 - half_pill.x)) / pill_size.x, 0.5);
+  // Liquid lens under the cursor: radial magnification toward the droplet centre.
+  vec2 lensCenter = vec2((u_hoverX - u_pad.x) / pill_size.x, 0.5);
   vec2 toC = uv - lensCenter;
-  float lensRefract = 0.14 * lensW * (1.0 - 0.5 * clamp(length(toC * vec2(pill_size.x / pill_size.y, 1.0)) * 0.5, 0.0, 1.0));
-  uv = lensCenter + toC * (1.0 - lensRefract);
+  float lens = 0.12 * prox * (1.0 - 0.5 * clamp(length(toC * vec2(pill_size.x / pill_size.y, 1.0)) * 0.5, 0.0, 1.0));
+  uv = lensCenter + toC * (1.0 - lens);
 
-  // Chromatic dispersion: R and B pulled ±0.0015 along the normal at the rim, up to ±0.0032 in
-  // the bulge.
-  float ca = mix(0.0015, 0.0032, lensW) * max(bend, 0.35 * lensW);
+  // Prism rim: R and B pulled apart along the normal (isotropic in px), inside the meniscus only.
+  vec2 disp = n * mix(0.0024, 0.0040, prox) * rimF * vec2(1.0, pill_size.x / pill_size.y);
+  float sharpMix = u_clarity * pow(rimF, 0.8);
   vec3 col;
-  col.r = glass(uv + n * ca).r;
-  col.g = glass(uv).g;
-  col.b = glass(uv - n * ca).b;
+  col.r = mix(frost(uv + disp).r, clear(uv + disp).r, sharpMix);
+  col.g = mix(frost(uv).g, clear(uv).g, sharpMix);
+  col.b = mix(frost(uv - disp).b, clear(uv - disp).b, sharpMix);
 
-  // Matte: only a whisper of vibrancy, then the adaptive contrast veil.
-  float luma = dot(col, vec3(0.299, 0.587, 0.114));
-  col = mix(vec3(luma), col, 1.06);
-  float veil = clamp(u_tint.a + 0.30 * smoothstep(0.42, 0.95, luma), 0.0, 0.9);
+  // Vibrancy: luminance-preserving saturation boost, so colour glows through instead of greying.
+  float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col = max(mix(vec3(luma), col, u_vibrancy), 0.0);
+
+  // Adaptive veil: thicker over bright desktops (eased scene luminance + a local term) so white
+  // text stays legible over a white window; a faint lift keeps the pane visible on pitch black.
+  float veil = clamp(u_tint.a + 0.28 * smoothstep(0.35, 0.95, u_lum) + 0.12 * smoothstep(0.55, 0.98, luma), 0.0, 0.9);
   col = mix(col, u_tint.rgb, veil);
-  // Keep the pane distinguishable from a pitch-black wallpaper.
-  col += vec3(0.020, 0.021, 0.024);
+  col += vec3(0.020, 0.021, 0.024) * (1.0 + 1.5 * (1.0 - smoothstep(0.0, 0.18, u_lum)));
 
   // Soft inner ambient shadow, heavier along the bottom, for depth.
   float inner = smoothstep(-16.0 * u_dpr, 0.0, d);
-  col *= 1.0 - 0.16 * inner * inner * (0.55 + 0.45 * clamp(-n.y, 0.0, 1.0));
+  col *= 1.0 - 0.14 * inner * inner * (0.55 + 0.45 * clamp(-n.y, 0.0, 1.0));
 
-  // Crisp 1px specular light catch on the top edge (rgba(255,255,255,0.26)); a faint echo below.
-  float rim = 1.0 - smoothstep(0.35 * u_dpr, 0.85 * u_dpr, abs(d + 0.6 * u_dpr));
-  float top = smoothstep(0.25, 0.9, n.y);
+  float top = smoothstep(0.0, 0.95, n.y);
   float bottom = smoothstep(0.25, 0.9, -n.y);
-  col = mix(col, vec3(1.0), rim * (0.26 * top + 0.07 * bottom + 0.045));
-  // Specular caustic tracing the swollen edge: a soft band just inside the curved rim.
-  float caustic = lensW * smoothstep(-5.0 * u_dpr, -0.5 * u_dpr, d) * (1.0 - smoothstep(-0.5 * u_dpr, 0.6 * u_dpr, d));
-  col = mix(col, vec3(1.0), caustic * (0.22 * top + 0.12 * bottom + 0.05));
+  // Layer 1: crisp 1px Fresnel reflection on the outer edge, all the way round, brightest on top.
+  float fresnel = smoothstep(-1.5 * u_dpr, 0.0, d) * (1.0 - smoothstep(0.0, 0.75 * u_dpr, d));
+  col = mix(col, vec3(1.0), fresnel * u_rim * (0.10 + 0.24 * top + 0.06 * bottom));
+  // Layer 2: thick-glass top lip lit from above, fading smoothly down the sides.
+  col = mix(col, vec3(1.0), pow(rimF, 1.4) * top * (1.0 - fresnel) * 0.16 * u_rim);
+  // Specular glint gliding along the warped rim with the cursor (strongest on the swelling side).
+  float centreSide = u_edgeDir > 0.0 ? top : smoothstep(0.0, 0.95, -n.y);
+  float band = smoothstep(-5.0 * u_dpr, -0.5 * u_dpr, d) * (1.0 - smoothstep(-0.5 * u_dpr, 0.6 * u_dpr, d));
+  float glint = u_hoverActive * exp(-dxc * dxc / (1.44 * sigma() * sigma())) * band;
+  col = mix(col, vec3(1.0), glint * u_rim * (0.30 * centreSide + 0.08));
 
   // Ultra-fine procedural grain.
   col += (g1 - 0.5) * 2.0 * u_grain;
 
   float alpha = 1.0 - smoothstep(-0.75 * u_dpr, 0.75 * u_dpr, d);
-  o = vec4(clamp(col, 0.0, 1.0) * alpha, alpha);
+  // Drop shadow cast by the same deformed capsule (light from above), premultiplied black.
+  float ds = sdPill(p + vec2(0.0, 3.0 * u_dpr), hp, r);
+  float shadow = 0.26 * (1.0 - smoothstep(-2.0 * u_dpr, 16.0 * u_dpr, ds));
+  o = vec4(clamp(col, 0.0, 1.0) * alpha, alpha + (1.0 - alpha) * shadow);
 }`;
 
 interface Target {
@@ -306,6 +325,9 @@ class GlassRenderer {
   private chain: Target[] = [];
   private chainKey = "";
   private uniformCache = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
+  private lumBuf = new Uint8Array(0);
+  /** Mean luminance (0..1) of the desktop behind the pill for the latest frame; −1 before any. */
+  luminance = -1;
 
   constructor(private canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", { premultipliedAlpha: true, antialias: false, alpha: true, preserveDrawingBuffer: false });
@@ -386,19 +408,18 @@ class GlassRenderer {
   /** Last blurred half-res texture (reused by hover-only redraws). */
   private blurred: WebGLTexture | null = null;
   private blurKey = "";
+  private frameSeq = 0;
 
-  /** Blur (when the frame / frost / size changed) and composite. */
-  render(radiusCss: number, frost: FrostPreset, padCss: number): boolean {
+  /** Blur when the frame / optics / size changed. False until a frame has been uploaded. */
+  prepare(frost: FrostPreset): boolean {
     if (!this.source) return false;
-    const key = `${this.frameSeq}|${frost.id}|${frost.levels}|${frost.offset}|${frost.gauss}|${this.srcW}x${this.srcH}`;
+    const key = `${this.frameSeq}|${frost.levels}|${frost.offset}|${frost.gauss}|${this.srcW}x${this.srcH}`;
     if (key !== this.blurKey || !this.blurred) {
       this.blurred = this.blur(frost);
       this.blurKey = key;
     }
-    return this.composite(radiusCss, frost, padCss);
+    return true;
   }
-
-  private frameSeq = 0;
 
   private blur(frost: FrostPreset): WebGLTexture {
     const gl = this.gl;
@@ -419,6 +440,7 @@ class GlassRenderer {
       inW = target.w;
       inH = target.h;
     }
+    this.measureLuminance(this.chain[levels - 1]);
     // …and back up to half resolution.
     const pyramid = 2 * levels - 1;
     for (let i = levels; i < pyramid; i++) {
@@ -429,30 +451,53 @@ class GlassRenderer {
       inH = target.h;
     }
     // Separable Gaussian smoothing (horizontal, then vertical) at half resolution.
-    if (frost.gauss > 0) {
-      const stride = 1.5;
-      for (const [k, horizontal] of [[pyramid, true], [pyramid + 1, false]] as const) {
-        const target = this.chain[k];
-        gl.useProgram(this.gauss);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
-        gl.viewport(0, 0, target.w, target.h);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, input);
-        gl.uniform1i(this.loc(this.gauss, "u_tex"), 0);
-        gl.uniform2f(this.loc(this.gauss, "u_dir"), horizontal ? stride / inW : 0, horizontal ? 0 : stride / inH);
-        gl.uniform1f(this.loc(this.gauss, "u_sigma"), frost.gauss);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-        input = target.tex;
-        inW = target.w;
-        inH = target.h;
-      }
+    const stride = 1.5;
+    for (const [k, horizontal] of [[pyramid, true], [pyramid + 1, false]] as const) {
+      const target = this.chain[k];
+      gl.useProgram(this.gauss);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+      gl.viewport(0, 0, target.w, target.h);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, input);
+      gl.uniform1i(this.loc(this.gauss, "u_tex"), 0);
+      gl.uniform2f(this.loc(this.gauss, "u_dir"), horizontal ? stride / inW : 0, horizontal ? 0 : stride / inH);
+      gl.uniform1f(this.loc(this.gauss, "u_sigma"), Math.max(1, frost.gauss));
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      input = target.tex;
+      inW = target.w;
+      inH = target.h;
     }
 
     return input;
   }
 
-  /** Composite pass only (hover animation, frost tint, radius). */
-  composite(radiusCss: number, frost: FrostPreset, padCss: number): boolean {
+  /** Mean luminance of the pill area from the deepest (tiny) pyramid level: one small readback per new frame. */
+  private measureLuminance(t: Target): void {
+    const gl = this.gl;
+    const size = t.w * t.h * 4;
+    if (this.lumBuf.length !== size) this.lumBuf = new Uint8Array(size);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb);
+    gl.readPixels(0, 0, t.w, t.h, gl.RGBA, gl.UNSIGNED_BYTE, this.lumBuf);
+    // Pill rect in this level's texels; rows run bottom-up (the source was uploaded flipped).
+    const [ix, iy, iw, ih] = this.inner;
+    const x0 = Math.floor((ix / this.srcW) * t.w);
+    const x1 = Math.min(t.w, Math.max(x0 + 1, Math.ceil(((ix + iw) / this.srcW) * t.w)));
+    const y0 = Math.floor(((this.srcH - iy - ih) / this.srcH) * t.h);
+    const y1 = Math.min(t.h, Math.max(y0 + 1, Math.ceil(((this.srcH - iy) / this.srcH) * t.h)));
+    let sum = 0;
+    let count = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = (y * t.w + x) * 4;
+        sum += 0.2126 * this.lumBuf[i] + 0.7152 * this.lumBuf[i + 1] + 0.0722 * this.lumBuf[i + 2];
+        count++;
+      }
+    }
+    this.luminance = count ? sum / count / 255 : 0;
+  }
+
+  /** Composite pass only (hover animation, optics, radius, luminance easing). */
+  composite(radiusCss: number, frost: FrostPreset, lum: number): boolean {
     const gl = this.gl;
     const input = this.blurred;
     const w = this.canvas.width;
@@ -460,6 +505,7 @@ class GlassRenderer {
     if (!input || w === 0 || h === 0) return false;
     const dpr = window.devicePixelRatio || 1;
     const hover = getGlassHover();
+    const u = (name: string) => this.loc(this.comp, name);
     gl.bindVertexArray(this.vao);
     gl.disable(gl.BLEND);
     gl.useProgram(this.comp);
@@ -469,22 +515,33 @@ class GlassRenderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, input);
-    gl.uniform1i(this.loc(this.comp, "u_blur"), 0);
-    gl.uniform2f(this.loc(this.comp, "u_size"), w, h);
-    gl.uniform1f(this.loc(this.comp, "u_radius"), radiusCss * dpr);
-    gl.uniform1f(this.loc(this.comp, "u_dpr"), dpr);
-    gl.uniform4f(this.loc(this.comp, "u_tint"), GLASS_TINT_RGB[0], GLASS_TINT_RGB[1], GLASS_TINT_RGB[2], frost.tint);
-    gl.uniform1f(this.loc(this.comp, "u_grain"), frost.grain);
-    gl.uniform1f(this.loc(this.comp, "u_pad"), padCss * dpr);
-    gl.uniform1f(this.loc(this.comp, "u_hoverActive"), hover.active);
-    gl.uniform1f(this.loc(this.comp, "u_hoverX"), (hover.x + 1) * dpr); // canvas starts 1px left of the pill
-    gl.uniform1f(this.loc(this.comp, "u_hoverRadius"), hover.radius * dpr);
-    gl.uniform1f(this.loc(this.comp, "u_edgeDir"), hover.edge === "top" ? -1 : 1);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.chain[0].tex);
+    gl.uniform1i(u("u_blur"), 0);
+    gl.uniform1i(u("u_sharp"), 1);
+    gl.uniform2f(u("u_size"), w, h);
+    gl.uniform2f(u("u_pad"), PAD * dpr, PAD * dpr);
+    gl.uniform1f(u("u_radius"), radiusCss * dpr);
+    gl.uniform1f(u("u_dpr"), dpr);
+    gl.uniform4f(u("u_tint"), frost.tintRgb[0], frost.tintRgb[1], frost.tintRgb[2], frost.tint);
+    gl.uniform1f(u("u_grain"), frost.grain);
+    gl.uniform1f(u("u_refract"), frost.refraction * dpr);
+    gl.uniform1f(u("u_clarity"), frost.clarity);
+    gl.uniform1f(u("u_rim"), frost.rim);
+    gl.uniform1f(u("u_vibrancy"), frost.vibrancy);
+    gl.uniform1f(u("u_lum"), Math.max(0, lum));
+    gl.uniform1f(u("u_hoverActive"), hover.active);
+    gl.uniform1f(u("u_hoverX"), (hover.x + PAD) * dpr);
+    gl.uniform1f(u("u_hoverY"), hover.y);
+    gl.uniform1f(u("u_hoverVel"), hover.vel);
+    gl.uniform1f(u("u_hoverRadius"), hover.radius * dpr);
+    gl.uniform1f(u("u_edgeDir"), hover.edge === "top" ? -1 : 1);
     // The texture is uploaded flipped (v = 0 is the bottom row), so the pill's bottom edge maps to
     // `srcH - (y + h)`.
     const [ix, iy, iw, ih] = this.inner;
-    gl.uniform4f(this.loc(this.comp, "u_inner"), ix / this.srcW, (this.srcH - iy - ih) / this.srcH, iw / this.srcW, ih / this.srcH);
+    gl.uniform4f(u("u_inner"), ix / this.srcW, (this.srcH - iy - ih) / this.srcH, iw / this.srcW, ih / this.srcH);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE0);
     return true;
   }
 
@@ -519,9 +576,14 @@ function parseInner(header: string | null, width: number, height: number): [numb
   return valid ? [x, y, w, h] : [0, 0, width, height];
 }
 
+/** Time constant of the adaptive-luminance easing. */
+const LUM_TAU = 0.3;
+
 /**
  * Renders behind the dock pill. `onActiveChange(true)` once the first desktop frame has been
  * drawn — until then (or if capture is unavailable) the dock shows its CSS fallback surface.
+ * The eased luminance is mirrored on the pill as `--lb-glass-lum` / `data-glass-bright` so the
+ * foreground can add contrast shadows over bright desktops.
  */
 export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; onActiveChange: (active: boolean) => void }) {
   const { radius, frost, onActiveChange } = props;
@@ -552,18 +614,41 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
     let fetched = -1;
     let hasFrame = false;
     let raf = 0;
+    let lum = -1;
+    let lumAt = 0;
+    let lumCss = "";
 
-    const draw = () => {
+    const host = canvas.parentElement;
+    const mirrorLuminance = () => {
+      const css = lum.toFixed(2);
+      if (!host || css === lumCss) return;
+      lumCss = css;
+      host.style.setProperty("--lb-glass-lum", css);
+      host.dataset.glassBright = lum > 0.62 ? "true" : "false";
+    };
+
+    const draw = (now: number) => {
       raf = 0;
       if (disposed) return;
-      const ok = renderer.render(radiusRef.current, frostRef.current, BULGE_PAD);
+      let ok = renderer.prepare(frostRef.current);
+      if (ok) {
+        const target = renderer.luminance;
+        const dt = lumAt ? Math.min(0.1, (now - lumAt) / 1000) : 0;
+        lum = lum < 0 ? target : lum + (target - lum) * (1 - Math.exp(-dt / LUM_TAU));
+        lumAt = now;
+        ok = renderer.composite(radiusRef.current, frostRef.current, lum);
+        mirrorLuminance();
+        // Keep easing toward the new scene luminance (composite-only frames, ~1 s at most).
+        if (Math.abs(target - lum) > 0.004) scheduleDraw();
+        else lumAt = 0;
+      }
       if (ok !== hasFrame) {
         hasFrame = ok;
         activeCb.current(ok);
       }
     };
     const scheduleDraw = () => {
-      if (!raf) raf = requestAnimationFrame(draw);
+      if (!raf && !disposed) raf = requestAnimationFrame(draw);
     };
     redraw.current = scheduleDraw;
 
@@ -606,14 +691,9 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
     ro.observe(canvas);
     resize();
 
-    // Hover bulge: composite-only redraws, one per animation frame at most.
-    let hoverRaf = 0;
+    // Cursor droplet: composite-only redraws, one per animation frame at most.
     const offHover = onGlassHover(() => {
-      if (hoverRaf || disposed || !hasFrame) return;
-      hoverRaf = requestAnimationFrame(() => {
-        hoverRaf = 0;
-        if (!disposed) renderer.composite(radiusRef.current, frostRef.current, BULGE_PAD);
-      });
+      if (hasFrame) scheduleDraw();
     });
 
     const off = subscribe("glass:frame", (seq) => {
@@ -629,26 +709,27 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
       redraw.current = null;
       off();
       offHover();
-      if (hoverRaf) cancelAnimationFrame(hoverRaf);
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
       renderer.dispose();
+      host?.style.removeProperty("--lb-glass-lum");
+      if (host) delete host.dataset.glassBright;
       activeCb.current(false);
     };
   }, []);
 
-  // Frost slider / radius changes re-composite the frame already on the GPU.
+  // Slider / theme / radius changes re-composite the frame already on the GPU.
   useEffect(() => {
     redraw.current?.();
   }, [frost, radius]);
 
   // The canvas covers the pill's border box (the pill border is transparent while glass is live)
-  // plus BULGE_PAD above and below, where the swollen capsule is drawn on hover.
+  // plus PAD on every side, where the droplet, the stretched ends and the drop shadow are drawn.
   return (
     <canvas
       ref={canvasRef}
       className="pointer-events-none absolute"
-      style={{ left: -1, top: -1 - BULGE_PAD, width: "calc(100% + 2px)", height: `calc(100% + ${2 + 2 * BULGE_PAD}px)` }}
+      style={{ left: -1 - PAD, top: -1 - PAD, width: `calc(100% + ${2 + 2 * PAD}px)`, height: `calc(100% + ${2 + 2 * PAD}px)` }}
       aria-hidden
     />
   );

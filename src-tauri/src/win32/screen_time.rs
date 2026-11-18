@@ -93,7 +93,8 @@ pub fn start(app: AppHandle) {
                     if let Some(exe) = process_image_path(pid) {
                         let label = app_label(&exe);
                         let lower = label.to_ascii_lowercase();
-                        if lower != "lockapp" && lower != "lumabar" {
+                        // Our own windows never count, whatever the executable is called (lumabar.exe / WinGlass.exe).
+                        if lower != "lockapp" && pid != std::process::id() {
                             let mut domain = String::new();
                             if BROWSERS.contains(&lower.as_str()) {
                                 if let Some(automation) = &automation {

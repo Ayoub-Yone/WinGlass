@@ -16,7 +16,7 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { LiquidGlassCanvas } from "./LiquidGlassCanvas";
 import { WindowsButton } from "./SystemMenu";
@@ -98,12 +98,13 @@ export function DockContainer() {
   useHitRegion(pillRef, !fullscreen);
   useHitRegion(headroomRef, !fullscreen && magnifying);
 
-  const theme = THEMES[settings?.theme ?? "ios-glass"];
+  const theme = THEMES[settings?.theme ?? "liquid-glass"] ?? THEMES["liquid-glass"];
   const size = SIZES[settings?.size ?? "medium"];
   // Mode Clear: no bar surface (and no glass capture), every widget floats in its own capsule.
   const clear = settings?.clearMode ?? false;
   const glass = theme.usesGlassShader && !clear;
   const ambient = useAmbientColors(settings?.musicAmbiance ?? false);
+  const frost = useMemo(() => frostPreset(settings?.theme, settings?.glassFrostLevel), [settings?.theme, settings?.glassFrostLevel]);
 
   useEffect(() => {
     if (clear) setGlassActive(false);
@@ -435,6 +436,7 @@ export function DockContainer() {
         ref={pillRef}
         className={`lb-pill relative flex items-center${clear ? " lb-clear" : ""}`}
         data-ambient={ambient.length > 0 ? "on" : "off"}
+        data-glass={glass && glassActive ? "live" : undefined}
         style={pillStyle}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
@@ -443,7 +445,7 @@ export function DockContainer() {
         onPointerCancel={finishPointer}
         onContextMenu={onContextMenu}
       >
-        {glass && <LiquidGlassCanvas radius={size.radius} frost={frostPreset(settings?.glassFrost)} onActiveChange={setGlassActive} />}
+        {glass && <LiquidGlassCanvas radius={size.radius} frost={frost} onActiveChange={setGlassActive} />}
         {/* Ambiance Musique: diffuse cover-tinted light inside the bar (fades out with no music). */}
         <div aria-hidden className="lb-ambient" />
         <div

@@ -25,11 +25,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import { BrandGlyph } from "./ui";
 import { LANGUAGES, useI18n, type TranslationKey } from "../i18n";
 import { useHub } from "../engine/DataHub";
-import { FROST_ORDER, SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/ThemeEngine";
+import { DEFAULT_FROST_LEVEL, SIZE_ORDER, SIZES, THEMES, THEME_ORDER } from "../engine/ThemeEngine";
 import { patchSettings, useSettings } from "../lib/hooks";
 import { formatPercent } from "../lib/format";
 import { broadcast, errorMessage, ipc, subscribe } from "../lib/ipc";
-import type { AccountStatus, AutomationSettings, GlassBackdrop, GlassFrost, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
+import type { AccountStatus, AutomationSettings, GlassBackdrop, Language, ProviderId, Settings, TaskbarMode } from "../types/lumabar";
 
 type Tab = "general" | "accounts" | "calendar" | "integrations" | "automations" | "advanced";
 
@@ -128,7 +128,10 @@ const update = (mutate: (s: Settings) => Settings) => void patchSettings(mutate)
 
 function GeneralTab({ s }: { s: Settings }) {
   const { t, lang } = useI18n();
-  const frostIndex = Math.max(0, FROST_ORDER.indexOf(s.glassFrost));
+  const glassTheme = THEMES[s.theme]?.usesGlassShader ?? false;
+  const frostLevel = Math.round((s.glassFrostLevel ?? DEFAULT_FROST_LEVEL) * 100);
+  const frostKey = frostLevel < 34 ? "frost.clear" : frostLevel < 67 ? "frost.balanced" : "frost.frosted";
+  const frostName = t(frostKey);
   const taskbarOptions: Array<{ value: TaskbarMode; label: string }> = [
     { value: "auto_hide", label: t("settings.taskbar.autoHide") },
     { value: "completely_hidden", label: t("settings.taskbar.hidden") },
@@ -156,7 +159,10 @@ function GeneralTab({ s }: { s: Settings }) {
                 <div
                   className="flex h-10 items-center gap-1 rounded-[12px] px-1.5"
                   style={{
-                    background: id === "liquid-glass" ? "linear-gradient(120deg, rgba(120,160,255,0.55), rgba(255,140,190,0.45))" : tokens.surface,
+                    // Liquid glass previews: the theme's veil over a colourful "desktop".
+                    background: tokens.usesGlassShader
+                      ? `linear-gradient(${tokens.surface}, ${tokens.surface}), linear-gradient(120deg in oklch, rgb(120 160 255 / 0.6), rgb(255 140 190 / 0.5))`
+                      : tokens.surface,
                     border: tokens.border,
                   }}
                 >
@@ -170,34 +176,35 @@ function GeneralTab({ s }: { s: Settings }) {
             );
           })}
         </div>
-        <Row label={t("settings.frost")} hint={s.theme === "liquid-glass" ? t(`frost.${FROST_ORDER[frostIndex]}`) : t("settings.frostHint")}>
-          <div className="flex flex-col items-stretch gap-0.5" style={{ width: 230, opacity: s.theme === "liquid-glass" ? 1 : 0.5 }}>
+        <Row label={t("settings.frost")} hint={glassTheme ? `${frostName} · ${formatPercent(frostLevel)}` : t("settings.frostHint")}>
+          <div className="flex flex-col items-stretch gap-0.5" style={{ width: 230, opacity: glassTheme ? 1 : 0.5 }}>
             <input
               type="range"
+              data-testid="frost-slider"
               min={0}
-              max={FROST_ORDER.length - 1}
+              max={100}
               step={1}
-              value={frostIndex}
-              disabled={s.theme !== "liquid-glass"}
+              value={frostLevel}
+              disabled={!glassTheme}
               aria-label={t("settings.frost")}
-              aria-valuetext={t(`frost.${FROST_ORDER[frostIndex]}`)}
+              aria-valuetext={`${frostName}, ${formatPercent(frostLevel)}`}
               onChange={(e) => {
-                const glassFrost: GlassFrost = FROST_ORDER[Number(e.target.value)] ?? "balanced";
-                update((x) => ({ ...x, glassFrost }));
+                const glassFrostLevel = Number(e.target.value) / 100;
+                update((x) => ({ ...x, glassFrostLevel }));
               }}
               style={{ accentColor: "var(--lb-accent)" }}
             />
             <div className="flex justify-between text-[10.5px] lb-muted">
-              {FROST_ORDER.map((id, i) => (
-                <span key={id} className="whitespace-nowrap" style={{ fontWeight: i === frostIndex ? 600 : 400, color: i === frostIndex ? "var(--lb-text)" : undefined }}>
-                  {t(`frost.${id}`)}
+              {(["frost.clear", "frost.balanced", "frost.frosted"] as const).map((key) => (
+                <span key={key} className="whitespace-nowrap" style={key === frostKey ? { fontWeight: 600, color: "var(--lb-text)" } : undefined}>
+                  {t(key)}
                 </span>
               ))}
             </div>
           </div>
         </Row>
-        <Row label={t("settings.backdrop")} hint={s.theme !== "liquid-glass" ? t("settings.frostHint") : s.glassBackdrop === "wallpaper" ? t("settings.backdropHintWallpaper") : t("settings.backdropHintLive")}>
-          <div style={{ opacity: s.theme === "liquid-glass" ? 1 : 0.5 }}>
+        <Row label={t("settings.backdrop")} hint={!glassTheme ? t("settings.frostHint") : s.glassBackdrop === "wallpaper" ? t("settings.backdropHintWallpaper") : t("settings.backdropHintLive")}>
+          <div style={{ opacity: glassTheme ? 1 : 0.5 }}>
             <Segmented<GlassBackdrop>
               value={s.glassBackdrop === "wallpaper" ? "wallpaper" : "live"}
               options={[

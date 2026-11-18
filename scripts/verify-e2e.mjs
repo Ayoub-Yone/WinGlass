@@ -256,7 +256,7 @@ try {
 
   const first = await dock.invoke("get_settings");
   check("first launch: French", first.language === "fr" && (await dock.eval("document.documentElement.lang")) === "fr", `language=${first.language}`);
-  check("first launch: matte liquid glass, balanced frost", first.theme === "liquid-glass" && first.glassFrost === "balanced", `${first.theme}/${first.glassFrost}`);
+  check("first launch: iOS liquid glass, balanced frost", first.theme === "liquid-glass" && first.glassFrostLevel === 0.5, `${first.theme}/${first.glassFrostLevel}`);
   check("first launch: taskbar completely hidden", first.taskbarMode === "completely_hidden" && taskbar().visible === false, JSON.stringify(taskbar()));
   check("taskbar state persisted while modified", existsSync(stateFile));
   check("only dock + toast webviews exist at idle", (await targets()).length === 2, (await targets()).map((t) => t.url.split("?")[1]).join(", "));
@@ -641,11 +641,11 @@ try {
     out.after = scale(slots[mid]);
     return out;
   })()`);
-  const inside = (b) => b && b.left >= -0.6 && b.right >= -0.6 && b.top >= -7.5 && b.bottom >= -0.6 && !b.overlap;
-  check("magnification: hovered ~1.32x, neighbours shrink (~0.84x, ~0.92x), lifted ~4px, label shown", (mag.slots >= 5
-      ? mag.hovered > 1.28 && mag.hovered <= 1.3201 && mag.n1 > 0.8 && mag.n1 < 0.9 && mag.n2 > 0.88 && mag.n2 < 0.96 && parseFloat(mag.lift) <= -3.5
+  const inside = (b) => b && b.left >= -0.6 && b.right >= -0.6 && b.top >= -9.5 && b.bottom >= -0.6 && !b.overlap;
+  check("magnification: hovered ~1.34x, neighbours shrink (~0.84x, ~0.92x), lifted ~4px, label shown", (mag.slots >= 5
+      ? mag.hovered > 1.28 && mag.hovered <= 1.3401 && mag.n1 > 0.8 && mag.n1 < 0.9 && mag.n2 > 0.88 && mag.n2 < 0.96 && parseFloat(mag.lift) <= -3.5
       : // Short strips cannot absorb the growth: compressed uniformly, hovered still largest.
-        mag.hovered > 1.15 && mag.hovered <= 1.3201 && (mag.n1 === null || mag.n1 < mag.hovered) && parseFloat(mag.lift) <= -2) && mag.labelOpacity > 0.5 && mag.label, JSON.stringify(mag));
+        mag.hovered > 1.15 && mag.hovered <= 1.3401 && (mag.n1 === null || mag.n1 < mag.hovered) && parseFloat(mag.lift) <= -2) && mag.labelOpacity > 0.5 && mag.label, JSON.stringify(mag));
   check("magnification: no icon leaves the strip / capsule, no overlap (middle, first and last icon)", inside(mag.mid) && inside(mag.first) && inside(mag.last), JSON.stringify({ mid: mag.mid, first: mag.first, last: mag.last }));
   check("magnification settles back to 1x when the cursor leaves", mag.after === 1, JSON.stringify(mag));
   const glassAfterHover = await dock.eval("(() => { const c = document.querySelector('.lb-pill canvas'); return c ? { w: c.width, h: c.height, pill: document.querySelector('.lb-pill').getBoundingClientRect().height * devicePixelRatio } : null; })()");
@@ -699,12 +699,12 @@ try {
     [...document.querySelectorAll('nav button')][0].click();
     await new Promise((r) => setTimeout(r, 250));
     const text = document.body.innerText;
-    return { labels: ['Subtil', 'Mat équilibré', 'Givre profond', 'Langue / Language', 'Français', 'English'].filter((s) => !text.includes(s)), range: document.querySelectorAll('input[type=range]').length };
+    return { labels: ['Clair', 'Équilibré', 'Givré / teinté', 'Langue / Language', 'Français', 'English'].filter((s) => !text.includes(s)), range: document.querySelectorAll('input[type=range]').length };
   })()`);
   check("settings: frost slider + language selector present", frost.labels.length === 0 && frost.range >= 1, JSON.stringify(frost));
-  await patchSettings(dock, { glassFrost: "deep" });
-  check("frost setting persists", (await dock.invoke("get_settings")).glassFrost === "deep");
-  await patchSettings(dock, { glassFrost: "balanced" });
+  await patchSettings(dock, { glassFrostLevel: 0.85 });
+  check("frost setting persists", (await dock.invoke("get_settings")).glassFrostLevel === 0.85);
+  await patchSettings(dock, { glassFrostLevel: 0.5 });
 
   const open = memory(pid);
   note(`picker + settings open: host ${open.hostWorkingSetMb} MB, ${open.webviewCount} WebView2 processes, ${open.childWorkingSetMb} MB`);
