@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>lumabar</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#26282e"/>
+      <stop offset="1" stop-color="#141519"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.04"/>
+    </linearGradient>
+  </defs>
+  <!-- Windows 11 app-icon tile: radius 22.4 % of the side. -->
+  <rect x="16" y="16" width="992" height="992" rx="222" fill="url(#tile)"/>
+  <rect x="17" y="17" width="990" height="990" rx="221" fill="none" stroke="url(#rim)" stroke-width="4"/>
+  <!-- Mark at 78 %, centred: 48-unit grid scaled by 16.64. -->
+  <g transform="translate(112.6 112.6) scale(16.64)">
+    <rect x="6" y="20.5" width="24" height="7" rx="3.5" fill="#dcdee2"/>
+    <g fill="none" stroke-linecap="round" stroke-width="2.6">
+      <path d="M30 22.6 L42 15.5" stroke="#4cd1ee"/>
+      <path d="M31 24 L43 24" stroke="#43acfb"/>
+      <path d="M30 25.4 L42 32.5" stroke="#99aaff"/>
+    </g>
+  </g>
+</svg>

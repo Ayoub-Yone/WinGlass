@@ -1,10 +1,11 @@
 // Pinned taskbar shortcuts + live top-level windows, with running / focused indicator dots.
 // Click: launch (not running) · focus / minimize (one window) · window list (several windows).
-// Middle-click: start a new instance.
+// Middle-click: start a new instance. Hover a running app: live window previews (WindowPreviewCard).
 
 import { AppWindow as AppWindowIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Popover } from "../components/ui";
+import { WindowPreviewCard } from "../components/WindowPreviewCard";
 import { getHub } from "../engine/DataHub";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc, subscribe } from "../lib/ipc";
@@ -71,7 +72,19 @@ function useIcon(key: string): string | null {
   return src;
 }
 
-function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => void }) {
+/** First hover waits this long; moving to an adjacent running app while a card is open is instant. */
+const PREVIEW_DELAY_MS = 200;
+/** Grace period to reach the card from the icon (or slide to a neighbour) before it closes. */
+const PREVIEW_GRACE_MS = 250;
+
+function AppButton(props: {
+  app: AppEntry;
+  onError: (msg: string) => void;
+  onHoverStart: (app: AppEntry, el: HTMLElement) => void;
+  onHoverEnd: () => void;
+  onDismissPreview: () => void;
+}) {
+  const { app, onError, onHoverStart, onHoverEnd, onDismissPreview } = props;
   const { t } = useI18n();
   const icon = useIcon(app.iconKey);
   const [menu, setMenu] = useState(false);
@@ -85,6 +98,7 @@ function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => 
   };
 
   const click = () => {
+    onDismissPreview();
     if (!running) return launch();
     if (app.windows.length === 1) {
       ipc.activateWindow(app.windows[0].hwnd).catch((e) => onError(errorMessage(e)));
@@ -103,6 +117,8 @@ function AppButton({ app, onError }: { app: AppEntry; onError: (msg: string) => 
         style={{ width: "calc(var(--lb-icon) + 12px)" }}
         title={app.windows.length === 1 ? app.windows[0].title : app.name}
         onClick={click}
+        onPointerEnter={(e) => onHoverStart(app, e.currentTarget)}
+        onPointerLeave={onHoverEnd}
         onAuxClick={(e) => {
           if (e.button === 1) launch();
         }}
@@ -157,6 +173,39 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
   const { t } = useI18n();
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [hover, setHover] = useState<{ id: string; rect: DOMRect } | null>(null);
+  const hoverRef = useRef(hover);
+  hoverRef.current = hover;
+  const openTimer = useRef(0);
+  const closeTimer = useRef(0);
+
+  const dismissPreview = useCallback(() => {
+    window.clearTimeout(openTimer.current);
+    window.clearTimeout(closeTimer.current);
+    setHover(null);
+  }, []);
+  const scheduleClose = useCallback(() => {
+    window.clearTimeout(openTimer.current);
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => setHover(null), PREVIEW_GRACE_MS);
+  }, []);
+  const keepPreview = useCallback(() => window.clearTimeout(closeTimer.current), []);
+  const hoverStart = useCallback(
+    (app: AppEntry, el: HTMLElement) => {
+      if (preview || app.windows.length === 0) return scheduleClose();
+      window.clearTimeout(openTimer.current);
+      window.clearTimeout(closeTimer.current);
+      const show = () => setHover({ id: app.id, rect: el.getBoundingClientRect() });
+      if (hoverRef.current) show();
+      else openTimer.current = window.setTimeout(show, PREVIEW_DELAY_MS);
+    },
+    [preview, scheduleClose],
+  );
+  useEffect(() => () => {
+    window.clearTimeout(openTimer.current);
+    window.clearTimeout(closeTimer.current);
+  }, []);
+  const hovered = hover ? apps.find((a) => a.id === hover.id && a.windows.length > 0) : undefined;
 
   useEffect(() => {
     let alive = true;
@@ -185,11 +234,14 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
     <div className="flex h-full shrink-0 items-center" title={error ?? undefined}>
       <div data-mag-group="apps" className="flex h-full items-center gap-[2px]">
         {apps.map((app) => (
-          <AppButton key={app.id} app={app} onError={setError} />
+          <AppButton key={app.id} app={app} onError={setError} onHoverStart={hoverStart} onHoverEnd={scheduleClose} onDismissPreview={dismissPreview} />
         ))}
         {apps.length === 0 && <div className="whitespace-nowrap px-2 lb-muted">{t("apps.none")}</div>}
       </div>
-      <div className="mx-[calc(var(--lb-gap)+2px)] h-[55%] w-px shrink-0" style={{ background: "var(--lb-track)" }} aria-hidden />
+      {hover && hovered && (
+        <WindowPreviewCard app={hovered} anchor={hover.rect} onPointerEnter={keepPreview} onPointerLeave={scheduleClose} onDone={dismissPreview} />
+      )}
+      <div className="lb-apps-sep mx-[calc(var(--lb-gap)+2px)] h-[55%] w-px shrink-0" style={{ background: "var(--lb-track)" }} aria-hidden />
     </div>
   );
 }

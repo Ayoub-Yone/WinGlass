@@ -25,6 +25,7 @@ import type {
   TelemetrySample,
   Todo,
   ToastSpec,
+  WindowPreview,
 } from "../types/lumabar";
 
 export type HitRect = [number, number, number, number];
@@ -47,6 +48,9 @@ export const ipc = {
   listApps: () => invoke<AppEntry[]>("list_apps"),
   getAppIcon: (key: string) => invoke<string | null>("get_app_icon", { key }),
   activateWindow: (hwnd: number) => invoke<void>("activate_window", { hwnd }),
+  getAppWindowPreviews: (appId: string) => invoke<WindowPreview[]>("get_app_window_previews", { appId }),
+  focusAppWindow: (hwnd: number) => invoke<void>("focus_app_window", { hwnd }),
+  closeAppWindow: (hwnd: number) => invoke<void>("close_app_window", { hwnd }),
   launchApp: (path: string) => invoke<void>("launch_app", { path }),
   openTarget: (target: string) => invoke<void>("open_target", { target }),
   searchInstalledApps: (query: string) => invoke<AppHit[]>("search_installed_apps", { query }),
@@ -78,6 +82,8 @@ export const ipc = {
   setRadio: (kind: "wifi" | "bluetooth", on: boolean) => invoke<void>("set_radio", { kind, on }),
   setHotspot: (on: boolean) => invoke<void>("set_hotspot", { on }),
   cycleKeyboardLayout: () => invoke<void>("cycle_keyboard_layout"),
+  /** Restart / shutdown must be confirmed in the UI first. */
+  powerAction: (action: "lock" | "sleep" | "restart" | "shutdown") => invoke<void>("power_action", { action }),
 
   getProviders: () => invoke<ProviderResult[]>("get_providers"),
   refreshProvider: (id: ProviderId) => invoke<ProviderResult>("refresh_provider", { id }),

@@ -557,17 +557,63 @@ fn shell_item_icon(parsing_name: &str) -> Option<HICON> {
         if pidl.is_null() {
             return None;
         }
-        let mut info = SHFILEINFOW::default();
-        let ok = SHGetFileInfoW(
+        let icon = pidl_icon(pidl);
+        ILFree(Some(pidl as *const ITEMIDLIST));
+        icon
+    }
+}
+
+unsafe fn pidl_icon(pidl: *const ITEMIDLIST) -> Option<HICON> {
+    let mut info = SHFILEINFOW::default();
+    let ok = unsafe {
+        SHGetFileInfoW(
             PCWSTR(pidl as *const u16),
             FILE_ATTRIBUTE_NORMAL,
             Some(&mut info),
             std::mem::size_of::<SHFILEINFOW>() as u32,
             SHGFI_PIDL | SHGFI_ICON | SHGFI_LARGEICON,
-        );
+        )
+    };
+    if ok != 0 && !info.hIcon.is_invalid() { Some(info.hIcon) } else { None }
+}
+
+/// The app's own icon for a `.lnk`, without Windows' shortcut-arrow overlay: the shortcut's custom
+/// icon location if it has one, else the icon of the item it points to (an exe, File Explorer, a
+/// packaged app's AppsFolder entry). Asking the shell for the `.lnk` itself is what adds the arrow.
+/// Must run on the STA thread.
+fn shortcut_target_icon(path: &str) -> Option<HICON> {
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    use windows::Win32::UI::Shell::SHDefExtractIconW;
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let persist: IPersistFile = windows::core::Interface::cast(&link).ok()?;
+        let wpath = wide(path);
+        persist.Load(PCWSTR(wpath.as_ptr()), STGM_READ).ok()?;
+
+        let mut raw = vec![0u16; 1024];
+        let mut index = 0i32;
+        if link.GetIconLocation(&mut raw, &mut index).is_ok() && raw[0] != 0 {
+            let mut expanded = vec![0u16; 1024];
+            let n = ExpandEnvironmentStringsW(PCWSTR(raw.as_ptr()), Some(&mut expanded));
+            let file = if n > 0 && (n as usize) <= expanded.len() { expanded } else { raw };
+            let mut icon = HICON::default();
+            if SHDefExtractIconW(PCWSTR(file.as_ptr()), index, 0, Some(&mut icon), None, 64).is_ok() && !icon.is_invalid() {
+                return Some(icon);
+            }
+        }
+
+        let pidl = link.GetIDList().ok()?;
+        if pidl.is_null() {
+            return None;
+        }
+        let icon = pidl_icon(pidl);
         ILFree(Some(pidl as *const ITEMIDLIST));
-        if ok != 0 && !info.hIcon.is_invalid() { Some(info.hIcon) } else { None }
+        icon
     }
+}
+
+fn is_shortcut(path: &str) -> bool {
+    Path::new(path).extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk"))
 }
 
 fn window_icon(hwnd: HWND) -> Option<HICON> {
@@ -594,7 +640,13 @@ pub fn icon_data_url(key: &str) -> Option<String> {
     } else {
         let path = key.to_string();
         with_com(move || {
-            let icon = if path.starts_with(super::app_search::APPS_FOLDER_PREFIX) { shell_item_icon(&path) } else { file_icon(&path) };
+            let icon = if path.starts_with(super::app_search::APPS_FOLDER_PREFIX) {
+                shell_item_icon(&path)
+            } else if is_shortcut(&path) {
+                shortcut_target_icon(&path).or_else(|| file_icon(&path))
+            } else {
+                file_icon(&path)
+            };
             icon.and_then(|icon| {
                 let png = hicon_to_png(icon);
                 unsafe {

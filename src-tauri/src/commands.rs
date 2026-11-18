@@ -56,8 +56,8 @@ pub fn update_settings(app: AppHandle, state: State<'_, AppState>, settings: Set
     if previous.language != settings.language {
         crate::refresh_tray_language(&app, &settings.language);
     }
-    if previous.theme != settings.theme || previous.glass_backdrop != settings.glass_backdrop {
-        graphics::configure(&app, settings.theme == "liquid-glass", &settings.glass_backdrop);
+    if previous.theme != settings.theme || previous.glass_backdrop != settings.glass_backdrop || previous.clear_mode != settings.clear_mode {
+        graphics::configure(&app, settings.uses_glass_capture(), &settings.glass_backdrop);
     }
     let providers_changed = serde_json::to_value(&previous.providers).ok() != serde_json::to_value(&settings.providers).ok();
     if previous.simulation != settings.simulation || providers_changed {
@@ -381,6 +381,33 @@ pub async fn set_hotspot(on: bool) -> Result<(), String> {
     blocking(move || telemetry::set_hotspot(on)).await
 }
 
+/// Windows-button power section ("lock" | "sleep" | "restart" | "shutdown"). The menu confirms
+/// restart / shut down before calling this.
+#[tauri::command]
+pub async fn power_action(action: String) -> Result<(), String> {
+    let action = crate::win32::power::PowerAction::parse(&action).ok_or_else(|| format!("unknown power action '{action}'"))?;
+    blocking(move || crate::win32::power::run(action)).await
+}
+
+/// Hover previews: every open window of a dock app entry with a scaled PrintWindow thumbnail.
+#[tauri::command]
+pub async fn get_app_window_previews(app_id: String) -> Result<Vec<crate::win32::window_previews::WindowPreview>, String> {
+    blocking(move || Ok(crate::win32::window_previews::previews(&app_id))).await
+}
+
+/// Preview click: that window to the front (restored when minimized). Not `close_window`, which
+/// closes lumabar's own modal windows.
+#[tauri::command]
+pub async fn focus_app_window(hwnd: i64) -> Result<(), String> {
+    blocking(move || crate::win32::window_previews::focus(hwnd)).await
+}
+
+/// Preview × button: WM_CLOSE to that app window.
+#[tauri::command]
+pub async fn close_app_window(hwnd: i64) -> Result<(), String> {
+    blocking(move || crate::win32::window_previews::close(hwnd)).await
+}
+
 #[tauri::command]
 pub fn cycle_keyboard_layout() -> Result<(), String> {
     telemetry::cycle_keyboard_layout()
@@ -441,6 +468,17 @@ const LAYOUT_MIGRATIONS: &[(&str, &str, &str, &[&str])] = &[
     ("layout_migration_hidden_tray", "hidden-tray", "auto", &["clock"]),
 ];
 
+/// Widgets removed once from existing layouts (re-adding them from the picker sticks).
+/// Wi-Fi / Bluetooth / Focus now live in the Windows-button system menu.
+const LAYOUT_REMOVALS: &[(&str, &str)] = &[("layout_remove_quick_toggles", "quick-toggles")];
+
+/// Remove every instance of `widget_id`; true when the layout changed.
+pub fn remove_widget(layout: &mut Vec<Value>, widget_id: &str) -> bool {
+    let before = layout.len();
+    layout.retain(|i| i.get("widgetId").and_then(|w| w.as_str()) != Some(widget_id));
+    layout.len() != before
+}
+
 /// Widgets repositioned once (kv flag, widget, put just before this widget).
 const LAYOUT_MOVES: &[(&str, &str, &str)] = &[
     // The hidden-icons chevron sits directly left of the clock / date tile.
@@ -492,6 +530,12 @@ pub fn get_layout(state: State<'_, AppState>) -> Option<Value> {
     let mut layout: Value = state.db.kv_get("layout").and_then(|json| serde_json::from_str(&json).ok())?;
     if let Some(items) = layout.as_array_mut() {
         let mut changed = drop_retired(items);
+        for (flag, widget) in LAYOUT_REMOVALS {
+            if state.db.kv_get(flag).is_none() {
+                changed |= remove_widget(items, widget);
+                let _ = state.db.kv_set(flag, "1");
+            }
+        }
         for (flag, widget, span, anchors) in LAYOUT_MIGRATIONS {
             if state.db.kv_get(flag).is_none() {
                 changed |= add_widget_once(items, widget, span, anchors);

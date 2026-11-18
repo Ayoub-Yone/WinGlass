@@ -1,6 +1,7 @@
 // Settings: themes & sizes, dock position & taskbar mode, accounts / API keys (DPAPI-encrypted),
 // calendar feeds, integrations, automation rules with thresholds + test buttons, and advanced.
 
+import { LumabarMark } from "./LumabarMark";
 import {
   AlertTriangle,
   CalendarDays,
@@ -203,6 +204,12 @@ function GeneralTab({ s }: { s: Settings }) {
               onChange={(glassBackdrop) => update((x) => ({ ...x, glassBackdrop }))}
             />
           </div>
+        </Row>
+        <Row label={t("sysmenu.clear")} hint={t("settings.clearHint")}>
+          <Toggle label={t("sysmenu.clear")} checked={s.clearMode} onChange={(v) => update((x) => ({ ...x, clearMode: v }))} />
+        </Row>
+        <Row label={t("sysmenu.ambiance")} hint={t("settings.ambianceHint")}>
+          <Toggle label={t("sysmenu.ambiance")} checked={s.musicAmbiance} onChange={(v) => update((x) => ({ ...x, musicAmbiance: v }))} />
         </Row>
       </Section>
       <Section title={t("settings.size")}>
@@ -807,7 +814,8 @@ export function SettingsModal() {
     <div className="flex h-full w-full p-3">
       <div className="lb-menu flex h-full w-full overflow-hidden rounded-[26px]" style={{ color: "var(--lb-text)" }}>
         <nav data-tauri-drag-region className="flex w-[200px] shrink-0 flex-col gap-0.5 p-3" style={{ background: "var(--lb-card)" }}>
-          <div data-tauri-drag-region className="mb-3 px-2 pt-1 text-[17px] font-semibold">
+          <div data-tauri-drag-region className="mb-3 flex items-center gap-2 px-2 pt-1 text-[17px] font-semibold">
+            <LumabarMark size={22} />
             {t("settings.title")}
           </div>
           {TABS.map(({ id, label, icon: Icon }) => (

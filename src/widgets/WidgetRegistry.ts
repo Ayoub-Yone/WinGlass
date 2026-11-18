@@ -177,7 +177,6 @@ export const DEFAULT_LAYOUT: LayoutItem[] = [
   { instanceId: "media-default", widgetId: "media", span: "2x1" },
   { instanceId: "claude-default", widgetId: "claude", span: "2x1" },
   { instanceId: "calendar-default", widgetId: "calendar", span: "2x1" },
-  { instanceId: "quick-toggles-default", widgetId: "quick-toggles", span: "2x1" },
   { instanceId: "cpu-default", widgetId: "cpu", span: "1x1" },
   { instanceId: "weather-default", widgetId: "weather", span: "2x1" },
   { instanceId: "volume-default", widgetId: "volume", span: "1x1" },

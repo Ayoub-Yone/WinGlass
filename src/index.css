@@ -305,3 +305,172 @@ html[data-hidden="true"] *::after {
     box-shadow: inset 0 0 0 1.5px rgba(255, 69, 58, 0.55), 0 0 6px rgba(255, 69, 58, 0.15);
   }
 }
+
+/* ---------------------------------------------------------------- Windows button */
+
+/* Squircle concentric with the bar's left rounding: bar radius - bar padding - bar border. */
+.lb-winbtn {
+  position: relative;
+  z-index: 1;
+  width: calc(var(--lb-height) - 2 * var(--lb-padding) - 2px);
+  height: calc(var(--lb-height) - 2 * var(--lb-padding) - 2px);
+  margin-right: var(--lb-gap);
+  border: 1px solid var(--lb-track);
+  border-radius: calc(var(--lb-radius) - var(--lb-padding) - 1px);
+  background: var(--lb-card);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1);
+  cursor: default;
+  transition: background-color 160ms ease, transform 120ms ease;
+}
+.lb-winbtn:hover {
+  background: var(--lb-card-hover);
+}
+.lb-winbtn:active {
+  transform: scale(0.94);
+}
+
+/* ---------------------------------------------------------------- Ambiance Musique */
+
+/* Registered so the cover colors interpolate (600 ms) between tracks. */
+@property --lb-amb-1 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --lb-amb-2 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --lb-amb-3 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+.lb-ambient {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 42% 150% at 10% 50% in oklch, color-mix(in oklch, var(--lb-amb-1) 40%, transparent), transparent 72%),
+    radial-gradient(ellipse 42% 150% at 52% 50% in oklch, color-mix(in oklch, var(--lb-amb-2) 30%, transparent), transparent 72%),
+    radial-gradient(ellipse 42% 150% at 92% 50% in oklch, color-mix(in oklch, var(--lb-amb-3) 34%, transparent), transparent 72%);
+  opacity: 0;
+  transition: opacity 600ms ease;
+}
+.lb-pill[data-ambient="on"] .lb-ambient {
+  opacity: 1;
+}
+.lb-pill[data-ambient="on"]:not(.lb-clear) {
+  box-shadow: var(--lb-shadow), 0 0 26px -6px color-mix(in oklch, var(--lb-amb-1) 55%, transparent);
+}
+
+/* ---------------------------------------------------------------- Mode Clear */
+
+/* The bar surface goes away; positions do not move (each capsule is a pseudo-element). */
+.lb-pill.lb-clear {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.lb-pill.lb-clear .lb-ambient {
+  opacity: 0;
+}
+.lb-pill [data-instance]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: var(--lb-card-radius);
+  background: var(--lb-menu);
+  box-shadow: inset 0 0 0 1px var(--lb-track), inset 0 1px 0 rgb(255 255 255 / 0.08);
+  opacity: 0;
+  transition: opacity 220ms ease, box-shadow 600ms ease;
+}
+.lb-pill.lb-clear [data-instance]::before {
+  opacity: 1;
+}
+.lb-pill.lb-clear .lb-winbtn {
+  background: var(--lb-menu);
+}
+.lb-pill.lb-clear .lb-apps-sep {
+  opacity: 0;
+}
+/* Clear + Ambiance: the glow moves to the capsules, strongest behind the media widget. */
+.lb-pill.lb-clear[data-ambient="on"] [data-instance]::before {
+  box-shadow: inset 0 0 0 1px var(--lb-track), 0 0 14px -3px color-mix(in oklch, var(--lb-amb-1) 50%, transparent);
+}
+.lb-pill.lb-clear[data-ambient="on"] [data-widget="media"]::before {
+  background:
+    radial-gradient(ellipse 80% 130% at 18% 50% in oklch, color-mix(in oklch, var(--lb-amb-1) 36%, transparent), transparent 75%),
+    radial-gradient(ellipse 70% 130% at 86% 50% in oklch, color-mix(in oklch, var(--lb-amb-2) 30%, transparent), transparent 75%),
+    var(--lb-menu);
+  box-shadow: inset 0 0 0 1px var(--lb-track), 0 0 22px -2px color-mix(in oklch, var(--lb-amb-1) 62%, transparent);
+}
+
+/* ---------------------------------------------------------------- Window previews (app icon hover) */
+
+/* Slides between adjacent icons instead of re-opening. */
+.lb-preview {
+  transition: left 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.lb-preview-card {
+  background: var(--lb-menu);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08), var(--lb-shadow);
+  backdrop-filter: blur(30px) saturate(170%);
+  -webkit-backdrop-filter: blur(30px) saturate(170%);
+  color: var(--lb-text);
+}
+.lb-preview-up {
+  transform-origin: bottom center;
+  animation: lb-preview-in-up 170ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+.lb-preview-down {
+  transform-origin: top center;
+  animation: lb-preview-in-down 170ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+@keyframes lb-preview-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+@keyframes lb-preview-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+}
+.lb-preview-item {
+  transition: background-color 140ms ease;
+}
+.lb-preview-item:hover,
+.lb-preview-item:focus-within {
+  background: var(--lb-card-hover);
+}
+.lb-preview-item[data-active="true"] {
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--lb-accent) 55%, transparent);
+}
+.lb-preview-close {
+  background: transparent;
+  color: var(--lb-text);
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+.lb-preview-item:hover .lb-preview-close,
+.lb-preview-item:focus-within .lb-preview-close {
+  opacity: 1;
+}
+.lb-preview-close:hover {
+  background: var(--lb-red);
+  color: #fff;
+}
+html[data-preview="on"] .lb-mag-label {
+  visibility: hidden;
+}

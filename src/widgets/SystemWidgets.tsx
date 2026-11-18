@@ -58,18 +58,20 @@ function TogglePill(props: { icon: LucideIcon; label: string; on: boolean | null
   );
 }
 
-export function QuickTogglesWidget({ span }: WidgetProps) {
+export type RadioKey = "wifi" | "bluetooth" | "hotspot";
+
+/** Radio states from telemetry with optimistic toggling (Quick Toggles widget + Windows-button menu). */
+export function useRadios() {
   const telemetry = useTelemetry();
   const { t } = useI18n();
-  const settings = useSettings();
   const preview = usePreview();
   const [busy, setBusy] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
   const radios = telemetry[telemetry.length - 1]?.radios ?? { wifi: null, bluetooth: null, hotspot: null };
 
-  const state = (key: "wifi" | "bluetooth" | "hotspot") => (key in optimistic ? optimistic[key] : radios[key]);
+  const state = (key: RadioKey) => (key in optimistic ? optimistic[key] : radios[key]);
 
-  const toggle = async (key: "wifi" | "bluetooth" | "hotspot") => {
+  const toggle = async (key: RadioKey) => {
     if (preview) return;
     const next = !state(key);
     setBusy(key);
@@ -90,9 +92,17 @@ export function QuickTogglesWidget({ span }: WidgetProps) {
     }
   };
 
+  return { state, toggle, busy, last: telemetry[telemetry.length - 1] };
+}
+
+export function QuickTogglesWidget({ span }: WidgetProps) {
+  const { t } = useI18n();
+  const settings = useSettings();
+  const preview = usePreview();
+  const { state, toggle, busy, last } = useRadios();
+
   const showLabel = span === "3x1";
   // Network pill: icon + tooltip follow the active connection; the click still toggles the Wi-Fi radio.
-  const last = telemetry[telemetry.length - 1];
   const networkType = last?.networkType ?? "wifi";
   const adapter = last?.networkAdapter ?? null;
   const network =

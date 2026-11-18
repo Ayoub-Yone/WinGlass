@@ -147,6 +147,10 @@ pub struct Settings {
     pub glass_frost: String,
     /// Liquid-glass backdrop source: "live" (default, desktop duplication) | "wallpaper".
     pub glass_backdrop: String,
+    /// « Mode Clear »: no bar background, every widget floats in its own capsule.
+    pub clear_mode: bool,
+    /// « Ambiance Musique »: soft glow tinted by the playing track's cover art.
+    pub music_ambiance: bool,
     /// Settings document revision, see `Settings::parse`.
     pub schema: u32,
     pub pomodoro_focus_minutes: u32,
@@ -178,6 +182,8 @@ impl Default for Settings {
             language: "fr".into(),
             glass_frost: "balanced".into(),
             glass_backdrop: "live".into(),
+            clear_mode: false,
+            music_ambiance: false,
             schema: SCHEMA,
             pomodoro_focus_minutes: 25,
             pomodoro_break_minutes: 5,
@@ -229,6 +235,11 @@ impl Settings {
     pub fn save(&self, db: &Db) -> Result<(), String> {
         let json = serde_json::to_string(self).map_err(|e| e.to_string())?;
         db.kv_set("settings", &json).map_err(|e| e.to_string())
+    }
+
+    /// The liquid-glass backdrop is captured only while the bar itself is drawn: Mode Clear removes it.
+    pub fn uses_glass_capture(&self) -> bool {
+        self.theme == "liquid-glass" && !self.clear_mode
     }
 
     /// Dock bar height in logical pixels for the size preset.

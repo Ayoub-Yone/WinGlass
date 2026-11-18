@@ -179,6 +179,10 @@ pub fn run() {
             commands::get_screen_time,
             commands::set_radio,
             commands::set_hotspot,
+            commands::power_action,
+            commands::get_app_window_previews,
+            commands::focus_app_window,
+            commands::close_app_window,
             commands::cycle_keyboard_layout,
             commands::get_providers,
             commands::refresh_provider,
@@ -244,7 +248,7 @@ pub fn run() {
             window_manager::start_hit_testing();
             window_manager::start_fullscreen_watch(handle.clone());
             graphics::start(handle.clone());
-            graphics::configure(&handle, settings.theme == "liquid-glass", &settings.glass_backdrop);
+            graphics::configure(&handle, settings.uses_glass_capture(), &settings.glass_backdrop);
             win32::memory::start();
             win32::media_smtc::start(handle.clone());
             win32::audio::start(handle.clone());

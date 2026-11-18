@@ -95,6 +95,10 @@ export interface Settings {
   language: Language;
   glassFrost: GlassFrost;
   glassBackdrop: GlassBackdrop;
+  /** « Mode Clear »: no bar background, each widget floats in its own capsule. */
+  clearMode: boolean;
+  /** « Ambiance Musique »: soft glow tinted by the playing track's cover art. */
+  musicAmbiance: boolean;
   pomodoroFocusMinutes: number;
   pomodoroBreakMinutes: number;
   worldClocks: WorldClock[];
@@ -301,6 +305,16 @@ export interface AppEntry {
   pinnedPath: string | null;
   windows: AppWindow[];
   isActive: boolean;
+}
+
+/** Taskbar-style hover preview of one app window. */
+export interface WindowPreview {
+  hwnd: number;
+  title: string;
+  isMinimized: boolean;
+  isActive: boolean;
+  /** PNG data URL; null when minimized or nothing could be rendered. */
+  thumbnail: string | null;
 }
 
 export interface AudioDevice {

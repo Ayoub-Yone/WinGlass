@@ -7,10 +7,12 @@ pub mod guardian;
 pub mod liner;
 pub mod media_smtc;
 pub mod memory;
+pub mod power;
 pub mod screen_time;
 pub mod sentinel;
 pub mod taskbar;
 pub mod tray_icons;
+pub mod window_previews;
 pub mod telemetry;
 pub mod window_manager;
 

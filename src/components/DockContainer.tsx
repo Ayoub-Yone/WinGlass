@@ -19,6 +19,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { LiquidGlassCanvas } from "./LiquidGlassCanvas";
+import { WindowsButton } from "./SystemMenu";
 import { openSettings } from "./ui";
 import { getHub, useHub } from "../engine/DataHub";
 import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER, frostPreset } from "../engine/ThemeEngine";
@@ -28,6 +29,7 @@ import { GLASS_BULGE, MAG_HEADROOM, attachMagnifier } from "../lib/magnify";
 import { patchSettings, useSettings } from "../lib/hooks";
 import { ipc, subscribe } from "../lib/ipc";
 import { clamp } from "../lib/format";
+import { useAmbientColors } from "../lib/useAmbient";
 import { getWidget, sanitizeLayout, widgetName } from "../widgets/WidgetRegistry";
 import type { LayoutItem, Span } from "../types/lumabar";
 
@@ -98,6 +100,14 @@ export function DockContainer() {
 
   const theme = THEMES[settings?.theme ?? "ios-glass"];
   const size = SIZES[settings?.size ?? "medium"];
+  // Mode Clear: no bar surface (and no glass capture), every widget floats in its own capsule.
+  const clear = settings?.clearMode ?? false;
+  const glass = theme.usesGlassShader && !clear;
+  const ambient = useAmbientColors(settings?.musicAmbiance ?? false);
+
+  useEffect(() => {
+    if (clear) setGlassActive(false);
+  }, [clear]);
 
   // ------------------------------------------------------------ layout load / sync / persist
 
@@ -120,7 +130,7 @@ export function DockContainer() {
   // ------------------------------------------------------------ liquid glass capture rect
 
   useEffect(() => {
-    if (!theme.usesGlassShader) return;
+    if (!glass) return;
     const pill = pillRef.current;
     if (!pill) return;
     const report = () => {
@@ -140,7 +150,7 @@ export function DockContainer() {
       off();
       window.clearInterval(t);
     };
-  }, [theme.usesGlassShader, position, settings?.size]);
+  }, [glass, position, settings?.size]);
 
   // ------------------------------------------------------------ wheel -> horizontal scroll with inertia
 
@@ -362,7 +372,7 @@ export function DockContainer() {
   // The glass capsule swells over the hovered icon only while the shader is live; elsewhere the
   // icons must fit the rigid capsule.
   const bulgeRef = useRef(0);
-  bulgeRef.current = theme.usesGlassShader && glassActive ? GLASS_BULGE : 0;
+  bulgeRef.current = glass && glassActive ? GLASS_BULGE : 0;
   useEffect(() => {
     const pill = pillRef.current;
     if (!pill) return;
@@ -384,16 +394,21 @@ export function DockContainer() {
 
   const hidden = fullscreen;
   const snapDy = drag?.kind === "snap" ? drag.dy : 0;
+  const ambientVars = Object.fromEntries([0, 1, 2].map((i) => [`--lb-amb-${i + 1}`, ambient[i] ?? ambient[0] ?? "transparent"]));
   const pillStyle: CSSProperties = {
+    ...ambientVars,
     height: "var(--lb-height)",
     padding: "var(--lb-padding)",
     maxWidth: "100%",
     transform: hidden ? `translateY(${position === "bottom" ? 150 : -150}%)` : `translateY(${snapDy}px)`,
     opacity: hidden ? 0 : 1,
-    transition: drag?.kind === "snap" ? "none" : "transform 320ms cubic-bezier(0.3, 0.9, 0.3, 1), opacity 240ms ease",
-    background: theme.usesGlassShader ? (glassActive ? "transparent" : "rgba(22, 22, 26, 0.72)") : undefined,
+    transition:
+      drag?.kind === "snap"
+        ? "none"
+        : "transform 320ms cubic-bezier(0.3, 0.9, 0.3, 1), opacity 240ms ease, background-color 220ms ease, border-color 220ms ease, box-shadow 220ms ease, --lb-amb-1 600ms ease, --lb-amb-2 600ms ease, --lb-amb-3 600ms ease",
+    background: glass ? (glassActive ? "transparent" : "rgba(22, 22, 26, 0.72)") : undefined,
     // The shader paints its own rim light; the CSS border is only for the fallback surface.
-    borderColor: theme.usesGlassShader && glassActive ? "transparent" : undefined,
+    borderColor: glass && glassActive ? "transparent" : undefined,
     backdropFilter: theme.usesGlassShader ? "none" : undefined,
   };
 
@@ -410,7 +425,8 @@ export function DockContainer() {
     >
       <div
         ref={pillRef}
-        className="lb-pill relative flex items-center"
+        className={`lb-pill relative flex items-center${clear ? " lb-clear" : ""}`}
+        data-ambient={ambient.length > 0 ? "on" : "off"}
         style={pillStyle}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
@@ -419,13 +435,16 @@ export function DockContainer() {
         onPointerCancel={finishPointer}
         onContextMenu={onContextMenu}
       >
-        {theme.usesGlassShader && <LiquidGlassCanvas radius={size.radius} frost={frostPreset(settings?.glassFrost)} onActiveChange={setGlassActive} />}
+        {glass && <LiquidGlassCanvas radius={size.radius} frost={frostPreset(settings?.glassFrost)} onActiveChange={setGlassActive} />}
+        {/* Ambiance Musique: diffuse cover-tinted light inside the bar (fades out with no music). */}
+        <div aria-hidden className="lb-ambient" />
         <div
           ref={headroomRef}
           aria-hidden
           className="pointer-events-none absolute inset-x-0"
           style={{ top: -MAG_HEADROOM, bottom: -MAG_HEADROOM }}
         />
+        <WindowsButton />
         <div ref={magLabelRef} className="lb-mag-label" style={position === "bottom" ? { bottom: `calc(100% + ${MAG_HEADROOM}px)` } : { top: `calc(100% + ${MAG_HEADROOM}px)` }} />
         {/* Vertical headroom inside the horizontal scroller so magnified icons are not clipped. */}
         <div
@@ -441,6 +460,7 @@ export function DockContainer() {
               <div
                 key={item.instanceId}
                 data-instance={item.instanceId}
+                data-widget={item.widgetId}
                 ref={(el) => {
                   if (el) itemRefs.current.set(item.instanceId, el);
                   else itemRefs.current.delete(item.instanceId);
