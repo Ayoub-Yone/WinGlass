@@ -4,8 +4,9 @@
 //! * Start Menu shortcuts — `%ProgramData%\…\Start Menu\Programs` and `%APPDATA%\…\Start Menu\Programs`
 //!   (recursive; the sub-folder, e.g. "Riot Games", is kept as a secondary match field)
 //! * Desktop shortcuts — the user's (OneDrive-aware) and the public desktop (`.lnk` + `.url`)
-//! * Packaged (MSIX / Microsoft Store) apps — Claude, Calculator, Photos… have no `.lnk` anywhere; they
-//!   only exist in the shell's `AppsFolder` and launch as `shell:AppsFolder\<AUMID>`
+//! * Everything else Start's « All apps » lists, from the shell's `AppsFolder`: packaged (MSIX / Store)
+//!   apps — Claude, Calculator, Photos… — and shell items with no `.lnk` such as Control Panel or the
+//!   Windows Tools; they launch as `shell:AppsFolder\<id>`
 //! * Installed executables registered under `App Paths` (HKCU + HKLM)
 //!
 //! Icons are not part of the index: the flyout asks `apps_enum::icon_data_url(path)` lazily, which
@@ -32,7 +33,7 @@ use windows::core::{GUID, PCWSTR, PWSTR};
 
 use super::{from_wide, wide};
 
-const INDEX_TTL: Duration = Duration::from_secs(120);
+const INDEX_TTL: Duration = Duration::from_secs(60);
 const MAX_DEPTH: usize = 6;
 const MAX_ENTRIES: usize = 6000;
 pub const MAX_RESULTS: usize = 8;
@@ -330,8 +331,8 @@ fn shell_display_name(item: &IShellItem, kind: SIGDN) -> Option<String> {
     }
 }
 
-/// `(display name, AUMID)` of every packaged app in the shell AppsFolder (what Start lists).
-/// Desktop apps are skipped there: their `.lnk` is already indexed from the Start Menu folders.
+/// `(display name, parsing id)` of every item in the shell AppsFolder (what Start lists under
+/// « All apps »). Desktop apps that also have a `.lnk` are deduplicated by name in `build_index`.
 fn scan_apps_folder() -> Vec<(String, String)> {
     super::apps_enum::with_com(|| {
         let mut out = Vec::new();
@@ -349,10 +350,7 @@ fn scan_apps_folder() -> Vec<(String, String)> {
                     else {
                         continue;
                     };
-                    // Packaged AUMIDs are `PackageFamilyName!AppId`.
-                    if aumid.contains('!') {
-                        out.push((name, aumid));
-                    }
+                    out.push((name, aumid));
                 }
             }
         }
@@ -392,16 +390,32 @@ fn build_index() -> Vec<Entry> {
 
 static INDEX: Lazy<Mutex<Option<(Instant, Arc<Vec<Entry>>)>>> = Lazy::new(|| Mutex::new(None));
 
-fn index() -> Arc<Vec<Entry>> {
-    if let Some((at, entries)) = INDEX.lock().as_ref() {
-        if at.elapsed() < INDEX_TTL {
-            return entries.clone();
-        }
-    }
+static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn rebuild() -> Arc<Vec<Entry>> {
     // Build outside the lock: a slow disk must not block concurrent searches on the old index.
     let fresh = Arc::new(build_index());
     *INDEX.lock() = Some((Instant::now(), fresh.clone()));
     fresh
+}
+
+/// Stale-while-revalidate: an expired index is still answered at once while a background thread
+/// rescans, so newly installed apps show up without ever making a keystroke wait.
+fn index() -> Arc<Vec<Entry>> {
+    let cached = INDEX.lock().clone();
+    match cached {
+        Some((at, entries)) => {
+            if at.elapsed() >= INDEX_TTL && !REFRESHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let _ = std::thread::Builder::new().name("lumabar-app-index".into()).spawn(|| {
+                    rebuild();
+                    REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    super::memory::request_trim(Duration::from_secs(2));
+                });
+            }
+            entries
+        }
+        None => rebuild(),
+    }
 }
 
 /// Build the index in the background so the first keystroke is instant.
@@ -650,7 +664,7 @@ mod tests {
         assert!(!entries.is_empty(), "the Start Menu has shortcuts");
         for hit in rank(&entries, "a", MAX_RESULTS) {
             let lower = hit.path.to_ascii_lowercase();
-            let packaged = hit.path.starts_with(APPS_FOLDER_PREFIX) && hit.path.contains('!');
+            let packaged = hit.path.starts_with(APPS_FOLDER_PREFIX);
             assert!(packaged || lower.ends_with(".lnk") || lower.ends_with(".url") || lower.ends_with(".exe"), "{}", hit.path);
         }
     }
@@ -676,8 +690,26 @@ mod tests {
     fn real_apps_folder_lists_packaged_apps() {
         let packaged = scan_apps_folder();
         assert!(!packaged.is_empty(), "AppsFolder exposes packaged apps");
-        assert!(packaged.iter().all(|(name, aumid)| !name.is_empty() && aumid.contains('!')));
+        assert!(packaged.iter().all(|(name, id)| !name.is_empty() && !id.is_empty()));
+        assert!(packaged.iter().any(|(_, id)| id.contains('!')), "Store apps are listed");
         let index = build_index();
         assert!(index.iter().any(|e| e.hit.kind == AppKind::Packaged && e.hit.path.starts_with(APPS_FOLDER_PREFIX)));
+    }
+}
+
+#[cfg(test)]
+mod control_panel_probe {
+    use super::*;
+
+    /// Shell items with no `.lnk` (Control Panel) are indexed and found by their localized name.
+    #[test]
+    fn control_panel_is_in_the_index() {
+        let entries = build_index();
+        let cp = entries.iter().find(|e| e.hit.path.eq_ignore_ascii_case(&format!("{APPS_FOLDER_PREFIX}Microsoft.Windows.ControlPanel")));
+        let cp = cp.expect("Control Panel is listed in the AppsFolder");
+        let hits = rank(&entries, &cp.hit.name, MAX_RESULTS);
+        assert!(hits.iter().any(|h| h.path == cp.hit.path), "{} is searchable", cp.hit.name);
+        eprintln!("control panel: {} -> {}", cp.hit.name, cp.hit.path);
+        eprintln!("index size: {}", entries.len());
     }
 }
