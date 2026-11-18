@@ -110,6 +110,8 @@ export interface AppEvents {
   "dock:position-changed": DockPosition;
   "dock:layout": DockLayout;
   "dock:fullscreen": boolean;
+  /** Dock auto-hidden (pointer left); only the dock window slides away for it. */
+  "dock:autohide": boolean;
   "layout:changed": { source: string; layout: LayoutItem[] };
   "provider:update": ProviderResult;
   "telemetry:sample": TelemetrySample;

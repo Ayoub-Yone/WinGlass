@@ -726,11 +726,11 @@ fn sample_auto_hide(app: &AppHandle, dock_hwnd: HWND, edge: DockEdge) -> Option<
     })
 }
 
-/// Tell the webviews whether to slide away. Auto-hide only concerns the dock: the toast window
-/// keeps animating (and showing automation toasts) while the dock is tucked away.
+/// Tell the webviews whether to slide away. Global events: the JS `listen()` used by DataHub does
+/// not receive `emit_to` events. Only the dock applies `dock:autohide`; toasts keep showing.
 fn emit_hidden(app: &AppHandle, fullscreen: bool, auto_hidden: bool) {
-    let _ = app.emit_to("dock", "dock:fullscreen", fullscreen || auto_hidden);
-    let _ = app.emit_to("toast", "dock:fullscreen", fullscreen);
+    let _ = app.emit("dock:autohide", auto_hidden);
+    let _ = app.emit("dock:fullscreen", fullscreen);
 }
 
 fn show_overlays(dock: &WebviewWindow, toast: Option<&WebviewWindow>) {
@@ -811,9 +811,10 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                         match sample.and_then(|s| auto.step(auto_on, s, Instant::now())) {
                             Some(AutoHideEffect::StartHide) => emit_hidden(&app, false, true),
                             Some(AutoHideEffect::FinishHide) => {
-                                // Window truly hidden: clicks reach the windows below, nothing is captured.
+                                // The window stays shown but empty: no hit rect is registered, so it is
+                                // fully click-through, and nothing is captured. Not SW_HIDE: WebView2
+                                // needs a moment to present again after it, which swallowed the slide-in.
                                 graphics::set_paused(true);
-                                hide_overlay(&dock);
                             }
                             Some(AutoHideEffect::Reveal) => {
                                 show_no_activate(&dock);
@@ -825,13 +826,7 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                         if foreground_changed {
                             // The app that just lost the foreground may have been topmost: keep the
                             // overlays above whatever took over (raw Win32, never activates).
-                            if auto.is_hidden() {
-                                if let Some(t) = &toast {
-                                    show_no_activate(t);
-                                }
-                            } else {
-                                show_overlays(&dock, toast.as_ref());
-                            }
+                            show_overlays(&dock, toast.as_ref());
                         }
                     }
                     continue;
@@ -860,13 +855,10 @@ pub fn start_fullscreen_watch(app: AppHandle) {
                     hidden = false;
                     // An auto-hidden dock stays tucked away; the fullscreen hide finished its slide.
                     auto.settle();
-                    if auto.is_hidden() {
-                        if let Some(t) = &toast {
-                            show_no_activate(t);
-                        }
-                    } else {
-                        // Instant wake: Alt+Tab, Win key, desktop, any windowed app.
-                        show_overlays(&dock, toast.as_ref());
+                    // Instant wake: Alt+Tab, Win key, desktop, any windowed app. An auto-hidden dock
+                    // comes back slid out (invisible, click-through) with the capture still paused.
+                    show_overlays(&dock, toast.as_ref());
+                    if !auto.is_hidden() {
                         graphics::set_paused(false);
                     }
                     emit_hidden(&app, false, auto.is_hidden());

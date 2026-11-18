@@ -154,12 +154,27 @@ export function startHub(options: { calendarTicks?: boolean } = {}): () => void 
     }),
   );
   cleanups.push(subscribe("dock:layout", (dockLayout) => setHub({ dockLayout, position: dockLayout.position })));
+  // `fullscreen` in the hub means "dock slid away": a fullscreen app, or auto-hide (dock window only).
+  const isDock = new URLSearchParams(window.location.search).get("window") === "dock";
+  let fullscreenApp = false;
+  let autoHidden = false;
+  const applyHidden = () => {
+    const fullscreen = fullscreenApp || (isDock && autoHidden);
+    if (fullscreen === state.fullscreen) return;
+    // Pauses CSS animations (index.css) along with the timers gated on `fullscreen`.
+    document.documentElement.dataset.hidden = String(fullscreen);
+    setHub({ fullscreen });
+  };
   cleanups.push(
-    subscribe("dock:fullscreen", (fullscreen) => {
-      if (fullscreen === state.fullscreen) return;
-      // Pauses CSS animations (index.css) along with the timers gated on `fullscreen`.
-      document.documentElement.dataset.hidden = String(fullscreen);
-      setHub({ fullscreen });
+    subscribe("dock:fullscreen", (v) => {
+      fullscreenApp = v;
+      applyHidden();
+    }),
+  );
+  cleanups.push(
+    subscribe("dock:autohide", (v) => {
+      autoHidden = v;
+      applyHidden();
     }),
   );
 
