@@ -131,6 +131,13 @@ pub fn run() {
 
     let db = Db::open().expect(r"open %APPDATA%\lumabar\lumabar.db");
     let settings = Settings::load(&db);
+    // Autostart follows the setting (on for a fresh install) and is re-pointed at this exe on every
+    // start, so a moved or renamed copy (lumabar.exe -> WinGlass.exe) keeps launching with Windows.
+    // Builds run from cargo's `target\` (dev, e2e) never register implicitly; the Settings toggle still does.
+    let build_output = std::env::current_exe().map(|p| p.components().any(|c| c.as_os_str().eq_ignore_ascii_case("target"))).unwrap_or(true);
+    if settings.launch_at_login && !build_output {
+        let _ = win32::set_launch_at_login(true);
+    }
 
     let app = tauri::Builder::default()
         .manage(AppState { db, settings: RwLock::new(settings) })

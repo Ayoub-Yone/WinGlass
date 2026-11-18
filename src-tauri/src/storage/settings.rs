@@ -125,8 +125,11 @@ impl Default for ProviderConfig {
     }
 }
 
+/// Default « Clair ↔ Givré » level: clear enough for the desktop to read through the glass.
+pub const DEFAULT_FROST_LEVEL: f64 = 0.32;
+
 /// Current settings document revision.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -145,7 +148,7 @@ pub struct Settings {
     pub accent: String,
     /// UI language: "fr" (default) | "en".
     pub language: String,
-    /// « Clair ↔ Givré »: 0.0 ultra-clear optical glass .. 1.0 deep matte frost (0.5 default).
+    /// « Clair ↔ Givré »: 0.0 ultra-clear optical glass .. 1.0 deep matte frost (0.32 default).
     pub glass_frost_level: f64,
     /// Liquid-glass backdrop source: "live" (default, desktop duplication) | "wallpaper".
     pub glass_backdrop: String,
@@ -180,10 +183,11 @@ impl Default for Settings {
             auto_hide_dock: false,
             simulation: false,
             do_not_disturb: false,
-            launch_at_login: false,
+            // « Lancer au démarrage de Windows » is on for a fresh install.
+            launch_at_login: true,
             accent: "#0A84FF".into(),
             language: "fr".into(),
-            glass_frost_level: 0.5,
+            glass_frost_level: DEFAULT_FROST_LEVEL,
             glass_backdrop: "live".into(),
             clear_mode: false,
             music_ambiance: false,
@@ -242,7 +246,11 @@ impl Settings {
                 settings.theme = "matte-glass".into();
             }
         }
-        settings.glass_frost_level = if settings.glass_frost_level.is_finite() { settings.glass_frost_level.clamp(0.0, 1.0) } else { 0.5 };
+        if stored < 5 && settings.glass_frost_level == 0.5 {
+            // Revision 5: the default glass got clearer (0.5 -> 0.32). A level the user picked is kept.
+            settings.glass_frost_level = DEFAULT_FROST_LEVEL;
+        }
+        settings.glass_frost_level = if settings.glass_frost_level.is_finite() { settings.glass_frost_level.clamp(0.0, 1.0) } else { DEFAULT_FROST_LEVEL };
         settings.schema = SCHEMA;
         (settings, migrated)
     }
@@ -276,7 +284,8 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.language, "fr");
         assert_eq!(s.theme, "liquid-glass");
-        assert_eq!(s.glass_frost_level, 0.5);
+        assert_eq!(s.glass_frost_level, 0.32);
+        assert!(s.launch_at_login);
         assert_eq!(s.taskbar_mode, "completely_hidden");
         assert_eq!(s.glass_backdrop, "live");
         assert_eq!(s.position, "bottom");
@@ -289,7 +298,7 @@ mod tests {
         assert_eq!(s.theme, "midnight");
         assert_eq!(s.dock_height(), 70.0);
         assert_eq!(s.language, "fr");
-        assert_eq!(s.glass_frost_level, 0.5);
+        assert_eq!(s.glass_frost_level, 0.32);
     }
 
     #[test]
@@ -343,14 +352,21 @@ mod tests {
 
     #[test]
     fn frost_presets_become_slider_levels_and_ios_glass_becomes_matte() {
-        for (frost, level) in [("subtle", 0.25), ("balanced", 0.5), ("deep", 0.9)] {
+        for (frost, level) in [("subtle", 0.25), ("balanced", 0.32), ("deep", 0.9)] {
             let (s, changed) = Settings::parse(&format!(r#"{{"schema":3,"theme":"ios-glass","glassFrost":"{frost}"}}"#));
             assert!(changed);
             assert_eq!((s.theme.as_str(), s.glass_frost_level), ("matte-glass", level));
             assert!(s.uses_glass_capture());
         }
+        // v0.4.0's untouched 0.5 default becomes the clearer 0.32; a picked level stays.
+        let (s, changed) = Settings::parse(r#"{"schema":4,"glassFrostLevel":0.5,"launchAtLogin":false}"#);
+        assert!(changed);
+        assert_eq!(s.glass_frost_level, 0.32);
+        assert!(!s.launch_at_login, "an existing install keeps its autostart choice");
+        let (s, _) = Settings::parse(r#"{"schema":4,"glassFrostLevel":0.7}"#);
+        assert_eq!(s.glass_frost_level, 0.7);
         // A current document keeps its level (clamped) and theme.
-        let (s, changed) = Settings::parse(r#"{"schema":4,"theme":"midnight","glassFrostLevel":3.0}"#);
+        let (s, changed) = Settings::parse(r#"{"schema":5,"theme":"midnight","glassFrostLevel":3.0}"#);
         assert!(!changed);
         assert_eq!((s.theme.as_str(), s.glass_frost_level), ("midnight", 1.0));
         assert!(!s.uses_glass_capture());

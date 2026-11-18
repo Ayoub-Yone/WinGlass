@@ -37,11 +37,12 @@ const REFRESH_MS = 3000;
 
 const CARD_SURFACE: CSSProperties = {
   borderRadius: 22,
-  background: "rgba(24, 24, 26, 0.92)",
+  // The theme's popover finish (clear glossy sheen on the liquid-glass themes).
+  background: "var(--lb-menu)",
   backdropFilter: "blur(30px) saturate(160%)",
   WebkitBackdropFilter: "blur(30px) saturate(160%)",
-  border: "1px solid rgba(255, 255, 255, 0.08)",
-  boxShadow: "0 18px 50px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25)",
+  border: "var(--lb-border)",
+  boxShadow: "0 18px 50px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgb(255 255 255 / 0.14)",
   padding: PAD,
 };
 

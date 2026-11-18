@@ -21,7 +21,9 @@
 //               with capillary pinches (≈ −1.8px) on both sides; the motion leans it; the
 //               screen-edge rim swells a little when the cursor rides it; the ends stretch ~3px
 //             · dual-layer Fresnel: crisp 1px outer edge reflection + soft top-lip bevel light,
-//               plus a specular glint gliding along the warped rim with the cursor
+//               a glossy top sheen, a bottom inner reflection, and a specular glint gliding along
+//               the warped rim with the cursor — all tinted by the dock's live ambient colour
+//               (Ambiance Musique), eased like the CSS bar glow, plus a tinted glow in the meniscus
 //             · vibrancy ×1.32 (luminance preserving), adaptive veil from the scene luminance,
 //               soft inner shadow, micro-grain, anti-aliased mask, drop shadow from the same SDF.
 //               Hover only re-runs this composite pass — the blur stays cached.
@@ -127,6 +129,8 @@ uniform float u_hoverY;       // −1 at the screen-edge rim .. +1 at the screen
 uniform float u_hoverVel;     // CSS px/s
 uniform float u_hoverRadius;  // droplet sigma, device px
 uniform float u_edgeDir;      // +1 docked at the bottom (centre side = up), −1 docked at the top
+uniform vec3 u_ambient;       // the dock's live ambient colour (cover art), eased
+uniform float u_ambientMix;   // 0 neutral white highlights .. 1 tinted by u_ambient
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
@@ -235,18 +239,26 @@ void main() {
   float inner = smoothstep(-16.0 * u_dpr, 0.0, d);
   col *= 1.0 - 0.14 * inner * inner * (0.55 + 0.45 * clamp(-n.y, 0.0, 1.0));
 
+  // Highlights take the dock's live colour so rim, bevel and droplet shift with the bar's glow.
+  vec3 hl = mix(vec3(1.0), u_ambient, 0.62 * u_ambientMix);
+  // Tinted glow inside the curved meniscus.
+  col += u_ambient * pow(rimF, 2.0) * 0.14 * u_ambientMix;
+
   float top = smoothstep(0.0, 0.95, n.y);
   float bottom = smoothstep(0.25, 0.9, -n.y);
   // Layer 1: crisp 1px Fresnel reflection on the outer edge, all the way round, brightest on top.
   float fresnel = smoothstep(-1.5 * u_dpr, 0.0, d) * (1.0 - smoothstep(0.0, 0.75 * u_dpr, d));
-  col = mix(col, vec3(1.0), fresnel * u_rim * (0.10 + 0.24 * top + 0.06 * bottom));
+  col = mix(col, hl, fresnel * u_rim * (0.16 + 0.34 * top + 0.10 * bottom));
   // Layer 2: thick-glass top lip lit from above, fading smoothly down the sides.
-  col = mix(col, vec3(1.0), pow(rimF, 1.4) * top * (1.0 - fresnel) * 0.16 * u_rim);
+  col = mix(col, hl, pow(rimF, 1.4) * top * (1.0 - fresnel) * 0.24 * u_rim);
+  // Polished-crystal sheen over the upper glass, and light bouncing back up the bottom lip.
+  col = mix(col, hl, smoothstep(0.15, 1.0, p.y / hp.y) * (1.0 - fresnel) * 0.06 * u_rim);
+  col = mix(col, hl, pow(rimF, 2.0) * bottom * (1.0 - fresnel) * 0.08 * u_rim);
   // Specular glint gliding along the warped rim with the cursor (strongest on the swelling side).
   float centreSide = u_edgeDir > 0.0 ? top : smoothstep(0.0, 0.95, -n.y);
   float band = smoothstep(-5.0 * u_dpr, -0.5 * u_dpr, d) * (1.0 - smoothstep(-0.5 * u_dpr, 0.6 * u_dpr, d));
   float glint = u_hoverActive * exp(-dxc * dxc / (1.44 * sigma() * sigma())) * band;
-  col = mix(col, vec3(1.0), glint * u_rim * (0.30 * centreSide + 0.08));
+  col = mix(col, hl, glint * u_rim * (0.38 * centreSide + 0.10));
 
   // Ultra-fine procedural grain.
   col += (g1 - 0.5) * 2.0 * u_grain;
@@ -496,8 +508,8 @@ class GlassRenderer {
     this.luminance = count ? sum / count / 255 : 0;
   }
 
-  /** Composite pass only (hover animation, optics, radius, luminance easing). */
-  composite(radiusCss: number, frost: FrostPreset, lum: number): boolean {
+  /** Composite pass only (hover animation, optics, radius, luminance / ambient easing). */
+  composite(radiusCss: number, frost: FrostPreset, lum: number, ambient: [number, number, number], ambientMix: number): boolean {
     const gl = this.gl;
     const input = this.blurred;
     const w = this.canvas.width;
@@ -536,6 +548,8 @@ class GlassRenderer {
     gl.uniform1f(u("u_hoverVel"), hover.vel);
     gl.uniform1f(u("u_hoverRadius"), hover.radius * dpr);
     gl.uniform1f(u("u_edgeDir"), hover.edge === "top" ? -1 : 1);
+    gl.uniform3f(u("u_ambient"), ambient[0], ambient[1], ambient[2]);
+    gl.uniform1f(u("u_ambientMix"), ambientMix);
     // The texture is uploaded flipped (v = 0 is the bottom row), so the pill's bottom edge maps to
     // `srcH - (y + h)`.
     const [ix, iy, iw, ih] = this.inner;
@@ -576,17 +590,33 @@ function parseInner(header: string | null, width: number, height: number): [numb
   return valid ? [x, y, w, h] : [0, 0, width, height];
 }
 
-/** Time constant of the adaptive-luminance easing. */
+/** Time constants of the adaptive-luminance and ambient-colour easing (the CSS bar glow takes 600 ms). */
 const LUM_TAU = 0.3;
+const AMBIENT_TAU = 0.2;
+
+let probe: CanvasRenderingContext2D | null = null;
+/** Any CSS colour (the ambient palette is oklch) -> sRGB 0..1, rasterised by a 1×1 canvas. */
+function cssRgb(css: string): [number, number, number] {
+  probe ??= document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  if (!probe) return [1, 1, 1];
+  probe.clearRect(0, 0, 1, 1);
+  probe.fillStyle = "#fff";
+  probe.fillStyle = css;
+  probe.fillRect(0, 0, 1, 1);
+  const [r, g, b] = probe.getImageData(0, 0, 1, 1).data;
+  return [r / 255, g / 255, b / 255];
+}
 
 /**
  * Renders behind the dock pill. `onActiveChange(true)` once the first desktop frame has been
  * drawn — until then (or if capture is unavailable) the dock shows its CSS fallback surface.
  * The eased luminance is mirrored on the pill as `--lb-glass-lum` / `data-glass-bright` so the
- * foreground can add contrast shadows over bright desktops.
+ * foreground can add contrast shadows over bright desktops. `ambient` is the dock's live colour
+ * (Ambiance Musique), or null for neutral white highlights.
  */
-export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; onActiveChange: (active: boolean) => void }) {
-  const { radius, frost, onActiveChange } = props;
+export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; ambient: string | null; onActiveChange: (active: boolean) => void }) {
+  const { radius, frost, ambient, onActiveChange } = props;
+  const ambientRef = useRef<[number, number, number] | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const radiusRef = useRef(radius);
   radiusRef.current = radius;
@@ -615,8 +645,10 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
     let hasFrame = false;
     let raf = 0;
     let lum = -1;
-    let lumAt = 0;
+    let easedAt = 0;
     let lumCss = "";
+    const amb: [number, number, number] = [1, 1, 1];
+    let ambMix = 0;
 
     const host = canvas.parentElement;
     const mirrorLuminance = () => {
@@ -632,15 +664,22 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
       if (disposed) return;
       let ok = renderer.prepare(frostRef.current);
       if (ok) {
+        const dt = easedAt ? Math.min(0.1, (now - easedAt) / 1000) : 0;
+        easedAt = now;
         const target = renderer.luminance;
-        const dt = lumAt ? Math.min(0.1, (now - lumAt) / 1000) : 0;
         lum = lum < 0 ? target : lum + (target - lum) * (1 - Math.exp(-dt / LUM_TAU));
-        lumAt = now;
-        ok = renderer.composite(radiusRef.current, frostRef.current, lum);
+        // Ambient colour: glides between tracks; appears / fades out through the mix.
+        const goal = ambientRef.current;
+        const a = 1 - Math.exp(-dt / AMBIENT_TAU);
+        if (goal) for (let i = 0; i < 3; i++) amb[i] += (goal[i] - amb[i]) * (ambMix < 0.01 ? 1 : a);
+        ambMix += ((goal ? 1 : 0) - ambMix) * a;
+        ok = renderer.composite(radiusRef.current, frostRef.current, lum, amb, ambMix);
         mirrorLuminance();
-        // Keep easing toward the new scene luminance (composite-only frames, ~1 s at most).
-        if (Math.abs(target - lum) > 0.004) scheduleDraw();
-        else lumAt = 0;
+        // Keep easing (composite-only frames, ~1 s at most).
+        const easing =
+          Math.abs(target - lum) > 0.004 || Math.abs((goal ? 1 : 0) - ambMix) > 0.004 || (goal !== null && goal.some((v, i) => Math.abs(v - amb[i]) > 0.004));
+        if (easing) scheduleDraw();
+        else easedAt = 0;
       }
       if (ok !== hasFrame) {
         hasFrame = ok;
@@ -718,10 +757,11 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; o
     };
   }, []);
 
-  // Slider / theme / radius changes re-composite the frame already on the GPU.
+  // Slider / theme / radius / ambient changes re-composite the frame already on the GPU.
   useEffect(() => {
+    ambientRef.current = ambient ? cssRgb(ambient) : null;
     redraw.current?.();
-  }, [frost, radius]);
+  }, [frost, radius, ambient]);
 
   // The canvas covers the pill's border box (the pill border is transparent while glass is live)
   // plus PAD on every side, where the droplet, the stretched ends and the drop shadow are drawn.

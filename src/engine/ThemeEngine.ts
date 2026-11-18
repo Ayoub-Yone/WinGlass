@@ -17,8 +17,10 @@ export const THEMES: Record<ThemeId, ThemeTokens> = {
     faint: "rgba(235, 235, 245, 0.4)",
     track: "rgb(255 255 255 / 0.16)",
     backdrop: "none",
-    menu: "rgba(28, 30, 36, 0.84)",
-    shadow: "0 10px 36px rgb(0 0 0 / 0.3)",
+    // Popovers (tray grid, volume mixer, search, previews, menus) share the clear glossy finish:
+    // a top sheen over a lighter veil, plus a specular inner lip.
+    menu: "linear-gradient(180deg in oklch, rgb(255 255 255 / 0.1), rgb(255 255 255 / 0.02) 42%, rgb(255 255 255 / 0)), rgba(28, 30, 36, 0.8)",
+    shadow: "0 10px 36px rgb(0 0 0 / 0.3), inset 0 1px 0 rgb(255 255 255 / 0.2)",
     usesGlassShader: true,
   },
   // Matte Liquid Glass: same lens, deeper creamy diffusion, subdued rim, velvety dark veil.
@@ -35,8 +37,8 @@ export const THEMES: Record<ThemeId, ThemeTokens> = {
     faint: "rgba(232, 232, 240, 0.38)",
     track: "rgb(255 255 255 / 0.13)",
     backdrop: "none",
-    menu: "rgba(26, 27, 32, 0.88)",
-    shadow: "0 10px 40px rgb(0 0 0 / 0.36)",
+    menu: "linear-gradient(180deg in oklch, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0) 45%), rgba(26, 27, 32, 0.88)",
+    shadow: "0 10px 40px rgb(0 0 0 / 0.36), inset 0 1px 0 rgb(255 255 255 / 0.12)",
     usesGlassShader: true,
   },
   // Midnight Obsidian: smoked translucent slate, cool blue-violet glint along the top lip.
@@ -189,11 +191,13 @@ const OPTICS: Partial<Record<ThemeId, GlassOptics>> = {
   "matte-glass": { tintRgb: [14 / 255, 15 / 255, 20 / 255], frost: [0.45, 1], rim: 0.55, refraction: 0.6, vibrancy: 1.12, grain: 1.35 },
 };
 
-export const DEFAULT_FROST_LEVEL = 0.5;
+/** Mirrors `DEFAULT_FROST_LEVEL` in storage/settings.rs: clear enough for the desktop to read through. */
+export const DEFAULT_FROST_LEVEL = 0.32;
 
 /**
  * `level` 0 = ultra-clear optical glass (light blur, strong edge refraction, low tint, bright rim),
- * 0.5 = balanced liquid glass, 1 = deep matte frost (heavy creamy diffusion, rich tint).
+ * ~0.32 = the default clear liquid glass, 1 = deep matte frost (heavy creamy diffusion, rich tint).
+ * Blur and tint rise slowly over the clear half (low-alpha curve) so windows read through crisply.
  * Continuous: the blur radius grows exponentially and the pyramid depth is picked so the Kawase
  * offset stays in its artefact-free 1.5–3 half-texel band.
  */
@@ -201,18 +205,18 @@ export function frostPreset(themeId: ThemeId | undefined, level: number | undefi
   const o = OPTICS[themeId ?? "liquid-glass"] ?? (OPTICS["liquid-glass"] as GlassOptics);
   const l = Math.min(1, Math.max(0, typeof level === "number" && Number.isFinite(level) ? level : DEFAULT_FROST_LEVEL));
   const t = o.frost[0] + (o.frost[1] - o.frost[0]) * l;
-  const radius = 8 * 21 ** t; // source px: 8 (clear) .. 168 (deep)
+  const radius = 6 * 28 ** t; // source px: 6 (clear) .. ~17 (default) .. 168 (deep)
   const levels = Math.min(6, Math.max(2, Math.ceil(Math.log2(radius / 3))));
   return {
     levels,
     offset: radius / 2 ** levels,
-    gauss: 1 + 5.5 * t,
-    tint: 0.08 + 0.44 * t,
+    gauss: 1 + 5.5 * t ** 1.5,
+    tint: 0.04 + 0.48 * t ** 1.4,
     tintRgb: o.tintRgb,
-    grain: (0.004 + 0.012 * t) * o.grain,
-    refraction: (24 - 12 * t) * o.refraction,
-    clarity: 0.85 * (1 - t) ** 1.5,
-    rim: (1 - 0.45 * t) * o.rim,
+    grain: (0.003 + 0.013 * t) * o.grain,
+    refraction: (26 - 13 * t) * o.refraction,
+    clarity: 0.9 * (1 - t) ** 1.5,
+    rim: (1.15 - 0.5 * t) * o.rim,
     vibrancy: o.vibrancy,
   };
 }

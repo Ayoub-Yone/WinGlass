@@ -256,7 +256,7 @@ try {
 
   const first = await dock.invoke("get_settings");
   check("first launch: French", first.language === "fr" && (await dock.eval("document.documentElement.lang")) === "fr", `language=${first.language}`);
-  check("first launch: iOS liquid glass, balanced frost", first.theme === "liquid-glass" && first.glassFrostLevel === 0.5, `${first.theme}/${first.glassFrostLevel}`);
+  check("first launch: iOS liquid glass, balanced frost", first.theme === "liquid-glass" && first.glassFrostLevel === 0.32, `${first.theme}/${first.glassFrostLevel}`);
   check("first launch: taskbar completely hidden", first.taskbarMode === "completely_hidden" && taskbar().visible === false, JSON.stringify(taskbar()));
   check("taskbar state persisted while modified", existsSync(stateFile));
   check("only dock + toast webviews exist at idle", (await targets()).length === 2, (await targets()).map((t) => t.url.split("?")[1]).join(", "));
@@ -704,7 +704,7 @@ try {
   check("settings: frost slider + language selector present", frost.labels.length === 0 && frost.range >= 1, JSON.stringify(frost));
   await patchSettings(dock, { glassFrostLevel: 0.85 });
   check("frost setting persists", (await dock.invoke("get_settings")).glassFrostLevel === 0.85);
-  await patchSettings(dock, { glassFrostLevel: 0.5 });
+  await patchSettings(dock, { glassFrostLevel: 0.32 });
 
   const open = memory(pid);
   note(`picker + settings open: host ${open.hostWorkingSetMb} MB, ${open.webviewCount} WebView2 processes, ${open.childWorkingSetMb} MB`);

@@ -191,6 +191,7 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
   let glassX = 0;
   let glassVel = 0;
   let glassY = 1;
+  let glassRadius = glassHover.radius;
   let running = false;
 
   const measure = () => {
@@ -256,18 +257,17 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
     const bulge = opts.bulge();
     let settled = true;
     let best: { t: Tracked; shift: number; strip: Strip } | null = null;
-    let glassTarget = 0;
-    let glassRadius = glassHover.radius;
+    // The liquid glass reacts across the whole capsule (apps, widgets, music, tray, clock); over an
+    // icon strip the droplet narrows to its slots so the pinches land between the neighbours.
+    const glassTarget = inside ? 1 : 0;
+    let radiusTarget = pr.height * 0.6;
 
     for (const s of strips) {
       const over = inside && cursorX >= s.left - s.slot * 0.25 && cursorX <= s.right + s.slot * 0.25;
       const wTarget = over ? 1 : 0;
       s.weight += (wTarget - s.weight) * k;
       if (Math.abs(wTarget - s.weight) > 0.002) settled = false;
-      if (over) {
-        glassTarget = 1;
-        glassRadius = s.slot * 0.6;
-      }
+      if (over) radiusTarget = s.slot * 0.6;
 
       const cx = Math.min(s.right, Math.max(s.left, cursorX));
       for (const t of s.items) {
@@ -288,6 +288,7 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
     }
 
     glass += (glassTarget - glass) * k;
+    glassRadius += (radiusTarget - glassRadius) * k;
     if (Math.abs(glassTarget - glass) > 0.003) settled = false;
     const gx = cursorX - pr.left;
     // Entering from rest: start the spring under the cursor instead of sweeping in from afar.

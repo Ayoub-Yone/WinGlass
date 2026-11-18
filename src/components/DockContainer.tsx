@@ -445,7 +445,7 @@ export function DockContainer() {
         onPointerCancel={finishPointer}
         onContextMenu={onContextMenu}
       >
-        {glass && <LiquidGlassCanvas radius={size.radius} frost={frost} onActiveChange={setGlassActive} />}
+        {glass && <LiquidGlassCanvas radius={size.radius} frost={frost} ambient={ambient[0] ?? null} onActiveChange={setGlassActive} />}
         {/* Ambiance Musique: diffuse cover-tinted light inside the bar (fades out with no music). */}
         <div aria-hidden className="lb-ambient" />
         <div

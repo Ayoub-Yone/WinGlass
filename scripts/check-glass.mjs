@@ -30,7 +30,7 @@ assert.ok(springStep(0, 0, 50, 45, 1 / 60)[1] > 0);
 // « Clair ↔ Givré »: blur, tint and grain rise and refraction / clarity / rim fall monotonically.
 const radius = (p) => p.offset * 2 ** p.levels;
 let prev = frostPreset("liquid-glass", 0);
-assert.ok(radius(prev) >= 7 && radius(prev) <= 9 && prev.tint < 0.1 && prev.vibrancy === 1.32);
+assert.ok(radius(prev) >= 5 && radius(prev) <= 7 && prev.tint < 0.05 && prev.vibrancy === 1.32);
 for (let i = 1; i <= 20; i++) {
   const p = frostPreset("liquid-glass", i / 20);
   assert.ok(radius(p) > radius(prev) && p.tint > prev.tint && p.grain > prev.grain, `frost rises at ${i / 20}`);
@@ -42,7 +42,9 @@ assert.ok(radius(prev) > 160 && prev.tint > 0.5);
 // The matte theme is never fully clear; out-of-range / missing levels are clamped to sane values.
 assert.ok(frostPreset("matte-glass", 0).tint > frostPreset("liquid-glass", 0.4).tint);
 assert.deepEqual(frostPreset("liquid-glass", 7), frostPreset("liquid-glass", 1));
-assert.deepEqual(frostPreset(undefined, Number.NaN), frostPreset("liquid-glass", 0.5));
+assert.deepEqual(frostPreset(undefined, Number.NaN), frostPreset("liquid-glass", 0.32));
+// The default is clear: light blur and a thin veil.
+assert.ok(radius(frostPreset("liquid-glass", 0.32)) < 20 && frostPreset("liquid-glass", 0.32).tint < 0.15);
 
 // Concentric cards: outer radius - padding - the 1px border.
 assert.deepEqual(Object.values(SIZES).map((s) => s.cardRadius), [16, 15, 14]);
