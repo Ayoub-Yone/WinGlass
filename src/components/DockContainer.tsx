@@ -400,12 +400,20 @@ export function DockContainer() {
     height: "var(--lb-height)",
     padding: "var(--lb-padding)",
     maxWidth: "100%",
-    transform: hidden ? `translateY(${position === "bottom" ? 150 : -150}%)` : `translateY(${snapDy}px)`,
+    // Exit: quick ease-in sink toward the edge with a soft blur (done before the backend's 300 ms
+    // SW_HIDE). Entry: slightly longer rise with a small overshoot, scaled from the docked edge.
+    transform: hidden ? `translateY(${position === "bottom" ? 110 : -110}%) scale(0.94)` : `translateY(${snapDy}px)`,
+    transformOrigin: position === "bottom" ? "50% 100%" : "50% 0%",
     opacity: hidden ? 0 : 1,
+    filter: hidden ? "blur(6px)" : "none",
     transition:
       drag?.kind === "snap"
         ? "none"
-        : "transform 320ms cubic-bezier(0.3, 0.9, 0.3, 1), opacity 240ms ease, background-color 220ms ease, border-color 220ms ease, box-shadow 220ms ease, --lb-amb-1 600ms ease, --lb-amb-2 600ms ease, --lb-amb-3 600ms ease",
+        : `${
+            hidden
+              ? "transform 260ms cubic-bezier(0.4, 0, 1, 1), opacity 220ms ease-in, filter 220ms ease-in"
+              : "transform 460ms cubic-bezier(0.22, 1.18, 0.36, 1), opacity 260ms ease-out, filter 320ms ease-out"
+          }, background-color 220ms ease, border-color 220ms ease, box-shadow 220ms ease, --lb-amb-1 600ms ease, --lb-amb-2 600ms ease, --lb-amb-3 600ms ease`,
     background: glass ? (glassActive ? "transparent" : "rgba(22, 22, 26, 0.72)") : undefined,
     // The shader paints its own rim light; the CSS border is only for the fallback surface.
     borderColor: glass && glassActive ? "transparent" : undefined,
