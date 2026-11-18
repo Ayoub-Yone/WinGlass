@@ -231,7 +231,8 @@ void main() {
 
   // Adaptive veil: thicker over bright desktops (eased scene luminance + a local term) so white
   // text stays legible over a white window; a faint lift keeps the pane visible on pitch black.
-  float veil = clamp(u_tint.a + 0.28 * smoothstep(0.35, 0.95, u_lum) + 0.12 * smoothstep(0.55, 0.98, luma), 0.0, 0.9);
+  // (Halved for clarity: a white window greys the glass a little, never into opaque plastic.)
+  float veil = clamp(u_tint.a + 0.14 * smoothstep(0.35, 0.95, u_lum) + 0.06 * smoothstep(0.55, 0.98, luma), 0.0, 0.9);
   col = mix(col, u_tint.rgb, veil);
   col += vec3(0.020, 0.021, 0.024) * (1.0 + 1.5 * (1.0 - smoothstep(0.0, 0.18, u_lum)));
 

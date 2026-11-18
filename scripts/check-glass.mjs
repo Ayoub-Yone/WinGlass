@@ -30,12 +30,12 @@ assert.ok(springStep(0, 0, 50, 45, 1 / 60)[1] > 0);
 // « Clair ↔ Givré »: blur, tint and grain rise and refraction / clarity / rim fall monotonically.
 const radius = (p) => p.offset * 2 ** p.levels;
 let prev = frostPreset("liquid-glass", 0);
-assert.ok(radius(prev) >= 5 && radius(prev) <= 7 && prev.tint < 0.05 && prev.vibrancy === 1.32);
+assert.ok(radius(prev) >= 3.5 && radius(prev) <= 4.5 && prev.tint <= 0.02 && prev.vibrancy === 1.32);
 for (let i = 1; i <= 20; i++) {
   const p = frostPreset("liquid-glass", i / 20);
   assert.ok(radius(p) > radius(prev) && p.tint > prev.tint && p.grain > prev.grain, `frost rises at ${i / 20}`);
   assert.ok(p.refraction < prev.refraction && p.clarity <= prev.clarity && p.rim < prev.rim, `optics fall at ${i / 20}`);
-  assert.ok(p.levels >= 2 && p.levels <= 6 && p.offset >= 1.5 && p.offset <= 3.01, `kawase band at ${i / 20}: ${p.levels}/${p.offset}`);
+  assert.ok(p.levels >= 2 && p.levels <= 6 && p.offset >= 0.99 && p.offset <= 3.01, `kawase band at ${i / 20}: ${p.levels}/${p.offset}`);
   prev = p;
 }
 assert.ok(radius(prev) > 160 && prev.tint > 0.5);
@@ -45,6 +45,10 @@ assert.deepEqual(frostPreset("liquid-glass", 7), frostPreset("liquid-glass", 1))
 assert.deepEqual(frostPreset(undefined, Number.NaN), frostPreset("liquid-glass", 0.32));
 // The default is clear: light blur and a thin veil.
 assert.ok(radius(frostPreset("liquid-glass", 0.32)) < 20 && frostPreset("liquid-glass", 0.32).tint < 0.15);
+// Clear quarter: near-crystal; midpoint: low tint and ~45% less blur than v0.4.1 (31.7px).
+assert.ok(frostPreset("liquid-glass", 0.25).tint <= 0.06 && radius(frostPreset("liquid-glass", 0.25)) < 6);
+const mid = frostPreset("liquid-glass", 0.5);
+assert.ok(mid.tint >= 0.1 && mid.tint <= 0.14 && radius(mid) < 31.7 * 0.6, JSON.stringify(mid));
 
 // Concentric cards: outer radius - padding - the 1px border.
 assert.deepEqual(Object.values(SIZES).map((s) => s.cardRadius), [16, 15, 14]);

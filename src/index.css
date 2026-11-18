@@ -376,14 +376,14 @@ html[data-hidden="true"] *::after {
    rectangular CSS shadow would not follow the droplet. */
 .lb-pill[data-glass="live"] {
   box-shadow: none;
-  /* Adaptive contrast: LiquidGlassCanvas mirrors the eased desktop luminance (0..1). */
-  text-shadow: 0 0.5px 2px rgb(0 0 0 / calc(var(--lb-glass-lum, 0) * 0.6));
+  /* Readable over any desktop without darkening the glass itself. */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
 }
 .lb-pill[data-glass="live"][data-ambient="on"]:not(.lb-clear) {
   box-shadow: 0 0 26px -6px color-mix(in oklch, var(--lb-amb-1) 55%, transparent);
 }
-.lb-pill[data-glass="live"][data-glass-bright="true"] svg {
-  filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.4));
+.lb-pill[data-glass="live"] svg {
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.65));
 }
 
 /* ---------------------------------------------------------------- full-bleed album art */

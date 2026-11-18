@@ -9,9 +9,10 @@ export const THEMES: Record<ThemeId, ThemeTokens> = {
     scheme: "dark",
     surface: "rgba(16, 18, 24, 0.30)",
     border: "1px solid rgb(255 255 255 / 0.2)",
-    card: "rgb(255 255 255 / 0.055)",
-    cardBorder: "rgb(255 255 255 / 0.12)",
-    cardHover: "rgb(255 255 255 / 0.13)",
+    // Near-clear tiles with a thin specular edge: they must not darken the clear capsule.
+    card: "rgb(255 255 255 / 0.045)",
+    cardBorder: "rgb(255 255 255 / 0.14)",
+    cardHover: "rgb(255 255 255 / 0.09)",
     text: "#F5F5F7",
     muted: "rgba(235, 235, 245, 0.7)",
     faint: "rgba(235, 235, 245, 0.4)",
@@ -197,7 +198,8 @@ export const DEFAULT_FROST_LEVEL = 0.32;
 /**
  * `level` 0 = ultra-clear optical glass (light blur, strong edge refraction, low tint, bright rim),
  * ~0.32 = the default clear liquid glass, 1 = deep matte frost (heavy creamy diffusion, rich tint).
- * Blur and tint rise slowly over the clear half (low-alpha curve) so windows read through crisply.
+ * Blur and tint stay near zero over the clear quarter (tint 0.02–0.06) and low at the midpoint
+ * (tint ~0.13, ~17px blur) so windows read through crisply; the frost only builds up past it.
  * Continuous: the blur radius grows exponentially and the pyramid depth is picked so the Kawase
  * offset stays in its artefact-free 1.5–3 half-texel band.
  */
@@ -205,13 +207,13 @@ export function frostPreset(themeId: ThemeId | undefined, level: number | undefi
   const o = OPTICS[themeId ?? "liquid-glass"] ?? (OPTICS["liquid-glass"] as GlassOptics);
   const l = Math.min(1, Math.max(0, typeof level === "number" && Number.isFinite(level) ? level : DEFAULT_FROST_LEVEL));
   const t = o.frost[0] + (o.frost[1] - o.frost[0]) * l;
-  const radius = 6 * 28 ** t; // source px: 6 (clear) .. ~17 (default) .. 168 (deep)
+  const radius = 4 + 164 * t ** 3.6; // source px: 4 (clear) .. ~17 (midpoint) .. 168 (deep)
   const levels = Math.min(6, Math.max(2, Math.ceil(Math.log2(radius / 3))));
   return {
     levels,
     offset: radius / 2 ** levels,
-    gauss: 1 + 5.5 * t ** 1.5,
-    tint: 0.04 + 0.48 * t ** 1.4,
+    gauss: 1 + 5.5 * t ** 2.5,
+    tint: 0.02 + 0.13 * t + 0.36 * t ** 3,
     tintRgb: o.tintRgb,
     grain: (0.003 + 0.013 * t) * o.grain,
     refraction: (26 - 13 * t) * o.refraction,
