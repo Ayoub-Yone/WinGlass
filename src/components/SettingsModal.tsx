@@ -7,6 +7,7 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  Coffee,
   KeyRound,
   LogIn,
   Lock,
@@ -52,6 +53,8 @@ function Section(props: { title: string; description?: string; children: ReactNo
     </section>
   );
 }
+
+const SUPPORT_URL = "https://ko-fi.com/ayoubyone";
 
 function Row(props: { label: string; hint?: string; children: ReactNode }) {
   return (
@@ -244,6 +247,13 @@ function GeneralTab({ s }: { s: Settings }) {
       <Section title={t("settings.taskbar")} description={t("settings.taskbarDesc")}>
         <Row label={t("settings.nativeTaskbar")} hint={s.taskbarMode === "completely_hidden" ? t("settings.taskbar.hintHidden") : s.taskbarMode === "auto_hide" ? t("settings.taskbar.hintAutoHide") : t("settings.taskbar.hintKeep")}>
           <Segmented value={s.taskbarMode} options={taskbarOptions} onChange={(mode) => void ipc.setTaskbarMode(mode)} />
+        </Row>
+      </Section>
+      <Section title={t("settings.support")}>
+        <Row label={t("settings.supportLabel")} hint={t("settings.supportHint")}>
+          <button className="lb-focus flex items-center gap-1 rounded-lg border-none px-2.5 py-1 text-[12px]" style={{ background: "var(--lb-track)" }} onClick={() => void ipc.openTarget(SUPPORT_URL)}>
+            <Coffee size={12} /> Ko-fi
+          </button>
         </Row>
       </Section>
     </>

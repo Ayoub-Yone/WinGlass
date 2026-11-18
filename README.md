@@ -2,6 +2,8 @@
 
 Dock flottant de widgets qui remplace la barre des tâches de Windows 10/11 (x64).
 
+[Soutenir le projet sur Ko-fi](https://ko-fi.com/ayoubyone)
+
 ![La barre WinGlass en bas de l'écran](docs/winglass-dock.png)
 
 Applications épinglées et ouvertes, recherche intégrée, musique, agenda, usage IA, système, volume et horloge dans une seule barre.
