@@ -11,7 +11,13 @@ use windows::Networking::NetworkOperators::{
 };
 use windows::Win32::Foundation::{FILETIME, HWND, LPARAM, WPARAM};
 use windows::Win32::Globalization::{GetLocaleInfoW, LOCALE_SISO639LANGNAME2};
-use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
+use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+use windows::Win32::NetworkManagement::IpHelper::{
+    FreeMibTable, GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
+    GetAdaptersAddresses, GetBestInterface, GetIfTable2, IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211,
+    IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2,
+};
+use windows::Win32::Networking::WinSock::AF_UNSPEC;
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::{
@@ -58,6 +64,89 @@ pub struct TelemetrySample {
     pub disk_total_gb: f64,
     pub keyboard_layout: String,
     pub radios: RadioStatus,
+    /// "ethernet" | "wifi" | "disconnected" — the interface carrying the default route.
+    pub network_type: &'static str,
+    /// Friendly adapter name ("Ethernet", "Wi-Fi 2"…) when connected.
+    pub network_adapter: Option<String>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Active connection type (wired vs Wi-Fi)
+// ---------------------------------------------------------------------------------------------
+
+struct Adapter {
+    index: u32,
+    if_type: u32,
+    up: bool,
+    has_gateway: bool,
+    name: String,
+}
+
+fn adapters() -> Vec<Adapter> {
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
+    let mut size: u32 = 16 * 1024;
+    for _ in 0..3 {
+        // u64 storage keeps the buffer aligned for IP_ADAPTER_ADDRESSES_LH.
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let head = buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH;
+        let err = unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(head), &mut size) };
+        if err == ERROR_BUFFER_OVERFLOW.0 {
+            continue;
+        }
+        if err != 0 {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut cur = head as *const IP_ADAPTER_ADDRESSES_LH;
+        while !cur.is_null() {
+            let a = unsafe { &*cur };
+            out.push(Adapter {
+                index: unsafe { a.Anonymous1.Anonymous.IfIndex },
+                if_type: a.IfType,
+                up: a.OperStatus == IfOperStatusUp,
+                has_gateway: !a.FirstGatewayAddress.is_null(),
+                name: unsafe { a.FriendlyName.to_string() }.unwrap_or_default(),
+            });
+            cur = a.Next;
+        }
+        return out;
+    }
+    Vec::new()
+}
+
+fn kind_of(if_type: u32) -> Option<&'static str> {
+    match if_type {
+        IF_TYPE_ETHERNET_CSMACD => Some("ethernet"),
+        IF_TYPE_IEEE80211 => Some("wifi"),
+        _ => None,
+    }
+}
+
+/// Pure decision: the default-route interface wins when it is Ethernet / Wi-Fi; behind a VPN or
+/// another virtual interface, fall back to an up physical adapter with a gateway (wired first).
+fn classify(best_index: Option<u32>, adapters: &[Adapter]) -> (&'static str, Option<String>) {
+    if let Some(best) = best_index.and_then(|i| adapters.iter().find(|a| a.index == i && a.up)) {
+        if let Some(kind) = kind_of(best.if_type) {
+            return (kind, Some(best.name.clone()));
+        }
+    }
+    if best_index.is_none() && !adapters.iter().any(|a| a.up && a.has_gateway) {
+        return ("disconnected", None);
+    }
+    for wanted in [IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211] {
+        if let Some(a) = adapters.iter().find(|a| a.up && a.has_gateway && a.if_type == wanted) {
+            return (kind_of(wanted).unwrap_or("disconnected"), Some(a.name.clone()));
+        }
+    }
+    ("disconnected", None)
+}
+
+pub fn network_connection() -> (&'static str, Option<String>) {
+    // Routing-table lookup for a public address: no packet is sent.
+    let dest = u32::from_ne_bytes([8, 8, 8, 8]);
+    let mut index = 0u32;
+    let best = (unsafe { GetBestInterface(dest, &mut index) } == 0).then_some(index);
+    classify(best, &adapters())
 }
 
 fn ft_to_u64(ft: FILETIME) -> u64 {
@@ -358,6 +447,7 @@ pub fn start(app: AppHandle) {
             let mut cpu = CpuMeter { last: None };
             let mut net = NetMeter { last: None };
             let mut radios = RadioStatus::default();
+            let mut connection: (&'static str, Option<String>) = ("disconnected", None);
             let mut temp: Option<f64> = None;
             let mut disk_cache = (0.0, 0.0);
             let mut tick: u64 = 0;
@@ -365,6 +455,9 @@ pub fn start(app: AppHandle) {
                 if tick % 5 == 0 {
                     let (wifi, bluetooth) = radio_states();
                     radios = RadioStatus { wifi, bluetooth, hotspot: hotspot_state() };
+                }
+                if tick % 2 == 0 {
+                    connection = network_connection();
                     temp = wmi.as_ref().and_then(|w| w.cpu_temperature());
                 }
                 if tick % 30 == 0 {
@@ -389,6 +482,8 @@ pub fn start(app: AppHandle) {
                     disk_total_gb: disk_cache.1,
                     keyboard_layout: keyboard_layout(),
                     radios: radios.clone(),
+                    network_type: connection.0,
+                    network_adapter: connection.1.clone(),
                 };
                 let _ = app.emit("telemetry:sample", &sample);
                 tick += 1;
@@ -396,4 +491,45 @@ pub fn start(app: AppHandle) {
             }
         })
         .expect("spawn telemetry thread");
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    fn adapter(index: u32, if_type: u32, up: bool, has_gateway: bool, name: &str) -> Adapter {
+        Adapter { index, if_type, up, has_gateway, name: name.into() }
+    }
+
+    #[test]
+    fn default_route_interface_decides_the_type() {
+        let list = [adapter(4, IF_TYPE_ETHERNET_CSMACD, true, true, "Ethernet"), adapter(9, IF_TYPE_IEEE80211, true, true, "Wi-Fi")];
+        assert_eq!(classify(Some(4), &list), ("ethernet", Some("Ethernet".into())));
+        assert_eq!(classify(Some(9), &list), ("wifi", Some("Wi-Fi".into())));
+    }
+
+    #[test]
+    fn vpn_falls_back_to_the_physical_adapter_wired_first() {
+        // 53 = IF_TYPE_PROP_VIRTUAL (VPN tunnel carrying the default route).
+        let list = [adapter(20, 53, true, true, "VPN"), adapter(9, IF_TYPE_IEEE80211, true, true, "Wi-Fi"), adapter(4, IF_TYPE_ETHERNET_CSMACD, true, true, "Ethernet")];
+        assert_eq!(classify(Some(20), &list), ("ethernet", Some("Ethernet".into())));
+        let wifi_only = [adapter(20, 53, true, true, "VPN"), adapter(9, IF_TYPE_IEEE80211, true, true, "Wi-Fi")];
+        assert_eq!(classify(Some(20), &wifi_only).0, "wifi");
+    }
+
+    #[test]
+    fn no_route_and_no_gateway_is_disconnected() {
+        let list = [adapter(4, IF_TYPE_ETHERNET_CSMACD, false, false, "Ethernet"), adapter(9, IF_TYPE_IEEE80211, true, false, "Wi-Fi")];
+        assert_eq!(classify(None, &list), ("disconnected", None));
+        assert_eq!(classify(None, &[]), ("disconnected", None));
+    }
+
+    /// The real machine: always one of the three states, with a name when connected.
+    #[test]
+    fn real_connection_is_classified() {
+        let (kind, name) = network_connection();
+        println!("network: {kind} {name:?}");
+        assert!(matches!(kind, "ethernet" | "wifi" | "disconnected"));
+        assert_eq!(kind == "disconnected", name.is_none());
+    }
 }

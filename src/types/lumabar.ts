@@ -419,6 +419,10 @@ export interface TelemetrySample {
   diskTotalGb: number;
   keyboardLayout: string;
   radios: RadioStatus;
+  /** Interface carrying the default route. */
+  networkType: "ethernet" | "wifi" | "disconnected";
+  /** Friendly adapter name ("Ethernet", "Wi-Fi 2"…) when connected. */
+  networkAdapter: string | null;
 }
 
 export interface ScreenTimeApp {

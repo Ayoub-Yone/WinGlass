@@ -141,5 +141,7 @@ export function sampleTelemetry(): TelemetrySample[] {
     diskTotalGb: 1863,
     keyboardLayout: "ENG",
     radios: { wifi: true, bluetooth: true, hotspot: false },
+    networkType: "wifi" as const,
+    networkAdapter: "Wi-Fi",
   }));
 }

@@ -16,7 +16,9 @@ import {
   Moon,
   RadioTower,
   Thermometer,
+  EthernetPort,
   Wifi,
+  WifiOff,
   type LucideIcon,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -29,14 +31,16 @@ import type { TelemetrySample, WidgetProps } from "../types/lumabar";
 
 // ---------------------------------------------------------------- quick toggles
 
-function TogglePill(props: { icon: LucideIcon; label: string; on: boolean | null; busy: boolean; onClick: () => void; showLabel: boolean }) {
+function TogglePill(props: { icon: LucideIcon; label: string; on: boolean | null; busy: boolean; onClick: () => void; showLabel: boolean; title?: string }) {
   const { icon: Icon, label, on, busy, onClick, showLabel } = props;
   const { t } = useI18n();
   const unavailable = on === null;
+  const title = props.title ?? (unavailable ? t("toggle.unavailable", { label }) : on ? t("toggle.on", { label }) : t("toggle.off", { label }));
   return (
     <button
       className="lb-icon-btn lb-focus flex h-full min-w-0 flex-1 flex-col gap-0.5 rounded-[10px]"
-      title={unavailable ? t("toggle.unavailable", { label }) : on ? t("toggle.on", { label }) : t("toggle.off", { label })}
+      title={title}
+      aria-label={title}
       disabled={unavailable || busy}
       onClick={(e) => {
         e.stopPropagation();
@@ -87,9 +91,27 @@ export function QuickTogglesWidget({ span }: WidgetProps) {
   };
 
   const showLabel = span === "3x1";
+  // Network pill: icon + tooltip follow the active connection; the click still toggles the Wi-Fi radio.
+  const last = telemetry[telemetry.length - 1];
+  const networkType = last?.networkType ?? "wifi";
+  const adapter = last?.networkAdapter ?? null;
+  const network =
+    networkType === "ethernet"
+      ? { icon: EthernetPort, label: adapter ?? "Ethernet", title: t("network.ethernet", { name: adapter ?? "Ethernet" }) }
+      : networkType === "disconnected"
+        ? { icon: WifiOff, label: t("toggle.wifi"), title: `${t("network.offline")} · ${state("wifi") ? t("toggle.on", { label: t("toggle.wifi") }) : t("toggle.off", { label: t("toggle.wifi") })}` }
+        : { icon: Wifi, label: t("toggle.wifi"), title: adapter ? t("network.wifi", { name: adapter }) : undefined };
   return (
     <WidgetCard span={span} padded={false} className="gap-1 p-1">
-      <TogglePill icon={Wifi} label={t("toggle.wifi")} on={state("wifi")} busy={busy === "wifi"} onClick={() => void toggle("wifi")} showLabel={showLabel} />
+      <TogglePill
+        icon={network.icon}
+        label={network.label}
+        title={network.title}
+        on={state("wifi")}
+        busy={busy === "wifi"}
+        onClick={() => void toggle("wifi")}
+        showLabel={showLabel}
+      />
       <TogglePill icon={Bluetooth} label={t("toggle.bluetooth")} on={state("bluetooth")} busy={busy === "bluetooth"} onClick={() => void toggle("bluetooth")} showLabel={showLabel} />
       <TogglePill icon={RadioTower} label={t("toggle.hotspot")} on={state("hotspot")} busy={busy === "hotspot"} onClick={() => void toggle("hotspot")} showLabel={showLabel} />
       <TogglePill
