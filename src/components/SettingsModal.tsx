@@ -1,7 +1,7 @@
 // Settings: themes & sizes, dock position & taskbar mode, accounts / API keys (DPAPI-encrypted),
 // calendar feeds, integrations, automation rules with thresholds + test buttons, and advanced.
 
-import { LumabarMark } from "./LumabarMark";
+import { WindowsGlyph } from "./SystemMenu";
 import {
   AlertTriangle,
   CalendarDays,
@@ -818,7 +818,7 @@ export function SettingsModal() {
       <div className="lb-menu flex h-full w-full overflow-hidden rounded-[26px]" style={{ color: "var(--lb-text)" }}>
         <nav data-tauri-drag-region className="flex w-[200px] shrink-0 flex-col gap-0.5 p-3" style={{ background: "var(--lb-card)" }}>
           <div data-tauri-drag-region className="mb-3 flex items-center gap-2 px-2 pt-1 text-[17px] font-semibold">
-            <LumabarMark size={22} />
+            <WindowsGlyph size={22} />
             {t("settings.title")}
           </div>
           {TABS.map(({ id, label, icon: Icon }) => (

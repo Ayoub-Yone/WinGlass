@@ -1,6 +1,6 @@
 [package]
 name = "lumabar"
-version = "0.3.0"
+version = "0.3.1"
 description = "Floating smart widget dock for Windows"
 authors = ["you"]
 edition = "2024"
