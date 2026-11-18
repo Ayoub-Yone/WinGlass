@@ -109,6 +109,31 @@ export function formatMediumDate(date: Date): string {
   return date.toLocaleDateString(getLocale(), { weekday: "short", month: "short", day: "numeric" });
 }
 
+/** Month grid title: "Novembre 2026" / "November 2026" */
+export function formatMonthYear(date: Date): string {
+  const text = date.toLocaleDateString(getLocale(), { month: "long", year: "numeric" });
+  return text.charAt(0).toLocaleUpperCase(getLocale()) + text.slice(1);
+}
+
+/** Accessible day label: "mardi 17 novembre 2026" / "Tuesday, November 17, 2026" */
+export function formatFullDate(date: Date): string {
+  return date.toLocaleDateString(getLocale(), { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
+
+/** Week starts Monday in French, Sunday in English. 0 = Sunday … 6 = Saturday. */
+export function firstDayOfWeek(): number {
+  return getLang() === "fr" ? 1 : 0;
+}
+
+/** Narrow weekday headers in week order: L M M J V S D / S M T W T F S. */
+export function weekdayInitials(): string[] {
+  const first = firstDayOfWeek();
+  // 2023-01-01 was a Sunday.
+  return Array.from({ length: 7 }, (_, i) =>
+    new Date(2023, 0, 1 + ((first + i) % 7)).toLocaleDateString(getLocale(), { weekday: "narrow" }).toLocaleUpperCase(getLocale()),
+  );
+}
+
 /** "20/10/2026" / "10/20/2026" */
 export function formatNumericDate(date: Date): string {
   return date.toLocaleDateString(getLocale(), { month: "numeric", day: "numeric", year: "numeric" });

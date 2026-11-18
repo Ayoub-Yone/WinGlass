@@ -23,8 +23,10 @@ use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
 };
+use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IShellLinkW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW, ShellExecuteW, ShellLink,
+    ILFree, IShellLinkW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_PIDL, SHGetFileInfoW, SHParseDisplayName,
+    ShellExecuteW, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DI_MASK, DI_NORMAL, DestroyIcon, DrawIconEx, EnumChildWindows, EnumWindows, GCLP_HICON, GW_OWNER,
@@ -103,7 +105,7 @@ static STA: Lazy<Mutex<std::sync::mpsc::Sender<StaJob>>> = Lazy::new(|| {
 });
 
 /// Run `f` on the shell STA thread and wait for its result.
-fn with_com<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+pub(crate) fn with_com<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     let job: StaJob = Box::new(move || {
         let _ = tx.send(f());
@@ -545,6 +547,29 @@ fn file_icon(path: &str) -> Option<HICON> {
     if ok != 0 && !info.hIcon.is_invalid() { Some(info.hIcon) } else { None }
 }
 
+/// Icon of a shell namespace item that has no file path, e.g. `shell:AppsFolder\<AUMID>` for a
+/// packaged (MSIX / Store) app. Must run on the STA thread.
+fn shell_item_icon(parsing_name: &str) -> Option<HICON> {
+    let wname = wide(parsing_name);
+    unsafe {
+        let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        SHParseDisplayName(PCWSTR(wname.as_ptr()), None, &mut pidl, 0, None).ok()?;
+        if pidl.is_null() {
+            return None;
+        }
+        let mut info = SHFILEINFOW::default();
+        let ok = SHGetFileInfoW(
+            PCWSTR(pidl as *const u16),
+            FILE_ATTRIBUTE_NORMAL,
+            Some(&mut info),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_PIDL | SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        ILFree(Some(pidl as *const ITEMIDLIST));
+        if ok != 0 && !info.hIcon.is_invalid() { Some(info.hIcon) } else { None }
+    }
+}
+
 fn window_icon(hwnd: HWND) -> Option<HICON> {
     unsafe {
         let mut result: usize = 0;
@@ -569,7 +594,8 @@ pub fn icon_data_url(key: &str) -> Option<String> {
     } else {
         let path = key.to_string();
         with_com(move || {
-            file_icon(&path).and_then(|icon| {
+            let icon = if path.starts_with(super::app_search::APPS_FOLDER_PREFIX) { shell_item_icon(&path) } else { file_icon(&path) };
+            icon.and_then(|icon| {
                 let png = hicon_to_png(icon);
                 unsafe {
                     let _ = DestroyIcon(icon);

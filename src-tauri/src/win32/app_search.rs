@@ -4,6 +4,8 @@
 //! * Start Menu shortcuts — `%ProgramData%\…\Start Menu\Programs` and `%APPDATA%\…\Start Menu\Programs`
 //!   (recursive; the sub-folder, e.g. "Riot Games", is kept as a secondary match field)
 //! * Desktop shortcuts — the user's (OneDrive-aware) and the public desktop (`.lnk` + `.url`)
+//! * Packaged (MSIX / Microsoft Store) apps — Claude, Calculator, Photos… have no `.lnk` anywhere; they
+//!   only exist in the shell's `AppsFolder` and launch as `shell:AppsFolder\<AUMID>`
 //! * Installed executables registered under `App Paths` (HKCU + HKLM)
 //!
 //! Icons are not part of the index: the flyout asks `apps_enum::icon_data_url(path)` lazily, which
@@ -17,12 +19,15 @@ use std::time::{Duration, Instant};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::Serialize;
-use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW,
     RegGetValueW, RegOpenKeyExW,
 };
-use windows::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_PublicDesktop, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows::Win32::UI::Shell::{
+    BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_Desktop, FOLDERID_PublicDesktop, IEnumShellItems, IShellItem, KF_FLAG_DEFAULT,
+    SHGetKnownFolderItem, SHGetKnownFolderPath, SIGDN, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
+};
 use windows::core::{GUID, PCWSTR, PWSTR};
 
 use super::{from_wide, wide};
@@ -31,11 +36,15 @@ const INDEX_TTL: Duration = Duration::from_secs(120);
 const MAX_DEPTH: usize = 6;
 const MAX_ENTRIES: usize = 6000;
 pub const MAX_RESULTS: usize = 8;
+/// Launch target / icon key prefix of packaged apps: `shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude`.
+pub const APPS_FOLDER_PREFIX: &str = "shell:AppsFolder\\";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AppKind {
     Shortcut,
+    /// MSIX / Store app from the shell AppsFolder.
+    Packaged,
     App,
 }
 
@@ -43,7 +52,7 @@ pub enum AppKind {
 #[serde(rename_all = "camelCase")]
 pub struct AppHit {
     pub name: String,
-    /// Launch target (.lnk / .url / .exe) — also the icon key.
+    /// Launch target (.lnk / .url / .exe / `shell:AppsFolder\<AUMID>`) — also the icon key.
     pub path: String,
     pub kind: AppKind,
     /// Start Menu sub-folder ("Riot Games"), if any.
@@ -149,8 +158,8 @@ fn entry_score(e: &Entry, tokens: &[String]) -> Option<u32> {
     for t in tokens {
         total += token_score(e, t)?;
     }
-    // Shortcuts are what the Start Menu shows; App Paths entries are a fallback.
-    if e.hit.kind == AppKind::Shortcut {
+    // Shortcuts and packaged apps are what the Start Menu shows; App Paths entries are a fallback.
+    if matches!(e.hit.kind, AppKind::Shortcut | AppKind::Packaged) {
         total += 5;
     }
     Some(total)
@@ -272,6 +281,13 @@ pub fn clean_app_path(raw: &str) -> String {
     out
 }
 
+/// Executables inside an installed MSIX package (`C:\Program Files\WindowsApps\<pkg>\…`): helpers
+/// such as `claude-ssh-proxy.exe` that packages register under App Paths. The app itself is
+/// indexed from the AppsFolder; execution aliases (`%LOCALAPPDATA%\Microsoft\WindowsApps`) are kept.
+fn is_package_internal(path: &str) -> bool {
+    path.to_ascii_lowercase().contains("\\program files\\windowsapps\\")
+}
+
 fn scan_app_paths(hive: HKEY, out: &mut Vec<Entry>, seen: &mut HashSet<String>) {
     let base = wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths");
     let mut key = HKEY::default();
@@ -290,7 +306,7 @@ fn scan_app_paths(hive: HKEY, out: &mut Vec<Entry>, seen: &mut HashSet<String>) 
         let exe_name = from_wide(&name[..len as usize]);
         let Some(raw) = reg_string(key, &exe_name) else { continue };
         let path = clean_app_path(&raw);
-        if !path.to_ascii_lowercase().ends_with(".exe") || !Path::new(&path).exists() {
+        if !path.to_ascii_lowercase().ends_with(".exe") || is_package_internal(&path) || !Path::new(&path).exists() {
             continue;
         }
         let stem = Path::new(&exe_name).file_stem().and_then(|s| s.to_str()).unwrap_or(&exe_name).to_string();
@@ -303,6 +319,46 @@ fn scan_app_paths(hive: HKEY, out: &mut Vec<Entry>, seen: &mut HashSet<String>) 
     unsafe {
         let _ = RegCloseKey(key);
     }
+}
+
+fn shell_display_name(item: &IShellItem, kind: SIGDN) -> Option<String> {
+    unsafe {
+        let p = item.GetDisplayName(kind).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const core::ffi::c_void));
+        s.filter(|s| !s.trim().is_empty())
+    }
+}
+
+/// `(display name, AUMID)` of every packaged app in the shell AppsFolder (what Start lists).
+/// Desktop apps are skipped there: their `.lnk` is already indexed from the Start Menu folders.
+fn scan_apps_folder() -> Vec<(String, String)> {
+    super::apps_enum::with_com(|| {
+        let mut out = Vec::new();
+        unsafe {
+            let Ok(folder) = SHGetKnownFolderItem::<IShellItem>(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None) else { return out };
+            let Ok(items) = folder.BindToHandler::<_, IEnumShellItems>(None::<&IBindCtx>, &BHID_EnumItems) else { return out };
+            while out.len() < MAX_ENTRIES {
+                let mut batch: [Option<IShellItem>; 32] = Default::default();
+                let mut fetched = 0u32;
+                if items.Next(&mut batch, Some(&mut fetched)).is_err() || fetched == 0 {
+                    break;
+                }
+                for item in batch.iter().take(fetched as usize).flatten() {
+                    let (Some(name), Some(aumid)) = (shell_display_name(item, SIGDN_NORMALDISPLAY), shell_display_name(item, SIGDN_PARENTRELATIVEPARSING))
+                    else {
+                        continue;
+                    };
+                    // Packaged AUMIDs are `PackageFamilyName!AppId`.
+                    if aumid.contains('!') {
+                        out.push((name, aumid));
+                    }
+                }
+            }
+        }
+        out
+    })
+    .unwrap_or_default()
 }
 
 fn build_index() -> Vec<Entry> {
@@ -321,6 +377,13 @@ fn build_index() -> Vec<Entry> {
     for desktop in [known_folder(&FOLDERID_Desktop), known_folder(&FOLDERID_PublicDesktop)].into_iter().flatten() {
         // Desktop: top level only (no folder label).
         scan_dir(&desktop, &desktop, MAX_DEPTH, &mut out, &mut seen);
+    }
+    for (name, aumid) in scan_apps_folder() {
+        let name_f = fold(&name);
+        if is_noise(&name_f) || !seen.insert(name_f) {
+            continue;
+        }
+        out.push(Entry::new(name, format!("{APPS_FOLDER_PREFIX}{aumid}"), AppKind::Packaged, None));
     }
     scan_app_paths(HKEY_CURRENT_USER, &mut out, &mut seen);
     scan_app_paths(HKEY_LOCAL_MACHINE, &mut out, &mut seen);
@@ -587,7 +650,34 @@ mod tests {
         assert!(!entries.is_empty(), "the Start Menu has shortcuts");
         for hit in rank(&entries, "a", MAX_RESULTS) {
             let lower = hit.path.to_ascii_lowercase();
-            assert!(lower.ends_with(".lnk") || lower.ends_with(".url") || lower.ends_with(".exe"), "{}", hit.path);
+            let packaged = hit.path.starts_with(APPS_FOLDER_PREFIX) && hit.path.contains('!');
+            assert!(packaged || lower.ends_with(".lnk") || lower.ends_with(".url") || lower.ends_with(".exe"), "{}", hit.path);
         }
+    }
+
+    #[test]
+    fn packaged_apps_rank_like_start_menu_shortcuts() {
+        let mut f = fixture();
+        f.push(Entry::new("Claude".into(), format!("{APPS_FOLDER_PREFIX}Claude_pzs8sxrjxfjjc!Claude"), AppKind::Packaged, None));
+        f.push(Entry::new("Calculatrice".into(), format!("{APPS_FOLDER_PREFIX}Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"), AppKind::Packaged, None));
+        let hits = rank(&f, "claude", 3);
+        assert_eq!(names(&hits), vec!["Claude"]);
+        assert_eq!(hits[0].kind, AppKind::Packaged);
+        assert_eq!(names(&rank(&f, "cla", 3))[0], "Claude");
+        assert_eq!(names(&rank(&f, "calc", 3))[0], "Calculatrice");
+        assert!(is_package_internal(r"C:\Program Files\WindowsApps\Claude_5.11492.5.0_x64__pzs8sxrjxfjjc\app\resources\claude-ssh-proxy.exe"));
+        assert!(!is_package_internal(r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\wt.exe"));
+        assert!(!is_package_internal(r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
+    }
+
+    /// Every Windows 10/11 desktop ships packaged apps (Settings, Calculator…): the AppsFolder scan
+    /// must find them with `PackageFamilyName!AppId` AUMIDs, and they must land in the index.
+    #[test]
+    fn real_apps_folder_lists_packaged_apps() {
+        let packaged = scan_apps_folder();
+        assert!(!packaged.is_empty(), "AppsFolder exposes packaged apps");
+        assert!(packaged.iter().all(|(name, aumid)| !name.is_empty() && aumid.contains('!')));
+        let index = build_index();
+        assert!(index.iter().any(|e| e.hit.kind == AppKind::Packaged && e.hit.path.starts_with(APPS_FOLDER_PREFIX)));
     }
 }

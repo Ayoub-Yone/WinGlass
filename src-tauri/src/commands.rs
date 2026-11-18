@@ -184,6 +184,13 @@ pub fn activate_window(hwnd: i64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn launch_app(path: String) -> Result<(), String> {
+    // Packaged (MSIX / Store) apps: only AUMIDs the launcher index found in the AppsFolder.
+    if let Some(aumid) = path.strip_prefix(app_search::APPS_FOLDER_PREFIX) {
+        if aumid.is_empty() || !app_search::is_indexed(&path) {
+            return Err("this app is not in the app index".into());
+        }
+        return apps_enum::shell_open("explorer.exe", Some(&path));
+    }
     let lower = path.to_ascii_lowercase();
     if !(lower.ends_with(".lnk") || lower.ends_with(".exe") || lower.ends_with(".url")) || !std::path::Path::new(&path).exists() {
         return Err("only existing .lnk / .url / .exe targets can be launched".into());

@@ -366,6 +366,47 @@ try {
       check("automation defaults: pause 2 min before meetings, AI warnings at 85 % and 95 %", s0.automations.preMeetingPause.minutes === 2 && ai.thresholdPercent === 85 && ai.criticalPercent === 95, JSON.stringify(s0.automations));
       const badge = await dock.eval("(() => { const b = [...document.querySelectorAll('.uppercase')].find((e) => /^(LUN|MAR|MER|JEU|VEN|SAM|DIM)$/.test(e.innerText.trim().toUpperCase())); return b ? b.innerText.trim().toUpperCase() + ' ' + b.nextElementSibling.innerText.trim() : null; })()");
       check("fr: calendar day badge (LUN 20 style)", /^(LUN|MAR|MER|JEU|VEN|SAM|DIM) \d{1,2}$/.test(badge ?? ""), String(badge));
+      // Clicking the calendar card opens a month calendar (simulated events -> day dots + agenda).
+      await dock.eval(`(() => { const c = document.querySelector('[data-instance="calendar-default"] .lb-card'); if (c) c.click(); return Boolean(c); })()`);
+      const readCal = () =>
+        dock.eval(`(() => {
+          const m = document.querySelector('[data-testid="calendar-month"]');
+          if (!m) return null;
+          const pop = document.querySelector('[data-testid="calendar-popover"]').getBoundingClientRect();
+          const pill = document.querySelector('.lb-pill').getBoundingClientRect();
+          return {
+            cells: m.querySelectorAll('[role="gridcell"]').length,
+            today: m.querySelector('[aria-current="date"]')?.innerText.trim() ?? null,
+            selected: m.querySelector('[aria-selected="true"]')?.getAttribute("aria-label") ?? null,
+            title: m.querySelector('[aria-live]')?.innerText ?? null,
+            headers: [...m.querySelectorAll('[role="columnheader"]')].map((h) => h.innerText.trim()).join(""),
+            dots: m.querySelectorAll('[role="gridcell"] span[aria-hidden]').length,
+            agenda: m.lastElementChild.innerText.replace(/\\s+/g, " ").slice(0, 160),
+            top: pop.top, bottom: pop.bottom, pillTop: pill.top,
+          };
+        })()`);
+      const cal = await waitFor(readCal, 4000);
+      check(
+        "calendar: clicking the card opens a month calendar (today marked, week starts Monday, fits above the dock)",
+        cal && cal.cells % 7 === 0 && cal.cells >= 28 && cal.today === String(new Date().getDate()) && cal.headers.startsWith("L") && cal.top >= 0 && cal.bottom <= cal.pillTop,
+        JSON.stringify(cal),
+      );
+      check("calendar: simulated events appear as day dots and in the selected day's agenda", cal && cal.dots > 0 && !/Rien de prévu/.test(cal.agenda), JSON.stringify({ dots: cal?.dots, agenda: cal?.agenda }));
+      await dock.eval(`document.querySelector('[data-testid="calendar-month"] [aria-label="Mois suivant"]').click()`);
+      await sleep(150);
+      const nextMonth = await readCal();
+      check("calendar: « Mois suivant » shows the next month", nextMonth && nextMonth.title !== cal?.title && nextMonth.today === null, JSON.stringify({ from: cal?.title, to: nextMonth?.title }));
+      await dock.eval(`document.querySelector('[data-testid="calendar-month"] [role="grid"]').dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }))`);
+      await sleep(150);
+      await dock.eval(`document.querySelector('[data-testid="calendar-month"] [role="grid"]').dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))`);
+      await sleep(150);
+      const moved = await readCal();
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      check("calendar: Home returns to today, ArrowRight selects the next day", moved && moved.selected?.includes(String(tomorrow.getDate())) && moved.title === cal?.title || (tomorrow.getDate() === 1 && moved?.selected?.includes("1")), JSON.stringify(moved?.selected));
+      await dock.eval(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+      await sleep(200);
+      check("calendar: Escape closes the month calendar", (await dock.eval(`!document.querySelector('[data-testid="calendar-month"]')`)) === true);
       const clock = await dock.eval("[...document.querySelectorAll('.lb-card')].map((c) => c.innerText).find((x) => /^\\d{2}:\\d{2}\\n/.test(x)) ?? null");
       check("fr: 24-hour clock", clock !== null && !/AM|PM/.test(clock), JSON.stringify(clock));
     }
@@ -381,7 +422,20 @@ try {
 
   // ---------------------------------------------------------------- integrated launcher (no Win+S)
   const apps = await dock.invoke("search_installed_apps", { query: "a" });
-  check("search_installed_apps: Start Menu / Desktop / App Paths index answers", Array.isArray(apps) && apps.length > 0 && apps.every((a) => /\.(lnk|url|exe)$/i.test(a.path)), JSON.stringify(apps?.slice?.(0, 3)));
+  const launchable = (a) => /\.(lnk|url|exe)$/i.test(a.path) || (a.kind === "packaged" && /^shell:AppsFolder\\[^\\]+![^\\]+$/.test(a.path));
+  check("search_installed_apps: Start Menu / Desktop / packaged / App Paths index answers", Array.isArray(apps) && apps.length > 0 && apps.every(launchable), JSON.stringify(apps?.slice?.(0, 3)));
+  // Packaged (MSIX / Store) apps have no .lnk: they come from the shell AppsFolder (Calculator ships with Windows).
+  const calc = await dock.invoke("search_installed_apps", { query: "calc" });
+  const packagedHit = calc.find((a) => a.kind === "packaged");
+  check("search: packaged Store apps are indexed (Calculatrice via shell:AppsFolder)", Boolean(packagedHit) && launchable(packagedHit), JSON.stringify(calc.map((a) => [a.name, a.kind])));
+  if (packagedHit) {
+    const icon = await dock.invoke("get_app_icon", { key: packagedHit.path });
+    check("search: packaged app icon resolves through its AppsFolder item", typeof icon === "string" && icon.startsWith("data:image/png"), String(icon).slice(0, 40));
+  }
+  const claudeHits = await dock.invoke("search_installed_apps", { query: "claude" });
+  note(`search "claude": ${JSON.stringify(claudeHits.map((a) => [a.name, a.kind]))}`);
+  const fake = await dock.invoke("launch_app", { path: "shell:AppsFolder\\Not.Indexed_123!App" }).then(() => "ok", (e) => String(e));
+  check("launch_app refuses AppsFolder AUMIDs that are not in the index", fake !== "ok", fake);
   const typeSearch = (text) =>
     dock.eval(`(() => {
       const input = document.querySelector('[data-testid="search-input"]');

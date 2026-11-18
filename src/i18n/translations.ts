@@ -217,6 +217,14 @@ const en = {
   "calendar.upcoming": "Upcoming",
   "calendar.nextEvent": "Next event",
   "calendar.nothing": "Nothing in the next two weeks.",
+  "calendar.month": "Calendar",
+  "calendar.prevMonth": "Previous month",
+  "calendar.nextMonth": "Next month",
+  "calendar.allDay": "All day",
+  "calendar.dayEmpty": "Nothing scheduled that day.",
+  "calendar.outOfRange": "Events are loaded for the next 14 days.",
+  "calendar.eventCount": "{count} events",
+  "calendar.oneEvent": "1 event",
 
   // ------------------------------------------------------------ AI usage
   "ai.usage": "{name} usage",
@@ -728,6 +736,14 @@ const fr: Dictionary = {
   "calendar.upcoming": "À venir",
   "calendar.nextEvent": "Prochain événement",
   "calendar.nothing": "Rien de prévu dans les deux prochaines semaines.",
+  "calendar.month": "Calendrier",
+  "calendar.prevMonth": "Mois précédent",
+  "calendar.nextMonth": "Mois suivant",
+  "calendar.allDay": "Journée",
+  "calendar.dayEmpty": "Rien de prévu ce jour-là.",
+  "calendar.outOfRange": "Les événements sont chargés sur les 14 prochains jours.",
+  "calendar.eventCount": "{count} événements",
+  "calendar.oneEvent": "1 événement",
 
   // ------------------------------------------------------------ AI usage
   "ai.usage": "Utilisation de {name}",

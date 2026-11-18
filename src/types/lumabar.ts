@@ -367,12 +367,12 @@ export interface BrightnessDisplay {
   percent: number;
 }
 
-/** Integrated launcher result (Start Menu / Desktop / App Paths). */
+/** Integrated launcher result (Start Menu / Desktop / packaged Store apps / App Paths). */
 export interface AppHit {
   name: string;
-  /** .lnk / .url / .exe — also the icon key. */
+  /** .lnk / .url / .exe / `shell:AppsFolder\<AUMID>` — also the icon key. */
   path: string;
-  kind: "shortcut" | "app";
+  kind: "shortcut" | "packaged" | "app";
   folder: string | null;
 }
 

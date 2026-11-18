@@ -1,12 +1,201 @@
 // Calendar & agenda from private ICS feeds: day badge, next event, live countdown.
+// Clicking the card opens a month calendar (works without a feed too) with the selected day's agenda.
 
-import { useRef, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useRef, useState, type KeyboardEvent } from "react";
 import { Popover, WidgetCard, openSettings } from "../components/ui";
 import { useI18n } from "../i18n";
-import { formatCountdown, formatDayBadge, formatLongDate, startTimeFormatted } from "../lib/format";
+import {
+  firstDayOfWeek,
+  formatCountdown,
+  formatDayBadge,
+  formatFullDate,
+  formatLongDate,
+  formatMonthYear,
+  formatTime,
+  startTimeFormatted,
+  weekdayInitials,
+} from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { useNow, usePreview, useProvider } from "../lib/hooks";
 import type { CalendarData, CalendarEvent, WidgetProps } from "../types/lumabar";
+
+/** The backend loads feeds for this many days ahead (providers/ical_parser.rs). */
+const LOADED_DAYS = 14;
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function sameDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/** Events overlapping the local day (all-day ends are exclusive midnights). */
+function eventsOn(events: CalendarEvent[], day: Date): CalendarEvent[] {
+  const from = startOfDay(day).getTime();
+  const to = addDays(day, 1).getTime();
+  return events
+    .filter((e) => new Date(e.start).getTime() < to && new Date(e.end).getTime() > from)
+    .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start));
+}
+
+/** Whole weeks covering the month, starting on the locale's first weekday. */
+function monthGrid(month: Date): Date[] {
+  const first = new Date(month.getFullYear(), month.getMonth(), 1);
+  const lead = (first.getDay() - firstDayOfWeek() + 7) % 7;
+  const start = addDays(first, -lead);
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const weeks = Math.ceil((lead + daysInMonth) / 7);
+  return Array.from({ length: weeks * 7 }, (_, i) => addDays(start, i));
+}
+
+function MonthCalendar(props: { events: CalendarEvent[]; configured: boolean; now: Date }) {
+  const { events, configured, now } = props;
+  const { t } = useI18n();
+  const today = startOfDay(now);
+  const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selected, setSelected] = useState(today);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+
+  const days = monthGrid(month);
+  const dayEvents = eventsOn(events, selected);
+  const beyondLoaded = configured && selected.getTime() >= addDays(today, LOADED_DAYS).getTime();
+  const isCurrentMonth = month.getFullYear() === today.getFullYear() && month.getMonth() === today.getMonth();
+
+  const shiftMonth = (delta: number) => setMonth((m) => new Date(m.getFullYear(), m.getMonth() + delta, 1));
+
+  const select = (day: Date, focus = false) => {
+    setSelected(day);
+    if (day.getMonth() !== month.getMonth() || day.getFullYear() !== month.getFullYear()) {
+      setMonth(new Date(day.getFullYear(), day.getMonth(), 1));
+    }
+    if (focus) requestAnimationFrame(() => gridRef.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus());
+  };
+
+  const goToday = () => select(today);
+
+  // Arrows move by day / week, PageUp / PageDown by month, Home returns to today.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const moves: Record<string, () => Date> = {
+      ArrowLeft: () => addDays(selected, -1),
+      ArrowRight: () => addDays(selected, 1),
+      ArrowUp: () => addDays(selected, -7),
+      ArrowDown: () => addDays(selected, 7),
+      PageUp: () => new Date(selected.getFullYear(), selected.getMonth() - 1, Math.min(selected.getDate(), 28)),
+      PageDown: () => new Date(selected.getFullYear(), selected.getMonth() + 1, Math.min(selected.getDate(), 28)),
+      Home: () => today,
+    };
+    const move = moves[e.key];
+    if (!move) return;
+    e.preventDefault();
+    select(move(), true);
+  };
+
+  return (
+    <div className="flex flex-col gap-2" data-testid="calendar-month">
+      <div className="flex items-center gap-1">
+        <div className="min-w-0 flex-1 truncate pl-1 text-[13px] font-semibold" aria-live="polite">
+          {formatMonthYear(month)}
+        </div>
+        {!isCurrentMonth || !sameDay(selected, today) ? (
+          <button className="lb-focus shrink-0 rounded-full border-none px-2 py-0.5 text-[11px] font-semibold" style={{ background: "var(--lb-card)", color: "var(--lb-accent)" }} onClick={goToday}>
+            {t("common.today")}
+          </button>
+        ) : null}
+        <button className="lb-icon-btn h-7 w-7 shrink-0" onClick={() => shiftMonth(-1)} aria-label={t("calendar.prevMonth")} title={t("calendar.prevMonth")}>
+          <ChevronLeft size={15} strokeWidth={2.4} />
+        </button>
+        <button className="lb-icon-btn h-7 w-7 shrink-0" onClick={() => shiftMonth(1)} aria-label={t("calendar.nextMonth")} title={t("calendar.nextMonth")}>
+          <ChevronRight size={15} strokeWidth={2.4} />
+        </button>
+      </div>
+
+      <div ref={gridRef} role="grid" aria-label={formatMonthYear(month)} onKeyDown={onKeyDown}>
+        <div role="row" className="grid grid-cols-7 pb-1">
+          {weekdayInitials().map((label, i) => (
+            <div key={i} role="columnheader" className="text-center text-[10.5px] font-semibold lb-faint">
+              {label}
+            </div>
+          ))}
+        </div>
+        {Array.from({ length: days.length / 7 }, (_, w) => (
+          <div key={w} role="row" className="grid grid-cols-7">
+            {days.slice(w * 7, w * 7 + 7).map((day) => {
+              const inMonth = day.getMonth() === month.getMonth();
+              const isToday = sameDay(day, today);
+              const isSelected = sameDay(day, selected);
+              const count = eventsOn(events, day).length;
+              const countLabel = count === 1 ? t("calendar.oneEvent") : count > 1 ? t("calendar.eventCount", { count }) : "";
+              return (
+                <button
+                  key={day.toISOString()}
+                  role="gridcell"
+                  aria-selected={isSelected}
+                  aria-current={isToday ? "date" : undefined}
+                  aria-label={countLabel ? `${formatFullDate(day)}, ${countLabel}` : formatFullDate(day)}
+                  tabIndex={isSelected ? 0 : -1}
+                  onClick={() => select(day)}
+                  className="lb-focus relative mx-auto flex h-[30px] w-[30px] flex-col items-center justify-center rounded-full border-none p-0 text-[12px] tabular-nums"
+                  style={{
+                    background: isToday ? "var(--lb-accent)" : isSelected ? "var(--lb-card-hover)" : "transparent",
+                    color: isToday ? "#fff" : inMonth ? "var(--lb-text)" : "var(--lb-faint)",
+                    fontWeight: isToday || isSelected ? 650 : 400,
+                    boxShadow: isSelected && !isToday ? "inset 0 0 0 1.5px color-mix(in oklch, var(--lb-accent) 70%, transparent)" : undefined,
+                  }}
+                >
+                  {day.getDate()}
+                  {count > 0 && (
+                    <span
+                      aria-hidden
+                      className="absolute bottom-[3px] h-[3.5px] w-[3.5px] rounded-full"
+                      style={{ background: isToday ? "#fff" : "var(--lb-accent)" }}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      <div className="h-px" style={{ background: "var(--lb-track)" }} />
+
+      <div className="flex flex-col gap-1">
+        <div className="truncate px-1 text-[11.5px] font-semibold lb-muted">{formatFullDate(selected)}</div>
+        <div className="lb-thin-scroll flex max-h-[132px] flex-col gap-0.5 overflow-y-auto">
+          {!configured ? (
+            <button
+              className="lb-focus self-start rounded-full border-none px-2.5 py-1 text-[12px] font-semibold"
+              style={{ background: "var(--lb-card)", color: "var(--lb-accent)" }}
+              onClick={() => openSettings("calendar")}
+            >
+              {t("calendar.addFeed")}
+            </button>
+          ) : dayEvents.length === 0 ? (
+            <div className="px-1 py-1 text-[12px] lb-muted">{beyondLoaded ? t("calendar.outOfRange") : t("calendar.dayEmpty")}</div>
+          ) : (
+            dayEvents.map((e) => (
+              <button
+                key={e.uid}
+                className="lb-card flex w-full items-baseline gap-2 rounded-lg border-none px-2 py-1.5 text-left"
+                onClick={() => openEvent(e)}
+                title={e.location ?? e.title}
+              >
+                <span className="w-[54px] shrink-0 text-[11px] tabular-nums lb-muted">{e.allDay ? t("calendar.allDay") : formatTime(new Date(e.start))}</span>
+                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{e.title}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /** Weekday over day number: `LUN` / `20` in French, `MON` / `20` in English. */
 function DayBadge({ now }: { now: Date }) {
@@ -85,36 +274,14 @@ export function CalendarWidget({ span }: WidgetProps) {
         className="gap-2 pl-1 pr-2.5"
         title={next ? `${t("calendar.nextEvent")} · ${next.title}` : undefined}
         onClick={() => {
-          if (preview) return;
-          if (!view.data) openSettings("calendar");
-          else setOpen((o) => !o);
+          if (!preview) setOpen((o) => !o);
         }}
       >
         <DayBadge now={now} />
         {body}
       </WidgetCard>
-      <Popover anchor={ref} open={open} onClose={() => setOpen(false)} width={300}>
-        <div className="mb-2 font-semibold">{t("calendar.upcoming")}</div>
-        <div className="lb-thin-scroll flex max-h-[300px] flex-col gap-1 overflow-y-auto">
-          {events.length === 0 && <div className="lb-muted">{t("calendar.nothing")}</div>}
-          {events.slice(0, 20).map((e) => {
-            const start = new Date(e.start);
-            return (
-              <button
-                key={e.uid}
-                className="lb-card flex w-full flex-col items-start rounded-lg border-none px-2 py-1.5 text-left"
-                onClick={() => openEvent(e)}
-              >
-                <span className="w-full truncate font-medium">{e.title}</span>
-                <span className="w-full truncate lb-muted" style={{ fontSize: "var(--lb-small)" }}>
-                  {startTimeFormatted(start, e.allDay, now)}
-                  {!e.allDay && ` · ${formatCountdown((start.getTime() - nowMs) / 60000)}`}
-                  {e.calendar && ` · ${e.calendar}`}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+      <Popover anchor={ref} open={open} onClose={() => setOpen(false)} width={286} testId="calendar-popover">
+        <MonthCalendar events={view.data?.events ?? []} configured={Boolean(view.data)} now={now} />
       </Popover>
     </>
   );
