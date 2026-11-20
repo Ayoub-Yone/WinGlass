@@ -1,6 +1,6 @@
 [package]
 name = "winglass"
-version = "0.4.2"
+version = "0.5.0"
 description = "Floating smart widget dock for Windows"
 authors = ["you"]
 edition = "2024"
