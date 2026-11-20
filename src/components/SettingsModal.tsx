@@ -40,7 +40,7 @@ import { broadcast, errorMessage, ipc, subscribe } from "../lib/ipc";
 import { useAmbientColors } from "../lib/useAmbient";
 import { CitySearch } from "../widgets/WeatherWidget";
 import { PRAYER_METHODS, PrayerAlertControls, PrayerPlacePicker } from "../widgets/PrayerTimesWidget";
-import type { AccountStatus, AutomationSettings, GlassBackdrop, Language, ProviderId, Settings, TaskbarMode } from "../types/winglass";
+import type { AccountStatus, AutomationSettings, Language, ProviderId, Settings, TaskbarMode } from "../types/winglass";
 
 type Tab = "general" | "appearance" | "widgets" | "calendar" | "accounts" | "integrations" | "automations" | "advanced";
 
@@ -438,18 +438,6 @@ function AppearanceTab({ s }: { s: Settings }) {
         </div>
       </Section>
       <Section title={t("settings.surface")} description={t("settings.surfaceDesc")}>
-        <Row label={t("settings.backdrop")} hint={!glassTheme ? t("settings.frostHint") : s.glassBackdrop === "wallpaper" ? t("settings.backdropHintWallpaper") : t("settings.backdropHintLive")}>
-          <div style={{ opacity: glassTheme ? 1 : 0.5 }}>
-            <Segmented<GlassBackdrop>
-              value={s.glassBackdrop === "wallpaper" ? "wallpaper" : "live"}
-              options={[
-                { value: "live", label: t("backdrop.live") },
-                { value: "wallpaper", label: t("backdrop.wallpaper") },
-              ]}
-              onChange={(glassBackdrop) => update((x) => ({ ...x, glassBackdrop }))}
-            />
-          </div>
-        </Row>
         <Row label={t("sysmenu.ambiance")} hint={t("settings.ambianceHintUi")}>
           <Toggle label={t("sysmenu.ambiance")} checked={s.musicAmbiance} onChange={(v) => update((x) => ({ ...x, musicAmbiance: v }))} />
         </Row>
@@ -1062,7 +1050,6 @@ const APPEARANCE_DEFAULTS: Partial<Settings> = {
   size: "medium",
   accent: "#0A84FF",
   glassFrostLevel: DEFAULT_FROST_LEVEL,
-  glassBackdrop: "live",
   clearMode: false,
   musicAmbiance: false,
   dockRadius: 22,

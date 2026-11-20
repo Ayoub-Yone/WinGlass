@@ -1,14 +1,10 @@
-//! Liquid-glass backdrop sources and the `glass://capture` response.
+//! Liquid-glass backdrop source and the `glass://capture` response.
 //!
-//! * `dxgi_capture` — **live**: desktop duplication of whatever is behind the dock (default).
-//! * `backdrop` — **wallpaper**: the shell wallpaper only; fallback selectable in Settings.
+//! * `dxgi_capture` — desktop duplication of whatever is behind the dock.
 //!
-//! Exactly one source runs at a time (and none unless the theme is liquid glass).
+//! The source only runs while the theme is liquid glass.
 
-pub mod backdrop;
 pub mod dxgi_capture;
-
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::AppHandle;
 use tauri::http::{Response, StatusCode};
@@ -20,8 +16,8 @@ pub struct FrameBuffer {
     pub seq: u64,
     pub width: u32,
     pub height: u32,
-    /// Where the dock pill sits inside the frame, `[x, y, w, h]` in pixels. The live source
-    /// captures a margin around the pill so the blur has real colour to pull in.
+    /// Where the dock pill sits inside the frame, `[x, y, w, h]` in pixels. The capture
+    /// includes a margin around the pill so the blur has real colour to pull in.
     pub inner: [u32; 4],
     /// Tightly packed BGRA rows, `width * height * 4` bytes.
     pub bgra: Vec<u8>,
@@ -33,50 +29,27 @@ impl FrameBuffer {
     }
 }
 
-/// True while the wallpaper source is the selected one.
-static WALLPAPER: AtomicBool = AtomicBool::new(false);
-
-pub fn is_wallpaper_source(glass_backdrop: &str) -> bool {
-    glass_backdrop == "wallpaper"
-}
-
 pub fn start(app: AppHandle) {
-    dxgi_capture::start(app.clone());
-    backdrop::start(app);
+    dxgi_capture::start(app);
 }
 
-/// Select the backdrop source for the current theme / settings.
-pub fn configure(app: &AppHandle, liquid_glass: bool, glass_backdrop: &str) {
-    let wallpaper = is_wallpaper_source(glass_backdrop);
-    WALLPAPER.store(wallpaper, Ordering::SeqCst);
-    // Disable first so the two sources never overlap.
-    if wallpaper {
-        dxgi_capture::set_enabled(app, false);
-        backdrop::set_enabled(liquid_glass);
-    } else {
-        backdrop::set_enabled(false);
-        dxgi_capture::set_enabled(app, liquid_glass);
-    }
+/// Enable the capture for the current theme / settings.
+pub fn configure(app: &AppHandle, liquid_glass: bool) {
+    dxgi_capture::set_enabled(app, liquid_glass);
 }
 
 /// Screen-space physical rect of the dock pill.
 pub fn set_rect(rect: RECT) {
     dxgi_capture::set_rect(rect);
-    backdrop::set_rect(rect);
 }
 
 /// Pause while the dock is hidden behind a fullscreen app.
 pub fn set_paused(paused: bool) {
     dxgi_capture::set_paused(paused);
-    backdrop::set_paused(paused);
 }
 
 pub fn status() -> String {
-    if WALLPAPER.load(Ordering::SeqCst) {
-        format!("wallpaper: {}", backdrop::status())
-    } else {
-        format!("live: {}", dxgi_capture::status())
-    }
+    format!("live: {}", dxgi_capture::status())
 }
 
 /// Build the `glass://capture` response: raw BGRA bytes + X-Width / X-Height / X-Inner headers.
@@ -99,19 +72,7 @@ pub fn capture_response() -> Response<Vec<u8>> {
             .header("X-Seq", frame.seq.to_string())
             .body(frame.bgra.clone())
     };
-    let response = if WALLPAPER.load(Ordering::SeqCst) { backdrop::with_latest(respond) } else { dxgi_capture::with_latest(respond) }
+    let response = dxgi_capture::with_latest(respond)
         .unwrap_or_else(|| builder().status(StatusCode::NO_CONTENT).body(Vec::new()));
     response.unwrap_or_else(|_| Response::new(Vec::new()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_wallpaper_source;
-
-    #[test]
-    fn live_capture_is_the_default_source() {
-        assert!(!is_wallpaper_source("live"));
-        assert!(!is_wallpaper_source(""));
-        assert!(is_wallpaper_source("wallpaper"));
-    }
 }

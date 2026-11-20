@@ -263,7 +263,7 @@ pub fn run() {
             window_manager::start_hit_testing();
             window_manager::start_fullscreen_watch(handle.clone());
             graphics::start(handle.clone());
-            graphics::configure(&handle, settings.uses_glass_capture(), &settings.glass_backdrop);
+            graphics::configure(&handle, settings.uses_glass_capture());
             win32::memory::start();
             win32::media_smtc::start(handle.clone());
             win32::audio::start(handle.clone());

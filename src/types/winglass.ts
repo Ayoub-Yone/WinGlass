@@ -10,7 +10,6 @@ export type SizePreset = "compact" | "medium" | "large";
 export type DockPosition = "bottom" | "top";
 export type TaskbarMode = "native" | "auto_hide" | "completely_hidden";
 export type Language = "fr" | "en";
-export type GlassBackdrop = "live" | "wallpaper";
 
 export interface ThemeTokens {
   id: ThemeId;
@@ -96,7 +95,6 @@ export interface Settings {
   language: Language;
   /** « Clair ↔ Givré »: 0 ultra-clear optical glass .. 1 deep matte frost (liquid-glass themes). */
   glassFrostLevel: number;
-  glassBackdrop: GlassBackdrop;
   /** « Mode Clear »: no bar background, each widget floats in its own capsule. */
   clearMode: boolean;
   /** « Ambiance Musique »: soft glow tinted by the playing track's cover art. */

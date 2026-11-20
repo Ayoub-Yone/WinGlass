@@ -188,8 +188,6 @@ pub struct Settings {
     pub language: String,
     /// « Clair ↔ Givré »: 0.0 ultra-clear optical glass .. 1.0 deep matte frost (0.32 default).
     pub glass_frost_level: f64,
-    /// Liquid-glass backdrop source: "live" (default, desktop duplication) | "wallpaper".
-    pub glass_backdrop: String,
     /// « Mode Clear »: no bar background, every widget floats in its own capsule.
     pub clear_mode: bool,
     /// « Ambiance Musique »: soft glow tinted by the playing track's cover art.
@@ -231,7 +229,6 @@ impl Default for Settings {
             accent: "#0A84FF".into(),
             language: "fr".into(),
             glass_frost_level: DEFAULT_FROST_LEVEL,
-            glass_backdrop: "live".into(),
             clear_mode: false,
             music_ambiance: false,
             dock_radius: 22.0,
@@ -335,7 +332,6 @@ mod tests {
         assert_eq!(s.glass_frost_level, 0.32);
         assert!(s.launch_at_login);
         assert_eq!(s.taskbar_mode, "completely_hidden");
-        assert_eq!(s.glass_backdrop, "live");
         assert_eq!(s.position, "bottom");
     }
 
@@ -354,7 +350,6 @@ mod tests {
         let (s, changed) = Settings::parse(r#"{"theme":"liquid-glass","taskbarMode":"auto_hide"}"#);
         assert!(changed);
         assert_eq!(s.taskbar_mode, "completely_hidden");
-        assert_eq!(s.glass_backdrop, "live");
         // An explicit "native" (e.g. after the emergency hotkey) is never overridden.
         let (s, _) = Settings::parse(r#"{"taskbarMode":"native"}"#);
         assert_eq!(s.taskbar_mode, "native");

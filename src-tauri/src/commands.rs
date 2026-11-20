@@ -57,8 +57,8 @@ pub fn update_settings(app: AppHandle, state: State<'_, AppState>, settings: Set
     if previous.language != settings.language {
         crate::refresh_tray_language(&app, &settings.language);
     }
-    if previous.theme != settings.theme || previous.glass_backdrop != settings.glass_backdrop || previous.clear_mode != settings.clear_mode {
-        graphics::configure(&app, settings.uses_glass_capture(), &settings.glass_backdrop);
+    if previous.theme != settings.theme || previous.clear_mode != settings.clear_mode {
+        graphics::configure(&app, settings.uses_glass_capture());
     }
     let providers_changed = serde_json::to_value(&previous.providers).ok() != serde_json::to_value(&settings.providers).ok();
     if previous.simulation != settings.simulation || providers_changed {
