@@ -19,6 +19,7 @@ L'application n'est pas signée : à l'avertissement SmartScreen, clique sur **I
 
 - **Ctrl + Alt + Shift + R** restaure la barre des tâches de Windows à tout moment (aussi : clic droit sur le dock › « Restaurer et quitter »).
 - **Masquer automatiquement le dock** (Paramètres › Dock) : la barre se cache quand le curseur s'éloigne et revient au bord bas de n'importe quel écran.
+- Mises à jour automatiques : l'application vérifie les nouvelles versions sur GitHub Releases (aucune autre donnée envoyée).
 - Aucune télémétrie. Les données restent dans `%APPDATA%\winglass`.
 
 ## Développer
@@ -33,3 +34,9 @@ cd src-tauri && cargo test --lib
 ```
 
 Stack : Tauri v2 (Rust, `windows` crate), React 19, TypeScript, Tailwind CSS v4, WebGL2.
+
+## Politique de signature du code
+
+Les installateurs sont compilés par GitHub Actions à partir de ce dépôt public (`.github/workflows/release.yml`).
+Les mises à jour automatiques sont signées avec une clé dédiée. Seul le mainteneur, Ayoub-Yone, approuve les versions publiées.
+WinGlass ne collecte aucune donnée personnelle et ne contient aucun code malveillant.
