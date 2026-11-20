@@ -16,7 +16,8 @@
 //               inward along −∇d by (1 − h)^1.85 · refraction, so desktop lines bow and wrap round
 //               the capsule edge while the flat centre stays undistorted. The rim looks through the
 //               barely blurred first pyramid level (clear glass), the flat through the frost.
-//             · prism rim: R/B split ±0.0024..0.0040 along the normal, inside the meniscus only
+//             · prism rim: R/B split ≤ 0.0012 along the normal, outermost 2px bevel only, none
+//               under the cursor droplet (no rainbow halo round the pointer)
 //             · liquid droplet: the screen-centre rim swells under the cursor (Gaussian, 8.5px)
 //               with capillary pinches (≈ −1.8px) on both sides; the motion leans it; the
 //               screen-edge rim swells a little when the cursor rides it; the ends stretch ~3px
@@ -217,8 +218,11 @@ void main() {
   float lens = 0.12 * prox * (1.0 - 0.5 * clamp(length(toC * vec2(pill_size.x / pill_size.y, 1.0)) * 0.5, 0.0, 1.0));
   uv = lensCenter + toC * (1.0 - lens);
 
-  // Prism rim: R and B pulled apart along the normal (isotropic in px), inside the meniscus only.
-  vec2 disp = n * mix(0.0024, 0.0040, prox) * rimF * vec2(1.0, pill_size.x / pill_size.y);
+  // Prism rim: R and B pulled apart along the normal (isotropic in px), only in the outermost 2px
+  // bevel and faded out under the droplet. A cursor-scaled split over the whole meniscus turned
+  // bright pixels into an RGB halo around the pointer.
+  float bevel2 = smoothstep(-2.0 * u_dpr, 0.0, d);
+  vec2 disp = n * 0.0012 * bevel2 * (1.0 - prox) * vec2(1.0, pill_size.x / pill_size.y);
   float sharpMix = u_clarity * pow(rimF, 0.8);
   vec3 col;
   col.r = mix(frost(uv + disp).r, clear(uv + disp).r, sharpMix);
@@ -259,7 +263,9 @@ void main() {
   float centreSide = u_edgeDir > 0.0 ? top : smoothstep(0.0, 0.95, -n.y);
   float band = smoothstep(-5.0 * u_dpr, -0.5 * u_dpr, d) * (1.0 - smoothstep(-0.5 * u_dpr, 0.6 * u_dpr, d));
   float glint = u_hoverActive * exp(-dxc * dxc / (1.44 * sigma() * sigma())) * band;
-  col = mix(col, hl, glint * u_rim * (0.38 * centreSide + 0.10));
+  // One colour for the whole glint (white, or tinted by the bar colour): never per-channel.
+  vec3 glintCol = mix(vec3(1.0), u_ambient, 0.55 * u_ambientMix);
+  col = mix(col, glintCol, glint * u_rim * (0.38 * centreSide + 0.10));
 
   // Ultra-fine procedural grain.
   col += (g1 - 0.5) * 2.0 * u_grain;

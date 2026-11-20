@@ -29,7 +29,7 @@ use windows::Win32::UI::Shell::{
     ShellExecuteW, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DI_MASK, DI_NORMAL, DestroyIcon, DrawIconEx, EnumChildWindows, EnumWindows, GCLP_HICON, GW_OWNER,
+    ASFW_ANY, AllowSetForegroundWindow, DI_MASK, DI_NORMAL, DestroyIcon, DrawIconEx, EnumChildWindows, EnumWindows, GCLP_HICON, GW_OWNER,
     GWL_EXSTYLE, GetClassLongPtrW, GetForegroundWindow, GetIconInfo, GetWindow, GetWindowLongPtrW,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HICON, ICON_BIG, ICONINFO, IsIconic,
     IsWindowVisible, SMTO_ABORTIFHUNG, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL, SendMessageTimeoutW,
@@ -627,6 +627,78 @@ fn window_icon(hwnd: HWND) -> Option<HICON> {
     }
 }
 
+/// 64x64 PNG of a shell item (`shell:AppsFolder\<AUMID>`, an `.exe`) via IShellItemImageFactory:
+/// packaged apps' real tile artwork instead of SHGetFileInfo's 32 px icon. Must run on the STA thread.
+fn shell_image_png(parsing_name: &str) -> Option<Vec<u8>> {
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::GetDIBits;
+    use windows::Win32::System::Com::IBindCtx;
+    use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY};
+    let wname = wide(parsing_name);
+    unsafe {
+        let factory: IShellItemImageFactory = SHCreateItemFromParsingName(PCWSTR(wname.as_ptr()), None::<&IBindCtx>).ok()?;
+        let bmp = factory.GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_ICONONLY).ok()?;
+        let mut bm = BITMAP::default();
+        let got = GetObjectW(bmp.into(), std::mem::size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut _));
+        let (w, h) = (bm.bmWidth, bm.bmHeight.abs());
+        let mut px = vec![0u8; (w.max(0) * h * 4) as usize];
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h, // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let dc = GetDC(None);
+        let lines = if got > 0 && w > 0 && h > 0 {
+            GetDIBits(dc, bmp, 0, h as u32, Some(px.as_mut_ptr() as *mut _), &mut info, DIB_RGB_COLORS)
+        } else {
+            0
+        };
+        ReleaseDC(None, dc);
+        let _ = DeleteObject(bmp.into());
+        if lines == 0 {
+            return None;
+        }
+        // Premultiplied BGRA -> straight RGBA.
+        for p in px.chunks_exact_mut(4) {
+            let a = p[3] as u32;
+            let un = |c: u8| if a == 0 { 0 } else { ((c as u32 * 255 + a / 2) / a).min(255) as u8 };
+            let (b, g, r) = (un(p[0]), un(p[1]), un(p[2]));
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+        }
+        let img = image::RgbaImage::from_raw(w as u32, h as u32, px)?;
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+        Some(png)
+    }
+}
+
+/// `%APPDATA%\winglass\icon_cache\<fnv64(key + mtime)>.png`: launcher icons survive restarts. A file
+/// key includes its modification time, so a reinstalled app's new icon is picked up.
+fn disk_icon_path(key: &str) -> Option<PathBuf> {
+    let mtime = std::fs::metadata(key)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in key.to_ascii_lowercase().bytes().chain(mtime.to_le_bytes()) {
+        hash = (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    let dir = crate::storage::db::data_dir().join("icon_cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(format!("{hash:016x}.png")))
+}
+
 /// Data URL for an icon key (file path, or `hwnd:<n>`), served from the bounded LRU cache.
 pub fn icon_data_url(key: &str) -> Option<String> {
     if let Some(hit) = ICON_CACHE.lock().get(key) {
@@ -637,10 +709,18 @@ pub fn icon_data_url(key: &str) -> Option<String> {
             // Window icons are owned by the window; never destroy them.
             window_icon(HWND(h as isize as *mut core::ffi::c_void)).and_then(hicon_to_png)
         })
+    } else if let Some(bytes) = disk_icon_path(key).and_then(|p| std::fs::read(p).ok()) {
+        Some(bytes)
     } else {
         let path = key.to_string();
-        with_com(move || {
-            let icon = if path.starts_with(super::app_search::APPS_FOLDER_PREFIX) {
+        let png = with_com(move || {
+            let packaged = path.starts_with(super::app_search::APPS_FOLDER_PREFIX);
+            if packaged || path.to_ascii_lowercase().ends_with(".exe") {
+                if let Some(png) = shell_image_png(&path) {
+                    return Some(png);
+                }
+            }
+            let icon = if packaged {
                 shell_item_icon(&path)
             } else if is_shortcut(&path) {
                 shortcut_target_icon(&path).or_else(|| file_icon(&path))
@@ -655,7 +735,11 @@ pub fn icon_data_url(key: &str) -> Option<String> {
                 png
             })
         })
-        .flatten()
+        .flatten();
+        if let (Some(bytes), Some(file)) = (&png, disk_icon_path(key)) {
+            let _ = std::fs::write(file, bytes);
+        }
+        png
     };
     let url = png.map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(bytes)))?;
     ICON_CACHE.lock().insert(key.to_string(), url.clone());
@@ -694,6 +778,110 @@ pub fn focus(hwnd: HWND) {
     }
 }
 
+/// Launcher / pinned-app click. Order: an existing window of the same executable is restored and
+/// focused (single-instance apps: Task Manager, Discord, Steam…); a packaged app is activated by
+/// AUMID; anything else goes through `ShellExecuteW`, which runs `.lnk` targets and shows the UAC
+/// prompt for elevated binaries (`taskmgr.exe`) instead of failing with ERROR_ELEVATION_REQUIRED.
+/// `target` must already be validated by the caller (`commands::launch_app`).
+pub fn launch(target: &str) -> Result<(), String> {
+    let target = target.to_string();
+    // Own STA thread: ShellExecute wants an STA, and a UAC prompt can hold the call for as long as
+    // the user takes (the shared shell STA would time out and block icon extraction meanwhile).
+    std::thread::Builder::new()
+        .name("winglass-launch".into())
+        .spawn(move || {
+            let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            let out = launch_on_sta(&target);
+            if hr.is_ok() {
+                unsafe { CoUninitialize() };
+            }
+            out
+        })
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|_| "launch thread panicked".to_string())?
+}
+
+fn launch_on_sta(target: &str) -> Result<(), String> {
+    // The click on the dock was the last input, so this process may set the foreground: pass that
+    // right on. The dock is never activated, and a consent prompt or window requested from the
+    // background only flashes a button on the (hidden) taskbar — the "nothing happens" launch bug.
+    unsafe {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+    }
+    if let Some(aumid) = target.strip_prefix(super::app_search::APPS_FOLDER_PREFIX) {
+        // Desktop apps listed by path (`{FOLDERID}\Taskmgr.exe`) are plain executables.
+        if let Some(exe) = known_folder_exe(aumid) {
+            return if surface_existing(&exe) { Ok(()) } else { shell_open(&exe, None) };
+        }
+        if activate_packaged(aumid).is_ok() {
+            return Ok(());
+        }
+        return shell_open("explorer.exe", Some(target));
+    }
+    let exe = if is_shortcut(target) {
+        resolve_shortcut(Path::new(target))
+    } else if target.to_ascii_lowercase().ends_with(".exe") {
+        Some(target.to_string())
+    } else {
+        None
+    };
+    if exe.as_deref().is_some_and(surface_existing) {
+        return Ok(());
+    }
+    shell_open(target, None)
+}
+
+/// `{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\Taskmgr.exe` -> `C:\Windows\System32\Taskmgr.exe`.
+fn known_folder_exe(aumid: &str) -> Option<String> {
+    use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    let (guid, rest) = aumid.strip_prefix('{')?.split_once("}\\")?;
+    let id = windows::core::GUID::try_from(guid).ok()?;
+    let base = unsafe {
+        let p = SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None).ok()?;
+        let s = p.to_string().ok();
+        windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as *const core::ffi::c_void));
+        s?
+    };
+    let exe = Path::new(&base).join(rest);
+    let is_exe = exe.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe"));
+    (is_exe && exe.exists()).then(|| exe.to_string_lossy().into_owned())
+}
+
+/// MSIX / Store app by AUMID (also brings a running instance to the front).
+fn activate_packaged(aumid: &str) -> windows::core::Result<u32> {
+    use windows::Win32::System::Com::CLSCTX_LOCAL_SERVER;
+    use windows::Win32::UI::Shell::{AO_NONE, ApplicationActivationManager, IApplicationActivationManager};
+    let id = wide(aumid);
+    unsafe {
+        let manager: IApplicationActivationManager = CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?;
+        manager.ActivateApplication(PCWSTR(id.as_ptr()), PCWSTR::null(), AO_NONE)
+    }
+}
+
+/// Restore + focus a visible top-level window whose process is `exe`. False when there is none, or
+/// when Windows refused to restore it (an elevated window): the caller then relaunches, and the
+/// app's own single-instance logic surfaces it.
+fn surface_existing(exe: &str) -> bool {
+    // Every folder window is explorer.exe: "open File Explorer" must not just focus one of them.
+    if Path::new(exe).file_name().is_some_and(|n| n.eq_ignore_ascii_case("explorer.exe")) {
+        return false;
+    }
+    let Some(window) = enumerate_windows().into_iter().find(|w| w.exe.eq_ignore_ascii_case(exe)) else {
+        return false;
+    };
+    unsafe {
+        if IsIconic(window.hwnd).as_bool() {
+            let _ = ShowWindow(window.hwnd, SW_RESTORE);
+            if IsIconic(window.hwnd).as_bool() {
+                return false;
+            }
+        }
+    }
+    focus(window.hwnd);
+    true
+}
+
 pub fn shell_open(target: &str, args: Option<&str>) -> Result<(), String> {
     let wtarget = wide(target);
     let wargs = args.map(wide);
@@ -709,4 +897,18 @@ pub fn shell_open(target: &str, args: Option<&str>) -> Result<(), String> {
     };
     // ShellExecute returns a value > 32 on success.
     if result.0 as isize > 32 { Ok(()) } else { Err(format!("ShellExecuteW failed ({})", result.0 as isize)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_style_aumids_resolve_to_their_exe() {
+        // FOLDERID_System, as the AppsFolder lists Task Manager.
+        let exe = known_folder_exe(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\Taskmgr.exe").expect("taskmgr resolves");
+        assert!(exe.to_ascii_lowercase().ends_with(r"\system32\taskmgr.exe"), "{exe}");
+        assert_eq!(known_folder_exe("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"), None);
+        assert_eq!(known_folder_exe(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\drivers"), None);
+    }
 }

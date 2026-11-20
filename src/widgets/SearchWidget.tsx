@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { AppIcon } from "../components/AppIcon";
 import { Popover, WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
-import { errorMessage, ipc } from "../lib/ipc";
+import { errorMessage, ipc, subscribe } from "../lib/ipc";
 import type { AppHit, PathHit, WidgetProps } from "../types/winglass";
 
 type Item =
@@ -53,6 +53,10 @@ export function SearchWidget({ span, preview }: WidgetProps) {
     ...(q ? [{ kind: "web" as const, query: q }] : []),
       ];
 
+  // An app installed / removed while results are open: re-run the query against the new index.
+  const [indexRev, setIndexRev] = useState(0);
+  useEffect(() => (preview ? undefined : subscribe("apps-index-updated", () => setIndexRev((n) => n + 1))), [preview]);
+
   // Debounced search; stale answers (slower than a newer keystroke) are dropped.
   useEffect(() => {
     if (preview) return;
@@ -80,7 +84,7 @@ export function SearchWidget({ span, preview }: WidgetProps) {
         .catch((e) => id === seq.current && setError(errorMessage(e)));
     }, 70);
     return () => window.clearTimeout(timer);
-  }, [q, preview]);
+  }, [q, preview, indexRev]);
 
   const dismiss = () => {
     seq.current++;

@@ -19,8 +19,9 @@ use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx};
+use windows::Win32::UI::WindowsAndMessaging::WM_APP;
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW,
     RegGetValueW, RegOpenKeyExW,
@@ -40,7 +41,7 @@ pub const MAX_RESULTS: usize = 8;
 /// Launch target / icon key prefix of packaged apps: `shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude`.
 pub const APPS_FOLDER_PREFIX: &str = "shell:AppsFolder\\";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AppKind {
     Shortcut,
@@ -49,7 +50,7 @@ pub enum AppKind {
     App,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppHit {
     pub name: String,
@@ -418,13 +419,143 @@ fn index() -> Arc<Vec<Entry>> {
     }
 }
 
-/// Build the index in the background so the first keystroke is instant.
-pub fn warm() {
-    let _ = std::thread::Builder::new().name("winglass-app-index".into()).spawn(|| {
-        let _ = index();
-        // Walking thousands of shortcuts and registry keys leaves the working set inflated.
-        super::memory::request_trim(Duration::from_secs(2));
+// ---------------------------------------------------------------------------------------------
+// Live index: SQLite snapshot + shell change notifications
+// ---------------------------------------------------------------------------------------------
+
+type IndexListener = Box<dyn Fn(&[AppHit]) + Send + Sync>;
+static LISTENER: once_cell::sync::OnceCell<IndexListener> = once_cell::sync::OnceCell::new();
+const WM_APPS_CHANGED: u32 = WM_APP + 0x41;
+const DEBOUNCE_TIMER: usize = 1;
+const DEBOUNCE_MS: u32 = 800;
+
+fn keys(entries: &[Entry]) -> Vec<(&str, &str)> {
+    let mut k: Vec<_> = entries.iter().map(|e| (e.hit.path.as_str(), e.hit.name.as_str())).collect();
+    k.sort_unstable();
+    k
+}
+
+/// Rescan and tell the listener when the set of apps differs from what was indexed before.
+fn reconcile() {
+    let before = INDEX.lock().as_ref().map(|(_, entries)| entries.clone());
+    let after = rebuild();
+    if before.is_none_or(|b| keys(&b) != keys(&after)) {
+        if let Some(listener) = LISTENER.get() {
+            listener(&after.iter().map(|e| e.hit.clone()).collect::<Vec<_>>());
+        }
+    }
+    // Walking thousands of shortcuts and registry keys leaves the working set inflated.
+    super::memory::request_trim(Duration::from_secs(2));
+}
+
+/// Seed the index from the last snapshot (the first search is instant), reconcile it against disk
+/// in the background, then keep it live: shell notifications on both Start Menu `Programs` folders
+/// (interrupt level, ReadDirectoryChangesW underneath) and on the AppsFolder (Store / winget MSIX
+/// installs and removals), debounced 800 ms. `on_change` gets the new list only when it changed.
+pub fn start(snapshot: Vec<AppHit>, on_change: impl Fn(&[AppHit]) + Send + Sync + 'static) {
+    let _ = LISTENER.set(Box::new(on_change));
+    if !snapshot.is_empty() {
+        let seeded = snapshot.into_iter().map(|h| Entry::new(h.name, h.path, h.kind, h.folder)).collect();
+        *INDEX.lock() = Some((Instant::now(), Arc::new(seeded)));
+    }
+    let _ = std::thread::Builder::new().name("winglass-app-watch".into()).spawn(|| {
+        reconcile();
+        watch_loop();
     });
+}
+
+fn watch_loop() {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Shell::{
+        FOLDERID_CommonPrograms, FOLDERID_Programs, SHCNE_CREATE, SHCNE_DELETE, SHCNE_MKDIR, SHCNE_RENAMEFOLDER, SHCNE_RENAMEITEM,
+        SHCNE_RMDIR, SHCNE_UPDATEDIR, SHCNRF_InterruptLevel, SHCNRF_NewDelivery, SHCNRF_SOURCE, SHCNRF_ShellLevel, SHChangeNotifyEntry,
+        SHChangeNotifyRegister, SHGetKnownFolderIDList,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DispatchMessageW, GetMessageW, HWND_MESSAGE, MSG, RegisterClassW, TranslateMessage, WINDOW_EX_STYLE,
+        WINDOW_STYLE, WNDCLASSW,
+    };
+    use windows::core::w;
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let instance = GetModuleHandleW(None).unwrap_or_default();
+        let class = w!("WinGlassAppIndexWatch");
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(watch_proc), hInstance: instance.into(), lpszClassName: class, ..Default::default() });
+        let hwnd: HWND = match CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            class,
+            w!(""),
+            WINDOW_STYLE::default(),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(instance.into()),
+            None,
+        ) {
+            Ok(h) => h,
+            Err(err) => {
+                eprintln!("[winglass] app index watcher window failed: {err}");
+                return;
+            }
+        };
+        // The PIDLs stay allocated for the life of the process: the registration refers to them.
+        let entries: Vec<SHChangeNotifyEntry> = [&FOLDERID_AppsFolder, &FOLDERID_Programs, &FOLDERID_CommonPrograms]
+            .into_iter()
+            .filter_map(|id| SHGetKnownFolderIDList(id, KF_FLAG_DEFAULT.0 as u32, None).ok())
+            .map(|pidl| SHChangeNotifyEntry { pidl, fRecursive: true.into() })
+            .collect();
+        let events = SHCNE_CREATE.0 | SHCNE_DELETE.0 | SHCNE_RENAMEITEM.0 | SHCNE_UPDATEDIR.0 | SHCNE_MKDIR.0 | SHCNE_RMDIR.0 | SHCNE_RENAMEFOLDER.0;
+        let sources = SHCNRF_SOURCE(SHCNRF_ShellLevel.0 | SHCNRF_InterruptLevel.0 | SHCNRF_NewDelivery.0);
+        if SHChangeNotifyRegister(hwnd, sources, events as i32, WM_APPS_CHANGED, entries.len() as i32, entries.as_ptr()) == 0 {
+            // The 60 s stale-while-revalidate rescan still picks new apps up.
+            eprintln!("[winglass] SHChangeNotifyRegister failed; app index falls back to its TTL");
+            return;
+        }
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+unsafe extern "system" fn watch_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::{HANDLE, LRESULT};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{SHChangeNotification_Lock, SHChangeNotification_Unlock};
+    use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, KillTimer, SetTimer, WM_TIMER};
+    unsafe {
+        match msg {
+            WM_APPS_CHANGED => {
+                // New delivery: the event sits in shared memory until it is unlocked.
+                let mut pidls: *mut *mut ITEMIDLIST = std::ptr::null_mut();
+                let mut event = 0i32;
+                let lock = SHChangeNotification_Lock(HANDLE(wparam.0 as *mut _), lparam.0 as u32, Some(&mut pidls), Some(&mut event));
+                if !lock.is_invalid() {
+                    let _ = SHChangeNotification_Unlock(lock);
+                }
+                // An installer writes many shortcuts in a burst: rescan once it settles.
+                SetTimer(Some(hwnd), DEBOUNCE_TIMER, DEBOUNCE_MS, None);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == DEBOUNCE_TIMER => {
+                let _ = KillTimer(Some(hwnd), DEBOUNCE_TIMER);
+                reconcile();
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
 }
 
 pub fn search(query: &str) -> Vec<AppHit> {

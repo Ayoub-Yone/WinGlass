@@ -266,7 +266,19 @@ pub fn run() {
             win32::memory::start();
             win32::media_smtc::start(handle.clone());
             win32::audio::start(handle.clone());
-            win32::app_search::warm();
+            let snapshot = handle
+                .state::<AppState>()
+                .db
+                .kv_get("app_index")
+                .and_then(|json| serde_json::from_str(&json).ok())
+                .unwrap_or_default();
+            let index_handle = handle.clone();
+            win32::app_search::start(snapshot, move |hits| {
+                if let Ok(json) = serde_json::to_string(hits) {
+                    let _ = index_handle.state::<AppState>().db.kv_set("app_index", &json);
+                }
+                let _ = index_handle.emit("apps-index-updated", hits.len());
+            });
             win32::screen_time::start(handle.clone());
             win32::telemetry::start(handle.clone());
             providers::api_poller::start(handle.clone());

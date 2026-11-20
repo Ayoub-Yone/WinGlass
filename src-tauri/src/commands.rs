@@ -187,23 +187,27 @@ pub fn activate_window(hwnd: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn launch_app(path: String) -> Result<(), String> {
+pub async fn launch_app(path: String) -> Result<(), String> {
+    blocking(move || launch_checked(&path)).await
+}
+
+fn launch_checked(path: &str) -> Result<(), String> {
     // Packaged (MSIX / Store) apps: only AUMIDs the launcher index found in the AppsFolder.
     if let Some(aumid) = path.strip_prefix(app_search::APPS_FOLDER_PREFIX) {
-        if aumid.is_empty() || !app_search::is_indexed(&path) {
+        if aumid.is_empty() || !app_search::is_indexed(path) {
             return Err("this app is not in the app index".into());
         }
-        return apps_enum::shell_open("explorer.exe", Some(&path));
+        return apps_enum::launch(path);
     }
     let lower = path.to_ascii_lowercase();
-    if !(lower.ends_with(".lnk") || lower.ends_with(".exe") || lower.ends_with(".url")) || !std::path::Path::new(&path).exists() {
+    if !(lower.ends_with(".lnk") || lower.ends_with(".exe") || lower.ends_with(".url")) || !std::path::Path::new(path).exists() {
         return Err("only existing .lnk / .url / .exe targets can be launched".into());
     }
     // Internet shortcuts can point anywhere: only the ones the launcher index found on disk.
-    if lower.ends_with(".url") && !app_search::is_indexed(&path) {
+    if lower.ends_with(".url") && !app_search::is_indexed(path) {
         return Err("this internet shortcut is not in the app index".into());
     }
-    apps_enum::shell_open(&path, None)
+    apps_enum::launch(path)
 }
 
 /// Quick folders, https links and a small allow-list of Windows URI schemes.

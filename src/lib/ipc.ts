@@ -127,6 +127,8 @@ export interface AppEvents {
   "account:connected": AccountStatus;
   "glass:frame": number;
   "apps:foreground": number;
+  /** The launcher index changed (app installed / removed); payload = app count. */
+  "apps-index-updated": number;
   "toast:push": ToastSpec;
   "settings:navigate": string;
   "automation:test": { rule: "preMeetingPause" | "aiLimitWarning" | "revenueMilestone" | "renewalReminder" };
