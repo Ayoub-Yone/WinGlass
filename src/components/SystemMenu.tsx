@@ -4,8 +4,10 @@
 // the last two behind an in-menu confirmation). Closes on an outside click or Escape.
 
 import {
+  ArrowLeft,
   Bluetooth,
   ChevronRight,
+  LayoutGrid,
   EthernetPort,
   Lock,
   Moon,
@@ -203,16 +205,63 @@ function LinkRow(props: { icon: LucideIcon; label: string; onClick: () => void; 
   );
 }
 
+// shortcut: labels are the requested French strings, not i18n keys; move them to translations.ts if the menu must follow the UI language.
+const WINX: (readonly [string, string] | null)[] = [
+  ["apps", "Applications installées"],
+  ["power-options", "Options d'alimentation"],
+  ["eventvwr", "Observateur d'événements"],
+  ["system", "Système"],
+  ["devmgmt", "Gestionnaire de périphériques"],
+  ["network", "Connexions réseau"],
+  ["diskmgmt", "Gestion des disques"],
+  ["compmgmt", "Gestion de l'ordinateur"],
+  ["terminal", "Terminal"],
+  ["terminal-admin", "Terminal (administrateur)"],
+  null,
+  ["taskmgr", "Gestionnaire des tâches"],
+  ["settings", "Paramètres"],
+  ["explorer", "Explorateur de fichiers"],
+  ["search", "Rechercher"],
+  ["run", "Exécuter"],
+  null,
+];
+
+function WinxRow({ label, onClick, testId, chevron, expanded }: { label: string; onClick: () => void; testId: string; chevron?: boolean; expanded?: boolean }) {
+  return (
+    <button
+      data-testid={testId}
+      aria-expanded={expanded}
+      className="lb-row lb-focus flex w-full items-center gap-2.5 border-none bg-transparent px-2 py-[5px] text-left"
+      style={{ borderRadius: INNER }}
+      onClick={onClick}
+    >
+      <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{label}</span>
+      {chevron && <ChevronRight size={14} strokeWidth={STROKE} className="shrink-0 lb-faint" style={{ transform: expanded ? "rotate(90deg)" : undefined, transition: "transform 160ms ease" }} />}
+    </button>
+  );
+}
+
+const Separator = () => <div className="mx-1.5 my-1 h-px" style={{ background: "var(--lb-track)" }} />;
+
 function SystemMenuBody({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
   const settings = useSettings();
   const { state, toggle, busy, last } = useRadios();
   const [confirm, setConfirm] = useState<"restart" | "shutdown" | null>(null);
+  const [view, setView] = useState<"main" | "winx">("main");
+  const [powerOpen, setPowerOpen] = useState(false);
   const firstRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     firstRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
-  }, []);
+  }, [view]);
+
+  const winx = (id: string, label: string) => {
+    onClose();
+    ipc.openWinxItem(id).catch((err) => {
+      void broadcast("toast:push", { id: `winx-${id}`, kind: "system", title: t("sysmenu.failed", { action: label }), subtitle: errorMessage(err) });
+    });
+  };
 
   const settingsPage = (uri: string) => {
     onClose();
@@ -238,6 +287,55 @@ function SystemMenuBody({ onClose }: { onClose: () => void }) {
     { kind: "restart", icon: RotateCcw },
     { kind: "shutdown", icon: Power },
   ];
+
+  if (view === "winx") {
+    return (
+      <div role="dialog" aria-label="Options Windows natives" data-testid="winx-menu" ref={firstRef}>
+        <button
+          data-testid="winx-back"
+          className="lb-row lb-focus flex w-full items-center gap-2 border-none bg-transparent px-2 py-1.5 text-left"
+          style={{ borderRadius: INNER }}
+          onClick={() => setView("main")}
+        >
+          <ArrowLeft size={15} strokeWidth={STROKE} className="shrink-0 lb-muted" />
+          <span className="text-[12px] font-semibold">Options Windows natives</span>
+        </button>
+        <Separator />
+        {WINX.map((item, i) => (item ? <WinxRow key={item[0]} testId={`winx-${item[0]}`} label={item[1]} onClick={() => winx(item[0], item[1])} /> : <Separator key={`sep-${i}`} />))}
+        <WinxRow testId="winx-power" label="Arrêter ou se déconnecter" chevron expanded={powerOpen} onClick={() => setPowerOpen((o) => !o)} />
+        {powerOpen && (
+          <div className="pl-3" role="group" aria-label="Arrêter ou se déconnecter">
+            {confirm ? (
+              <div data-testid="sysmenu-confirm" className="px-1.5 pb-1 pt-1.5" role="alertdialog" aria-label={t(`sysmenu.${confirm}`)}>
+                <div className="pb-2.5 text-[12px] leading-snug">{confirm === "restart" ? t("sysmenu.confirmRestart") : t("sysmenu.confirmShutdown")}</div>
+                <div className="flex items-center justify-end gap-3">
+                  <button className="lb-focus border-none bg-transparent px-1 py-1 text-[12px] lb-muted" onClick={() => setConfirm(null)} autoFocus>
+                    {t("sysmenu.cancel")}
+                  </button>
+                  <button
+                    data-testid="sysmenu-confirm-ok"
+                    className="lb-focus border-none px-3 py-1.5 text-[12px] font-semibold"
+                    style={{ borderRadius: INNER - 2, background: "var(--lb-red)", color: "#fff" }}
+                    onClick={() => power(confirm)}
+                  >
+                    {t(`sysmenu.${confirm}`)}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <WinxRow testId="winx-signout" label="Se déconnecter" onClick={() => winx("signout", "Se déconnecter")} />
+                <WinxRow testId="winx-sleep" label="Veille" onClick={() => power("sleep")} />
+                <WinxRow testId="winx-shutdown" label="Arrêter" onClick={() => setConfirm("shutdown")} />
+                <WinxRow testId="winx-restart" label="Redémarrer" onClick={() => setConfirm("restart")} />
+              </>
+            )}
+          </div>
+        )}
+        <WinxRow testId="winx-desktop" label="Bureau" onClick={() => winx("desktop", "Bureau")} />
+      </div>
+    );
+  }
 
   return (
     <div role="dialog" aria-label={t("sysmenu.title")} data-testid="system-menu">
@@ -316,6 +414,7 @@ function SystemMenuBody({ onClose }: { onClose: () => void }) {
         }}
       />
       <LinkRow testId="sysmenu-windows-settings" icon={Settings} label={t("sysmenu.windowsSettings")} onClick={() => settingsPage("ms-settings:")} />
+      <LinkRow testId="sysmenu-winx" icon={LayoutGrid} label="Options Windows natives" onClick={() => setView("winx")} />
 
       <div className="mx-1.5 mb-1 mt-2 h-px" style={{ background: "var(--lb-track)" }} />
       {confirm ? (

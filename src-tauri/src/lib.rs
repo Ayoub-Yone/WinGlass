@@ -188,6 +188,7 @@ pub fn run() {
             commands::set_radio,
             commands::set_hotspot,
             commands::power_action,
+            commands::open_winx_item,
             commands::get_app_window_previews,
             commands::focus_app_window,
             commands::close_app_window,

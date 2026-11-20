@@ -397,6 +397,48 @@ pub async fn power_action(action: String) -> Result<(), String> {
     blocking(move || crate::win32::power::run(action)).await
 }
 
+/// Win+X menu of the Windows button. Only the fixed ids below run: the webview never passes a
+/// path or command line, so this cannot launch arbitrary programs.
+#[tauri::command]
+pub async fn open_winx_item(id: String) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNORMAL};
+    let (verb, target, args, show) = match id.as_str() {
+        "apps" => ("open", "ms-settings:appsfeatures", None, SW_SHOWNORMAL),
+        "power-options" => ("open", "powercfg.cpl", None, SW_SHOWNORMAL),
+        "eventvwr" => ("open", "eventvwr.msc", None, SW_SHOWNORMAL),
+        "system" => ("open", "ms-settings:about", None, SW_SHOWNORMAL),
+        "devmgmt" => ("open", "devmgmt.msc", None, SW_SHOWNORMAL),
+        "network" => ("open", "ncpa.cpl", None, SW_SHOWNORMAL),
+        "diskmgmt" => ("open", "diskmgmt.msc", None, SW_SHOWNORMAL),
+        "compmgmt" => ("open", "compmgmt.msc", None, SW_SHOWNORMAL),
+        "terminal" => ("open", "wt.exe", None, SW_SHOWNORMAL),
+        "terminal-admin" => ("runas", "wt.exe", None, SW_SHOWNORMAL),
+        "taskmgr" => ("open", "taskmgr.exe", None, SW_SHOWNORMAL),
+        "settings" => ("open", "ms-settings:", None, SW_SHOWNORMAL),
+        "explorer" => ("open", "explorer.exe", None, SW_SHOWNORMAL),
+        "search" => return win_combo(0x53), // Win+S: ms-search: is not a registered protocol
+        "run" => ("open", "rundll32.exe", Some("shell32.dll,#61"), SW_SHOWNORMAL),
+        "signout" => ("open", "shutdown.exe", Some("/l"), SW_HIDE),
+        // "Show desktop" shell object: toggles like Win+D.
+        "desktop" => ("open", "explorer.exe", Some("shell:::{3080F90D-D7AD-11D9-BD98-0000947B0257}"), SW_SHOWNORMAL),
+        _ => return Err(format!("unknown Win+X item '{id}'")),
+    };
+    blocking(move || apps_enum::shell_exec_sta(verb, target, args, show)).await
+}
+
+/// Win + `vk` through SendInput (the shell handles it whichever window has focus).
+fn win_combo(vk: u16) -> Result<(), String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_LWIN};
+    let key = |k: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: k, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
+    };
+    let none = KEYBD_EVENT_FLAGS(0);
+    let inputs = [key(VK_LWIN, none), key(VIRTUAL_KEY(vk), none), key(VIRTUAL_KEY(vk), KEYEVENTF_KEYUP), key(VK_LWIN, KEYEVENTF_KEYUP)];
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    if sent as usize == inputs.len() { Ok(()) } else { Err("the key combination could not be sent".into()) }
+}
+
 /// Hover previews: every open window of a dock app entry with a scaled PrintWindow thumbnail.
 #[tauri::command]
 pub async fn get_app_window_previews(app_id: String) -> Result<Vec<crate::win32::window_previews::WindowPreview>, String> {

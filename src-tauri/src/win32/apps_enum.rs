@@ -32,11 +32,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, DI_MASK, DI_NORMAL, DestroyIcon, DrawIconEx, EnumChildWindows, EnumWindows, GCLP_HICON, GW_OWNER,
     GWL_EXSTYLE, GetClassLongPtrW, GetForegroundWindow, GetIconInfo, GetWindow, GetWindowLongPtrW,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HICON, ICON_BIG, ICONINFO, IsIconic,
-    IsWindowVisible, SMTO_ABORTIFHUNG, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL, SendMessageTimeoutW,
+    IsWindowVisible, SMTO_ABORTIFHUNG, SHOW_WINDOW_CMD, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL, SendMessageTimeoutW,
     SetForegroundWindow, ShowWindow, SwitchToThisWindow, WM_GETICON, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
 };
-use windows::core::{BOOL, PCWSTR, w};
+use windows::core::{BOOL, PCWSTR};
 
 use super::{from_wide, sentinel, wide};
 use crate::lru::LruCache;
@@ -883,16 +883,42 @@ fn surface_existing(exe: &str) -> bool {
 }
 
 pub fn shell_open(target: &str, args: Option<&str>) -> Result<(), String> {
+    shell_exec("open", target, args, SW_SHOWNORMAL)
+}
+
+/// Win+X style launch on its own STA thread (same reasons as `launch`): `verb` is "open" or
+/// "runas" (UAC prompt), `show` is SW_HIDE for console tools such as shutdown.exe.
+pub fn shell_exec_sta(verb: &'static str, target: &'static str, args: Option<&'static str>, show: SHOW_WINDOW_CMD) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("winglass-winx".into())
+        .spawn(move || {
+            unsafe {
+                let _ = AllowSetForegroundWindow(ASFW_ANY);
+            }
+            let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            let out = shell_exec(verb, target, args, show);
+            if hr.is_ok() {
+                unsafe { CoUninitialize() };
+            }
+            out
+        })
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|_| "launch thread panicked".to_string())?
+}
+
+fn shell_exec(verb: &str, target: &str, args: Option<&str>, show: SHOW_WINDOW_CMD) -> Result<(), String> {
+    let wverb = wide(verb);
     let wtarget = wide(target);
     let wargs = args.map(wide);
     let result = unsafe {
         ShellExecuteW(
             None,
-            w!("open"),
+            PCWSTR(wverb.as_ptr()),
             PCWSTR(wtarget.as_ptr()),
             wargs.as_ref().map(|a| PCWSTR(a.as_ptr())).unwrap_or(PCWSTR::null()),
             PCWSTR::null(),
-            SW_SHOWNORMAL,
+            show,
         )
     };
     // ShellExecute returns a value > 32 on success.

@@ -91,6 +91,7 @@ export const ipc = {
   setHotspot: (on: boolean) => invoke<void>("set_hotspot", { on }),
   cycleKeyboardLayout: () => invoke<void>("cycle_keyboard_layout"),
   /** Restart / shutdown must be confirmed in the UI first. */
+  openWinxItem: (id: string) => invoke<void>("open_winx_item", { id }),
   powerAction: (action: "lock" | "sleep" | "restart" | "shutdown") => invoke<void>("power_action", { action }),
 
   getProviders: () => invoke<ProviderResult[]>("get_providers"),
