@@ -32,6 +32,7 @@ import {
   SunMedium,
   Volume2,
   ChevronUp,
+  MoonStar,
 } from "lucide-react";
 import type { I18n } from "../i18n";
 import type { LayoutItem, Span, WidgetCategory, WidgetDefinition } from "../types/winglass";
@@ -60,9 +61,10 @@ import {
   QuickNotesWidget,
   StopwatchWidget,
   TodosWidget,
-  WeatherWidget,
   WorldClocksWidget,
 } from "./UtilityWidgets";
+import { WeatherWidget } from "./WeatherWidget";
+import { PrayerTimesWidget } from "./PrayerTimesWidget";
 import { SearchWidget } from "./SearchWidget";
 import { VolumeWidget } from "./VolumeWidget";
 import { HiddenTrayButton } from "./HiddenTrayButton";
@@ -120,7 +122,8 @@ export const WIDGETS: WidgetDefinition[] = [
   { id: "clock", name: "Clock", description: "Local time and date", category: "Utilities", sizes: S12, defaultSize: "1x1", icon: Clock, keywords: ["time", "date"], component: ClockWidget },
   { id: "search", name: "Search", description: "Search and launch installed apps, or open a URL", category: "Utilities", sizes: S23, defaultSize: "2x1", icon: Search, keywords: ["launcher", "start", "find"], component: SearchWidget },
   { id: "world-clocks", name: "World Clocks", description: "NYC, LDN, TYO analog + digital", category: "Utilities", sizes: S123, defaultSize: "3x1", icon: Globe, keywords: ["time zones", "clocks"], component: WorldClocksWidget },
-  { id: "weather", name: "Hourly Weather", description: "Local forecast strip (Open-Meteo)", category: "Utilities", sizes: S123, defaultSize: "3x1", icon: CloudSun, keywords: ["forecast", "temperature"], providerId: "weather", component: WeatherWidget },
+  { id: "weather", name: "Weather", description: "Conditions, hourly and 7-day forecast (Open-Meteo)", category: "Utilities", sizes: S123, defaultSize: "2x1", icon: CloudSun, keywords: ["forecast", "temperature", "météo", "prévisions"], providerId: "weather", component: WeatherWidget },
+  { id: "prayer", name: "Prayer Times", description: "Next prayer, countdown and adhan alerts (Mawaqit or city)", category: "Utilities", sizes: S123, defaultSize: "2x1", icon: MoonStar, keywords: ["prière", "salat", "adhan", "mawaqit", "mosquée", "mosque", "islam", "aladhan"], providerId: "prayer", component: PrayerTimesWidget },
   { id: "folders", name: "Quick Folders", description: "Downloads, Screenshots, Recent, Recycle Bin", category: "Utilities", sizes: S123, defaultSize: "2x1", icon: FolderOpen, keywords: ["explorer", "files", "downloads"], component: QuickFoldersWidget },
   { id: "stopwatch", name: "Stopwatch", description: "Start, pause and reset", category: "Utilities", sizes: S12, defaultSize: "1x1", icon: Watch, keywords: ["timer", "lap"], component: StopwatchWidget },
 ];

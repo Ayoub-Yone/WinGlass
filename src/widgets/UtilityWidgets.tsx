@@ -1,38 +1,29 @@
 // Utilities: Pomodoro, Stopwatch, Todos, Quick Notes, World Clocks,
-// Hourly Weather (Open-Meteo), Quick Folders, Clock.
+// Quick Folders, Clock. (Weather lives in WeatherWidget.tsx.)
 
 import {
   Check,
-  Cloud,
-  CloudDrizzle,
-  CloudFog,
-  CloudLightning,
-  CloudRain,
-  CloudSnow,
-  CloudSun,
   Download,
   History,
   Image,
   ListTodo,
-  Moon,
   Pause,
   Play,
   Plus,
   RotateCcw,
   StickyNote,
-  Sun,
   Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Popover, ProviderState, WidgetCard } from "../components/ui";
+import { Popover, WidgetCard } from "../components/ui";
 import { bus } from "../engine/EventBus";
 import { useI18n, type TranslationKey } from "../i18n";
-import { formatClock, formatDateTime, formatHour, formatMediumDate, formatNumericDate, formatTime } from "../lib/format";
+import { formatClock, formatDateTime, formatMediumDate, formatNumericDate, formatTime } from "../lib/format";
 import { broadcast, errorMessage, ipc } from "../lib/ipc";
-import { useLocalState, useNow, useProvider, useSettings } from "../lib/hooks";
-import type { Todo, WeatherData, WidgetProps } from "../types/winglass";
+import { useLocalState, useNow, useSettings } from "../lib/hooks";
+import type { Todo, WidgetProps } from "../types/winglass";
 
 // ---------------------------------------------------------------- Pomodoro
 
@@ -382,60 +373,6 @@ export function WorldClocksWidget({ span }: WidgetProps) {
           </div>
         );
       })}
-    </WidgetCard>
-  );
-}
-
-// ---------------------------------------------------------------- Weather
-
-export function weatherIcon(code: number | null, isDay = true): LucideIcon {
-  if (code === null) return Cloud;
-  if (code === 0) return isDay ? Sun : Moon;
-  if (code <= 2) return CloudSun;
-  if (code === 3) return Cloud;
-  if (code === 45 || code === 48) return CloudFog;
-  if (code >= 51 && code <= 57) return CloudDrizzle;
-  if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return CloudRain;
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return CloudSnow;
-  if (code >= 95) return CloudLightning;
-  return Cloud;
-}
-
-export function WeatherWidget({ span }: WidgetProps) {
-  const { t } = useI18n();
-  const view = useProvider<WeatherData>("weather");
-  if (!view.data) {
-    return <ProviderState span={span} providerId="weather" glyph={<CloudSun size={20} />} name={t("weather.name")} status={view.status} error={view.error} tab="integrations" />;
-  }
-  const d = view.data;
-  const Icon = weatherIcon(d.code, d.isDay);
-  const hours = d.hourly.slice(1, span === "3x1" ? 7 : 4);
-  return (
-    <WidgetCard span={span} title={view.error ?? t("weather.title", { city: d.city, high: d.high ?? "—", low: d.low ?? "—" })}>
-      <div className="flex w-full min-w-0 items-center gap-2">
-        <Icon size={20} className="shrink-0" style={{ color: d.isDay ? "var(--lb-amber)" : "var(--lb-muted)" }} />
-        <div className="shrink-0 leading-tight">
-          <div className="font-semibold tabular-nums" style={{ fontSize: "var(--lb-large)" }}>
-            {d.current === null ? "—" : `${Math.round(d.current)}°`}
-          </div>
-          <div className="max-w-[70px] truncate lb-muted" style={{ fontSize: "var(--lb-small)" }}>{d.city}</div>
-        </div>
-        {span !== "1x1" && (
-          <div className="ml-auto flex min-w-0 gap-2">
-            {hours.map((h) => {
-              const HIcon = weatherIcon(h.code);
-              const hour = formatHour(new Date(h.time));
-              return (
-                <div key={h.time} className="flex flex-col items-center leading-tight" style={{ fontSize: "var(--lb-small)" }}>
-                  <span className="lb-faint">{hour}</span>
-                  <HIcon size={11} className="my-[1px] lb-muted" />
-                  <span className="tabular-nums">{h.temp === null ? "—" : `${Math.round(h.temp)}°`}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </WidgetCard>
   );
 }

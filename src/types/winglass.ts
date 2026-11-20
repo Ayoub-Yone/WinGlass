@@ -101,11 +101,65 @@ export interface Settings {
   clearMode: boolean;
   /** « Ambiance Musique »: soft glow tinted by the playing track's cover art. */
   musicAmbiance: boolean;
+  /** Dock corner radius in px; cards stay concentric (radius − padding). */
+  dockRadius: number;
+  /** Liquid-glass refraction multiplier, 0.5 .. 2 (1 = calibrated). */
+  glassRefraction: number;
   pomodoroFocusMinutes: number;
   pomodoroBreakMinutes: number;
   worldClocks: WorldClock[];
   automations: AutomationSettings;
   providers: ProviderSettings;
+  prayer: PrayerSettings;
+}
+
+export type PrayerKey = "fajr" | "sunrise" | "dhuhr" | "asr" | "maghrib" | "isha";
+
+export interface PrayerSettings {
+  source: "mawaqit" | "city";
+  mosqueSlug: string;
+  mosqueName: string;
+  city: string;
+  latitude: number;
+  longitude: number;
+  /** Aladhan method: 3 MWL, 12 UOIF, 2 ISNA, 4 Umm al-Qura. */
+  method: number;
+  /** 0 (off), 5, 10 or 15. */
+  reminderMinutes: number;
+  alerts: PrayerKey[];
+  chime: boolean;
+  nativeToasts: boolean;
+}
+
+export interface PrayerDay {
+  date: string;
+  /** "HH:MM" in PrayerKey order. */
+  times: string[];
+  /** Mawaqit iqama for the 5 prayers: "+10" or "HH:MM". */
+  iqama: string[] | null;
+}
+
+export interface PrayerData {
+  source: "mawaqit" | "city";
+  name: string;
+  city: string;
+  method: number;
+  days: PrayerDay[];
+  offline: boolean;
+}
+
+export interface GeoPlace {
+  name: string;
+  country: string;
+  admin: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface Mosque {
+  slug: string;
+  name: string;
+  location: string;
 }
 
 export interface DockLayout {
@@ -178,7 +232,8 @@ export type ProviderId =
   | "leetcode"
   | "api_counter"
   | "weather"
-  | "calendar";
+  | "calendar"
+  | "prayer";
 
 export type ProviderStatus = "unconfigured" | "ok" | "error" | "simulated";
 
@@ -271,6 +326,15 @@ export interface WeatherData {
   high: number | null;
   low: number | null;
   hourly: WeatherHour[];
+  /** 7 days, today first. */
+  daily?: WeatherDay[];
+}
+
+export interface WeatherDay {
+  date: string;
+  code: number | null;
+  high: number | null;
+  low: number | null;
 }
 
 export interface CalendarEvent {
@@ -474,7 +538,7 @@ export interface ToastSpec {
   id: string;
   title: string;
   subtitle?: string;
-  kind?: "calendar" | "ai" | "revenue" | "renewal" | "system";
+  kind?: "calendar" | "ai" | "revenue" | "renewal" | "system" | "prayer";
   actionLabel?: string;
   action?: ToastAction;
   /** Second pill (e.g. « Résilier » next to « Garder »). */

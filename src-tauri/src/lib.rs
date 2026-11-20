@@ -140,6 +140,7 @@ pub fn run() {
     }
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState { db, settings: RwLock::new(settings) })
         .register_asynchronous_uri_scheme_protocol("glass", |_ctx, _request, responder| {
             responder.respond(graphics::capture_response());
@@ -195,6 +196,12 @@ pub fn run() {
             commands::refresh_provider,
             commands::set_secret,
             commands::get_secret_names,
+            commands::geocode_city,
+            commands::search_mawaqit_mosques,
+            commands::fetch_mawaqit_timings,
+            commands::notify_native,
+            commands::add_local_event,
+            commands::delete_local_event,
             commands::get_layout,
             commands::save_layout,
             commands::get_note,

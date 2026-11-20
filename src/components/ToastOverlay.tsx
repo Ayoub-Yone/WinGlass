@@ -2,7 +2,7 @@
 // The toast window is click-through except over a card: each card registers a hit region, so the
 // cursor only becomes "solid" while hovering an active toast. Auto-dismiss pauses on hover.
 
-import { CalendarDays, Info, RefreshCcw, Sparkles, TrendingUp, X, type LucideIcon } from "lucide-react";
+import { CalendarDays, Info, MoonStar, RefreshCcw, Sparkles, TrendingUp, X, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useHub } from "../engine/DataHub";
 import { useI18n } from "../i18n";
@@ -19,6 +19,7 @@ const KIND: Record<NonNullable<ToastSpec["kind"]>, { icon: LucideIcon; color: st
   revenue: { icon: TrendingUp, color: "var(--lb-green)" },
   renewal: { icon: RefreshCcw, color: "var(--lb-amber)" },
   system: { icon: Info, color: "var(--lb-accent)" },
+  prayer: { icon: MoonStar, color: "oklch(80% 0.12 85)" },
 };
 
 interface LiveToast extends ToastSpec {

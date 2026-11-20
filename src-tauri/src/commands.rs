@@ -2,13 +2,14 @@
 //! readable error instead of a rejected promise with an opaque payload.
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 use crate::AppState;
 use crate::graphics;
 use crate::providers::api_poller::{self, ProviderResult};
+use crate::providers::prayer_times::{self, Mosque};
 use crate::storage::db::{ScreenTimeDay, Todo};
 use crate::storage::secrets;
 use crate::storage::settings::Settings;
@@ -63,6 +64,9 @@ pub fn update_settings(app: AppHandle, state: State<'_, AppState>, settings: Set
     if previous.simulation != settings.simulation || providers_changed {
         let handle = app.clone();
         tauri::async_runtime::spawn(async move { api_poller::refresh_all(&handle).await });
+    } else if previous.prayer.source != settings.prayer.source || prayer_times::config_key(&previous.prayer) != prayer_times::config_key(&settings.prayer) {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move { api_poller::refresh(&handle, "prayer").await });
     }
     app.emit("settings:changed", &settings).map_err(|e| e.to_string())?;
     Ok(settings)
@@ -455,6 +459,80 @@ pub fn account_login(app: AppHandle, provider: String) -> Result<(), String> {
 #[tauri::command]
 pub fn get_secret_names(state: State<'_, AppState>) -> Vec<String> {
     secrets::names(&state.db)
+}
+
+/// City auto-complete (Open-Meteo geocoding) for weather and prayer times.
+#[tauri::command]
+pub async fn geocode_city(query: String, language: String) -> Result<Vec<Value>, String> {
+    api_poller::geocode(&query, &language).await
+}
+
+/// Mawaqit mosques matching `query` (or the mosque behind a pasted mawaqit.net link).
+#[tauri::command]
+pub async fn search_mawaqit_mosques(query: String) -> Result<Vec<Mosque>, String> {
+    prayer_times::search(&api_poller::CLIENT, &query).await
+}
+
+/// Today's adhan + iqama times of one Mawaqit mosque.
+#[tauri::command]
+pub async fn fetch_mawaqit_timings(mosque_slug: String) -> Result<Value, String> {
+    prayer_times::mawaqit_today(&api_poller::CLIENT, &mosque_slug).await
+}
+
+/// Native Windows toast (prayer alerts). Respects winglass's own « Ne pas déranger ».
+#[tauri::command]
+pub fn notify_native(app: AppHandle, state: State<'_, AppState>, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    if state.settings.read().do_not_disturb {
+        return Ok(());
+    }
+    app.notification().builder().title(title).body(body).show().map_err(|e| e.to_string())
+}
+
+/// Quick-add from the calendar flyout: a local event saved in SQLite and merged into the feed.
+#[tauri::command]
+pub async fn add_local_event(app: AppHandle, title: String, start: String, end: String) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > 200 {
+        return Err("invalid event title".into());
+    }
+    let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).map_err(|_| format!("invalid date '{s}'"));
+    let (from, to) = (parse(&start)?, parse(&end)?);
+    if to <= from {
+        return Err("the event must end after it starts".into());
+    }
+    {
+        let db = &app.state::<AppState>().db;
+        let mut events = api_poller::local_events(db);
+        events.push(serde_json::json!({
+            "uid": format!("local-{}", chrono::Utc::now().timestamp_millis()),
+            "title": title,
+            "start": from.to_rfc3339(),
+            "end": to.to_rfc3339(),
+            "allDay": false,
+            "location": null,
+            "url": null,
+            "calendar": "WinGlass",
+        }));
+        // Past events are pruned so the list stays small.
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
+        events.retain(|e| e["end"].as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).is_some_and(|d| d > cutoff));
+        api_poller::save_local_events(db, &events)?;
+    }
+    api_poller::refresh(&app, "calendar").await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_local_event(app: AppHandle, uid: String) -> Result<(), String> {
+    {
+        let db = &app.state::<AppState>().db;
+        let mut events = api_poller::local_events(db);
+        events.retain(|e| e["uid"].as_str() != Some(uid.as_str()));
+        api_poller::save_local_events(db, &events)?;
+    }
+    api_poller::refresh(&app, "calendar").await;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------

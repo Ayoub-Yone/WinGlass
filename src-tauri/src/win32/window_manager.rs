@@ -193,7 +193,7 @@ pub fn snap_to_cursor(app: &AppHandle) -> Option<DockEdge> {
 pub fn modal_spec(label: &str, lang: Lang) -> Option<(f64, f64, &'static str)> {
     match label {
         "picker" => Some((920.0, 640.0, tr(lang, Text::PickerTitle))),
-        "settings" => Some((860.0, 640.0, tr(lang, Text::SettingsTitle))),
+        "settings" => Some((1000.0, 680.0, tr(lang, Text::SettingsTitle))),
         _ => None,
     }
 }
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn only_picker_and_settings_are_lazy_modals() {
         assert_eq!(modal_spec("picker", Lang::En).map(|s| (s.0, s.1)), Some((920.0, 640.0)));
-        assert_eq!(modal_spec("settings", Lang::En).map(|s| (s.0, s.1)), Some((860.0, 640.0)));
+        assert_eq!(modal_spec("settings", Lang::En).map(|s| (s.0, s.1)), Some((1000.0, 680.0)));
         assert!(modal_spec("dock", Lang::En).is_none());
         assert!(modal_spec("toast", Lang::Fr).is_none());
     }

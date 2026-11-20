@@ -22,7 +22,7 @@ import { LiquidGlassCanvas } from "./LiquidGlassCanvas";
 import { WindowsButton } from "./SystemMenu";
 import { openSettings } from "./ui";
 import { getHub, useHub } from "../engine/DataHub";
-import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER, frostPreset } from "../engine/ThemeEngine";
+import { SIZE_ORDER, SIZES, THEMES, THEME_ORDER, concentric, frostPreset } from "../engine/ThemeEngine";
 import { LANGUAGES, useI18n } from "../i18n";
 import { pushCapture, useHitRegion } from "../lib/hitRegions";
 import { GLASS_BULGE, MAG_HEADROOM, attachMagnifier } from "../lib/magnify";
@@ -104,7 +104,13 @@ export function DockContainer() {
   const clear = settings?.clearMode ?? false;
   const glass = theme.usesGlassShader && !clear;
   const ambient = useAmbientColors(settings?.musicAmbiance ?? false);
-  const frost = useMemo(() => frostPreset(settings?.theme, settings?.glassFrostLevel), [settings?.theme, settings?.glassFrostLevel]);
+  const refraction = settings?.glassRefraction ?? 1;
+  const frost = useMemo(() => {
+    const preset = frostPreset(settings?.theme, settings?.glassFrostLevel);
+    return { ...preset, refraction: preset.refraction * refraction };
+  }, [settings?.theme, settings?.glassFrostLevel, refraction]);
+  // Settings › Apparence dial; cards stay concentric (radius − padding − 1, never below 8).
+  const dockRadius = settings?.dockRadius ?? size.radius;
 
   useEffect(() => {
     if (clear) setGlassActive(false);
@@ -398,6 +404,8 @@ export function DockContainer() {
   const ambientVars = Object.fromEntries([0, 1, 2].map((i) => [`--lb-amb-${i + 1}`, ambient[i] ?? ambient[0] ?? "transparent"]));
   const pillStyle: CSSProperties = {
     ...ambientVars,
+    ["--lb-radius" as string]: `${dockRadius}px`,
+    ["--lb-card-radius" as string]: `${concentric(dockRadius, size.padding)}px`,
     height: "var(--lb-height)",
     padding: "var(--lb-padding)",
     maxWidth: "100%",
@@ -445,7 +453,7 @@ export function DockContainer() {
         onPointerCancel={finishPointer}
         onContextMenu={onContextMenu}
       >
-        {glass && <LiquidGlassCanvas radius={size.radius} frost={frost} ambient={ambient[0] ?? null} onActiveChange={setGlassActive} />}
+        {glass && <LiquidGlassCanvas radius={dockRadius} frost={frost} ambient={ambient[0] ?? null} onActiveChange={setGlassActive} />}
         {/* Ambiance Musique: diffuse cover-tinted light inside the bar (fades out with no music). */}
         <div aria-hidden className="lb-ambient" />
         <div

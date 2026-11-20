@@ -4,6 +4,7 @@
 // most once per logical occurrence (dedupe keys persist across restarts).
 
 import { bus } from "./EventBus";
+import { startPrayerScheduler } from "./PrayerScheduler";
 import { getHub } from "./DataHub";
 import { broadcast, ipc } from "../lib/ipc";
 import { formatDayTime, formatMoney, formatPercent, formatRelativeDay, formatTime } from "../lib/format";
@@ -71,6 +72,7 @@ class AutomationEngineImpl {
     this.offs.push(bus.on("calendar:tick", (tick) => this.onCalendarTick(tick)));
     this.offs.push(bus.on("ai:usage", ({ providerId, data }) => this.onAiUsage(providerId, data)));
     this.offs.push(bus.on("revenue:update", ({ providerId, data }) => this.onRevenue(providerId, data)));
+    this.offs.push(startPrayerScheduler((spec) => this.toast(spec), (key) => this.once(key)));
     return () => {
       this.offs.forEach((off) => off());
       this.offs = [];

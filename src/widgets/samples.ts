@@ -9,6 +9,7 @@ import type {
   GmailData,
   LeetcodeData,
   MediaState,
+  PrayerData,
   ProviderId,
   RevenueData,
   SocialData,
@@ -17,6 +18,17 @@ import type {
 } from "../types/winglass";
 
 const hours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
+
+/** Prayer day around the clock: Asr 18 minutes away, like the backend's simulation. */
+function samplePrayer(): PrayerData {
+  const at = (min: number) => {
+    const d = new Date(Date.now() + min * 60_000);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  const times = [at(-500), at(-410), at(-160), at(18), at(150), at(240)];
+  const day = (offset: number) => ({ date: new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10), times, iqama: ["+20", "+10", "+10", "+5", "+10"] });
+  return { source: "mawaqit", name: "Mosquée", city: "Strasbourg", method: 3, days: [day(0), day(1)], offline: false };
+}
 
 const ai = (provider: string, tiers: Array<[string, string, number, number]>): AiUsageData => ({
   provider,
@@ -93,7 +105,14 @@ export const SAMPLE_PROVIDER_DATA: Partial<Record<ProviderId, unknown>> = {
       code: i < 4 ? 1 : 3,
       precip: i * 5,
     })),
+    daily: Array.from({ length: 7 }, (_, i) => ({
+      date: new Date(Date.now() + i * 86_400_000).toISOString().slice(0, 10),
+      code: [2, 1, 3, 61, 2, 0, 1][i],
+      high: 38 - (i % 3),
+      low: 29 - (i % 2),
+    })),
   } satisfies WeatherData,
+  prayer: samplePrayer(),
   calendar: {
     events: [
       {

@@ -16,14 +16,14 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::{accounts, ical_parser};
+use super::{accounts, ical_parser, prayer_times};
 use crate::AppState;
 use crate::storage::secrets;
 use crate::storage::settings::Settings;
 
 pub const PROVIDERS: &[&str] = &[
     "claude", "chatgpt", "gemini", "grok", "deepseek", "glm", "stripe", "polar", "dodo", "datafast", "gmail", "x",
-    "youtube", "instagram", "github", "leetcode", "api_counter", "weather", "calendar",
+    "youtube", "instagram", "github", "leetcode", "api_counter", "weather", "calendar", "prayer",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -893,10 +893,10 @@ async fn fetch_weather(ctx: &Ctx) -> R<Outcome> {
         ("longitude", p.weather_longitude.to_string()),
         ("hourly", "temperature_2m,weather_code,precipitation_probability".to_string()),
         ("current", "temperature_2m,weather_code,is_day".to_string()),
-        ("daily", "temperature_2m_max,temperature_2m_min".to_string()),
+        ("daily", "weather_code,temperature_2m_max,temperature_2m_min".to_string()),
         ("temperature_unit", unit.to_string()),
         ("timezone", "auto".to_string()),
-        ("forecast_days", "2".to_string()),
+        ("forecast_days", "7".to_string()),
     ]))
     .await?;
     let times = path(&v, "hourly.time").and_then(|t| t.as_array()).cloned().unwrap_or_default();
@@ -916,6 +916,19 @@ async fn fetch_weather(ctx: &Ctx) -> R<Outcome> {
             })
         })
         .collect();
+    let daily_times = path(&v, "daily.time").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+    let daily: Vec<Value> = daily_times
+        .iter()
+        .enumerate()
+        .map(|(i, date)| {
+            json!({
+                "date": date,
+                "code": path(&v, &format!("daily.weather_code.{i}")).and_then(num),
+                "high": path(&v, &format!("daily.temperature_2m_max.{i}")).and_then(num),
+                "low": path(&v, &format!("daily.temperature_2m_min.{i}")).and_then(num),
+            })
+        })
+        .collect();
     Ok(Outcome::Data(json!({
         "city": p.weather_city,
         "unit": if p.weather_fahrenheit { "F" } else { "C" },
@@ -925,15 +938,74 @@ async fn fetch_weather(ctx: &Ctx) -> R<Outcome> {
         "high": path(&v, "daily.temperature_2m_max.0").and_then(num),
         "low": path(&v, "daily.temperature_2m_min.0").and_then(num),
         "hourly": hourly,
+        "daily": daily,
     })))
 }
 
+/// Open-Meteo geocoding (free, no key): city auto-complete for weather and prayer times.
+pub async fn geocode(query: &str, language: &str) -> R<Vec<Value>> {
+    let q = query.trim();
+    if q.chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    let lang = if language == "en" { "en" } else { "fr" };
+    let v = send_json(CLIENT.get("https://geocoding-api.open-meteo.com/v1/search").query(&[
+        ("name", q),
+        ("count", "8"),
+        ("language", lang),
+        ("format", "json"),
+    ]))
+    .await?;
+    Ok(v["results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            Some(json!({
+                "name": r["name"].as_str()?,
+                "country": r["country"].as_str().unwrap_or(""),
+                "admin": r["admin1"].as_str().unwrap_or(""),
+                "latitude": r["latitude"].as_f64()?,
+                "longitude": r["longitude"].as_f64()?,
+            }))
+        })
+        .collect())
+}
+
+const LOCAL_EVENTS_KEY: &str = "calendar_local_events";
+
+/// Events added from the calendar flyout's quick-add bar (kept in SQLite, merged into every feed).
+pub fn local_events(db: &crate::storage::db::Db) -> Vec<Value> {
+    db.kv_get(LOCAL_EVENTS_KEY).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn save_local_events(db: &crate::storage::db::Db, events: &[Value]) -> R<()> {
+    let json = serde_json::to_string(events).map_err(|e| e.to_string())?;
+    db.kv_set(LOCAL_EVENTS_KEY, &json).map_err(|e| e.to_string())
+}
+
 async fn fetch_calendar(ctx: &Ctx) -> R<Outcome> {
+    let local = local_events(&ctx.app.state::<AppState>().db);
     let Some(urls) = ctx.secret("ics_urls") else {
+        if !local.is_empty() {
+            return Ok(Outcome::Data(json!({ "events": local })));
+        }
         return Ok(Outcome::Unconfigured("Add a private ICS / iCal feed URL in Settings › Calendar".into()));
     };
     let events = ical_parser::fetch_all(&CLIENT, &urls).await?;
+    let mut events = serde_json::to_value(events).map_err(|e| e.to_string())?;
+    if let Some(list) = events.as_array_mut() {
+        list.extend(local);
+    }
     Ok(Outcome::Data(json!({ "events": events })))
+}
+
+async fn fetch_prayer(ctx: &Ctx) -> R<Outcome> {
+    let db = &ctx.app.state::<AppState>().db;
+    match prayer_times::load(&CLIENT, db, &ctx.settings.prayer).await? {
+        Some(data) => Ok(Outcome::Data(data)),
+        None => Ok(Outcome::Unconfigured("Choose a Mawaqit mosque or a city".into())),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1018,7 +1090,12 @@ fn simulate(id: &str, settings: &Settings) -> Option<Value> {
                 let t = now + ChronoDuration::hours(i);
                 json!({ "time": t.format("%Y-%m-%dT%H:00").to_string(), "temp": 36.0 - (i as f64 * 0.3).round(), "code": if i < 4 { 1 } else { 3 }, "precip": i * 5 })
             }).collect();
-            json!({ "city": settings.providers.weather_city, "unit": if settings.providers.weather_fahrenheit { "F" } else { "C" }, "current": 36, "code": 1, "isDay": true, "high": 38, "low": 29, "hourly": hourly })
+            let daily: Vec<Value> = (0..7).map(|i| {
+                let d = now + ChronoDuration::days(i);
+                let code = [1, 2, 3, 61, 1, 0, 2][i as usize];
+                json!({ "date": d.format("%Y-%m-%d").to_string(), "code": code, "high": 38 - i % 3, "low": 29 - i % 2 })
+            }).collect();
+            json!({ "city": settings.providers.weather_city, "unit": if settings.providers.weather_fahrenheit { "F" } else { "C" }, "current": 36, "code": 1, "isDay": true, "high": 38, "low": 29, "hourly": hourly, "daily": daily })
         }
         "calendar" => {
             // Anchor the meeting to the current 20-minute block so it is always 0-20 minutes away.
@@ -1034,6 +1111,7 @@ fn simulate(id: &str, settings: &Settings) -> Option<Value> {
                 { "uid": "sim-renewal", "title": "Figma subscription renewal", "start": renewal.to_rfc3339(), "end": (renewal + ChronoDuration::minutes(15)).to_rfc3339(), "allDay": false, "location": Value::Null, "url": "https://www.figma.com/settings", "calendar": "Billing", "recurring": true },
             ]})
         }
+        "prayer" => prayer_times::simulate(&settings.prayer),
         _ => return None,
     })
 }
@@ -1063,15 +1141,24 @@ async fn fetch_one(ctx: &Ctx, id: &str) -> R<Outcome> {
         "api_counter" => fetch_api_counter(ctx).await,
         "weather" => fetch_weather(ctx).await,
         "calendar" => fetch_calendar(ctx).await,
+        "prayer" => fetch_prayer(ctx).await,
         other => Err(format!("unknown provider '{other}'")),
     }
 }
+
+const WEATHER_CACHE_KEY: &str = "weather_cache";
 
 pub async fn refresh(app: &AppHandle, id: &str) -> ProviderResult {
     let settings = app.state::<AppState>().settings.read().clone();
     let result = if settings.simulation {
         match simulate(id, &settings) {
-            Some(data) => ProviderResult::new(id, "simulated", Some(data), None),
+            Some(mut data) => {
+                // Quick-added events show in simulation too.
+                if let (true, Some(list)) = (id == "calendar", data["events"].as_array_mut()) {
+                    list.extend(local_events(&app.state::<AppState>().db));
+                }
+                ProviderResult::new(id, "simulated", Some(data), None)
+            }
             None => ProviderResult::new(id, "error", None, Some(format!("unknown provider '{id}'"))),
         }
     } else {
@@ -1080,12 +1167,20 @@ pub async fn refresh(app: &AppHandle, id: &str) -> ProviderResult {
             Ok(Outcome::Data(data)) => ProviderResult::new(id, "ok", Some(data), None),
             Ok(Outcome::Unconfigured(hint)) => ProviderResult::new(id, "unconfigured", None, Some(hint)),
             Err(err) => {
-                // Keep showing the last good data alongside the error.
-                let previous = CACHE.lock().get(id).and_then(|p| p.data.clone());
+                // Keep showing the last good data alongside the error (weather: even after a
+                // restart while offline, from SQLite).
+                let previous = CACHE.lock().get(id).and_then(|p| p.data.clone()).or_else(|| {
+                    (id == "weather").then(|| ctx.kv_get(WEATHER_CACHE_KEY)).flatten().and_then(|s| serde_json::from_str(&s).ok())
+                });
                 ProviderResult::new(id, "error", previous, Some(err))
             }
         }
     };
+    if id == "weather" && result.status == "ok" {
+        if let Some(data) = result.data.as_ref().and_then(|d| serde_json::to_string(d).ok()) {
+            let _ = app.state::<AppState>().db.kv_set(WEATHER_CACHE_KEY, &data);
+        }
+    }
     CACHE.lock().insert(id.to_string(), result.clone());
     let _ = app.emit("provider:update", &result);
     result

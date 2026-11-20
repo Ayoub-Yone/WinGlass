@@ -125,6 +125,44 @@ impl Default for ProviderConfig {
     }
 }
 
+/// « Heures de prière »: where the timetable comes from and which prayers ring.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PrayerConfig {
+    /// "mawaqit" (a mosque's own timetable) | "city" (Aladhan astronomical calculation).
+    pub source: String,
+    pub mosque_slug: String,
+    pub mosque_name: String,
+    pub city: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    /// Aladhan method id: 3 MWL (default), 12 UOIF France, 2 ISNA, 4 Umm al-Qura.
+    pub method: u32,
+    /// Reminder before the adhan: 0 (off), 5, 10 or 15 minutes.
+    pub reminder_minutes: u32,
+    /// Prayers that notify: fajr, sunrise, dhuhr, asr, maghrib, isha.
+    pub alerts: Vec<String>,
+    pub chime: bool,
+    pub native_toasts: bool,
+}
+impl Default for PrayerConfig {
+    fn default() -> Self {
+        Self {
+            source: "city".into(),
+            mosque_slug: String::new(),
+            mosque_name: String::new(),
+            city: String::new(),
+            latitude: 0.0,
+            longitude: 0.0,
+            method: 3,
+            reminder_minutes: 10,
+            alerts: ["fajr", "dhuhr", "asr", "maghrib", "isha"].map(String::from).to_vec(),
+            chime: true,
+            native_toasts: true,
+        }
+    }
+}
+
 /// Default « Clair ↔ Givré » level: clear enough for the desktop to read through the glass.
 pub const DEFAULT_FROST_LEVEL: f64 = 0.32;
 
@@ -156,6 +194,10 @@ pub struct Settings {
     pub clear_mode: bool,
     /// « Ambiance Musique »: soft glow tinted by the playing track's cover art.
     pub music_ambiance: bool,
+    /// Dock corner radius in px (cards follow concentrically).
+    pub dock_radius: f64,
+    /// Liquid-glass refraction strength multiplier (0.5 .. 2, 1 = calibrated default).
+    pub glass_refraction: f64,
     /// Settings document revision, see `Settings::parse`.
     pub schema: u32,
     pub pomodoro_focus_minutes: u32,
@@ -163,6 +205,7 @@ pub struct Settings {
     pub world_clocks: Vec<WorldClock>,
     pub automations: Automations,
     pub providers: ProviderConfig,
+    pub prayer: PrayerConfig,
 }
 
 impl Default for WorldClock {
@@ -191,6 +234,8 @@ impl Default for Settings {
             glass_backdrop: "live".into(),
             clear_mode: false,
             music_ambiance: false,
+            dock_radius: 22.0,
+            glass_refraction: 1.0,
             schema: SCHEMA,
             pomodoro_focus_minutes: 25,
             pomodoro_break_minutes: 5,
@@ -201,6 +246,7 @@ impl Default for Settings {
             ],
             automations: Automations::default(),
             providers: ProviderConfig::default(),
+            prayer: PrayerConfig::default(),
         }
     }
 }
@@ -251,6 +297,8 @@ impl Settings {
             settings.glass_frost_level = DEFAULT_FROST_LEVEL;
         }
         settings.glass_frost_level = if settings.glass_frost_level.is_finite() { settings.glass_frost_level.clamp(0.0, 1.0) } else { DEFAULT_FROST_LEVEL };
+        settings.dock_radius = if settings.dock_radius.is_finite() { settings.dock_radius.clamp(8.0, 34.0) } else { 22.0 };
+        settings.glass_refraction = if settings.glass_refraction.is_finite() { settings.glass_refraction.clamp(0.5, 2.0) } else { 1.0 };
         settings.schema = SCHEMA;
         (settings, migrated)
     }
