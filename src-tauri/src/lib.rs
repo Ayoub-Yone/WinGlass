@@ -4,6 +4,7 @@ mod i18n;
 mod lru;
 mod providers;
 mod storage;
+mod updater;
 mod win32;
 
 use parking_lot::RwLock;
@@ -141,6 +142,7 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState { db, settings: RwLock::new(settings) })
         .register_asynchronous_uri_scheme_protocol("glass", |_ctx, _request, responder| {
             responder.respond(graphics::capture_response());
@@ -262,6 +264,7 @@ pub fn run() {
 
             window_manager::start_hit_testing();
             window_manager::start_fullscreen_watch(handle.clone());
+            updater::start(handle.clone());
             graphics::start(handle.clone());
             graphics::configure(&handle, settings.uses_glass_capture());
             win32::memory::start();
