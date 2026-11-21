@@ -15,7 +15,7 @@
 //!   so the shader sees what is *behind* the dock rather than the dock itself.
 //! * Frames are served to WebGL through the `glass://capture?t=<seq>` URI scheme.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
@@ -38,6 +38,8 @@ use windows::core::Interface;
 
 use super::FrameBuffer;
 
+/// Last logged AcquireNextFrame failure code (0 = none), so a failing loop logs once.
+static LAST_ERROR: AtomicI32 = AtomicI32::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 /// Dock hidden behind a fullscreen app: nothing to composite, so nothing to capture.
 static PAUSED: AtomicBool = AtomicBool::new(false);
@@ -419,8 +421,13 @@ pub fn start(app: AppHandle) {
                         }
                         continue;
                     }
-                    Err(_) => {
+                    Err(err) => {
                         // DXGI_ERROR_ACCESS_LOST (mode change, secure desktop, UAC) or similar.
+                        // Logged once per distinct code: a GPU reset or device removal leaves a trace in exit.log.
+                        let code = err.code().0;
+                        if LAST_ERROR.swap(code, Ordering::Relaxed) != code {
+                            crate::win32::exit_log(&format!("dxgi: AcquireNextFrame failed 0x{:08X}", code as u32));
+                        }
                         capture = None;
                         std::thread::sleep(Duration::from_millis(250));
                         continue;
