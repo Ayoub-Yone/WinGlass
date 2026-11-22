@@ -165,8 +165,6 @@ export interface FrostPreset {
   tint: number;
   /** Veil colour, 0..1. */
   tintRgb: [number, number, number];
-  /** Procedural micro-grain amplitude. */
-  grain: number;
   /** Inward UV displacement at the very rim, CSS px. */
   refraction: number;
   /** How much of the sharp (barely blurred) desktop the curved rim shows, 0..1. */
@@ -184,12 +182,11 @@ interface GlassOptics {
   rim: number;
   refraction: number;
   vibrancy: number;
-  grain: number;
 }
 
 const OPTICS: Partial<Record<ThemeId, GlassOptics>> = {
-  "liquid-glass": { tintRgb: [16 / 255, 18 / 255, 24 / 255], frost: [0, 1], rim: 1, refraction: 1, vibrancy: 1.32, grain: 1 },
-  "matte-glass": { tintRgb: [14 / 255, 15 / 255, 20 / 255], frost: [0.45, 1], rim: 0.55, refraction: 0.6, vibrancy: 1.12, grain: 1.35 },
+  "liquid-glass": { tintRgb: [16 / 255, 18 / 255, 24 / 255], frost: [0, 1], rim: 1, refraction: 1, vibrancy: 1.32 },
+  "matte-glass": { tintRgb: [14 / 255, 15 / 255, 20 / 255], frost: [0.45, 1], rim: 0.55, refraction: 0.6, vibrancy: 1.12 },
 };
 
 /** Mirrors `DEFAULT_FROST_LEVEL` in storage/settings.rs: clear enough for the desktop to read through. */
@@ -215,7 +212,6 @@ export function frostPreset(themeId: ThemeId | undefined, level: number | undefi
     gauss: 1 + 5.5 * t ** 2.5,
     tint: 0.02 + 0.13 * t + 0.36 * t ** 3,
     tintRgb: o.tintRgb,
-    grain: (0.003 + 0.013 * t) * o.grain,
     refraction: (26 - 13 * t) * o.refraction,
     clarity: 0.9 * (1 - t) ** 1.5,
     rim: (1.15 - 0.5 * t) * o.rim,

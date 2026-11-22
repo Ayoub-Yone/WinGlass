@@ -380,7 +380,11 @@ html[data-hidden="true"] *::after {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
 }
 .lb-pill[data-glass="live"][data-ambient="on"]:not(.lb-clear) {
-  box-shadow: 0 0 26px -6px color-mix(in oklch, var(--lb-amb-1) 55%, transparent);
+  /* The shader draws the music tint and glow inside / around the deformed capsule. */
+  box-shadow: none;
+}
+.lb-pill[data-glass="live"] .lb-ambient {
+  display: none;
 }
 .lb-pill[data-glass="live"] svg {
   filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.65));

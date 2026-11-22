@@ -26,7 +26,7 @@
 //               the warped rim with the cursor — all tinted by the dock's live ambient colour
 //               (Ambiance Musique), eased like the CSS bar glow, plus a tinted glow in the meniscus
 //             · vibrancy ×1.32 (luminance preserving), adaptive veil from the scene luminance,
-//               soft inner shadow, micro-grain, anti-aliased mask, drop shadow from the same SDF.
+//               soft inner shadow, anti-aliased mask, drop shadow from the same SDF.
 //               Hover only re-runs this composite pass — the blur stays cached.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -118,7 +118,6 @@ uniform float u_radius;       // corner radius in device px
 uniform float u_dpr;
 uniform vec4 u_tint;          // veil colour + base opacity
 uniform vec4 u_inner;         // pill rect inside the captured frame: xy = offset, zw = scale (uv)
-uniform float u_grain;        // micro-grain amplitude
 uniform float u_refract;      // inward rim displacement, device px
 uniform float u_clarity;      // 0..1, sharp desktop share at the rim
 uniform float u_rim;          // specular strength
@@ -130,19 +129,19 @@ uniform float u_hoverY;       // −1 at the screen-edge rim .. +1 at the screen
 uniform float u_hoverVel;     // CSS px/s
 uniform float u_hoverRadius;  // droplet sigma, device px
 uniform float u_edgeDir;      // +1 docked at the bottom (centre side = up), −1 docked at the top
-uniform vec3 u_ambient;       // the dock's live ambient colour (cover art), eased
+uniform vec3 u_amb[3];        // the dock's live ambient palette (cover art), eased; [0] tints highlights
+#define u_ambient u_amb[0]
 uniform float u_ambientMix;   // 0 neutral white highlights .. 1 tinted by u_ambient
+
+// One layer of the music tint: same ellipse (42% × 150% of the resting pill) and fade (opaque
+// centre -> clear at 72%) as the old CSS .lb-ambient overlay, but drawn inside the deformed capsule.
+float ambLayer(vec2 uv, float cx, float k) {
+  return k * max(0.0, 1.0 - length((uv - vec2(cx, 0.5)) / vec2(0.42, 1.5)) / 0.72);
+}
 
 float sdRoundedBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
   return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-}
-
-// Hash without sine (stable across GPUs).
-float hash12(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
 }
 
 // Pill-space uv -> captured-frame uv (the frame has a capture margin around the pill).
@@ -204,13 +203,8 @@ void main() {
   float rimF = 1.0 - h;
   float bend = pow(rimF, 1.85);
 
-  // Frosted diffusion: every pixel looks through the glass at a slightly different angle.
-  float g1 = hash12(gl_FragCoord.xy);
-  float g2 = hash12(gl_FragCoord.xy + 61.7);
-  vec2 scatter = (vec2(g1, g2) - 0.5) * (u_grain / 0.012) * (1.5 * u_dpr) / pill_size;
-
   // Rays through the tilted rim bend inward, so the rim shows the desktop further inside.
-  vec2 uv = puv - n * bend * u_refract * (1.0 + 0.35 * prox) / pill_size + scatter;
+  vec2 uv = puv - n * bend * u_refract * (1.0 + 0.35 * prox) / pill_size;
 
   // Liquid lens under the cursor: radial magnification toward the droplet centre.
   vec2 lensCenter = vec2((u_hoverX - u_pad.x) / pill_size.x, 0.5);
@@ -236,13 +230,14 @@ void main() {
   // Adaptive veil: thicker over bright desktops (eased scene luminance + a local term) so white
   // text stays legible over a white window; a faint lift keeps the pane visible on pitch black.
   // (Halved for clarity: a white window greys the glass a little, never into opaque plastic.)
-  float veil = clamp(u_tint.a + 0.14 * smoothstep(0.35, 0.95, u_lum) + 0.06 * smoothstep(0.55, 0.98, luma), 0.0, 0.9);
+  // Apple-style light glass: a thin dark veil only where legibility needs it, then a white lift.
+  float veil = clamp(0.5 * u_tint.a + 0.10 * smoothstep(0.35, 0.95, u_lum) + 0.05 * smoothstep(0.55, 0.98, luma), 0.0, 0.9);
   col = mix(col, u_tint.rgb, veil);
-  col += vec3(0.020, 0.021, 0.024) * (1.0 + 1.5 * (1.0 - smoothstep(0.0, 0.18, u_lum)));
+  col = mix(col, vec3(1.0), 0.07 + 0.3 * u_tint.a);
 
   // Soft inner ambient shadow, heavier along the bottom, for depth.
   float inner = smoothstep(-16.0 * u_dpr, 0.0, d);
-  col *= 1.0 - 0.14 * inner * inner * (0.55 + 0.45 * clamp(-n.y, 0.0, 1.0));
+  col *= 1.0 - 0.07 * inner * inner * (0.55 + 0.45 * clamp(-n.y, 0.0, 1.0));
 
   // Highlights take the dock's live colour so rim, bevel and droplet shift with the bar's glow.
   vec3 hl = mix(vec3(1.0), u_ambient, 0.62 * u_ambientMix);
@@ -267,14 +262,19 @@ void main() {
   vec3 glintCol = mix(vec3(1.0), u_ambient, 0.55 * u_ambientMix);
   col = mix(col, glintCol, glint * u_rim * (0.38 * centreSide + 0.10));
 
-  // Ultra-fine procedural grain.
-  col += (g1 - 0.5) * 2.0 * u_grain;
+  // Music tint over the whole glass, droplet included, so the bulge never shows a colour seam.
+  col = mix(col, u_amb[2], ambLayer(puv, 0.92, 0.34) * u_ambientMix);
+  col = mix(col, u_amb[1], ambLayer(puv, 0.52, 0.30) * u_ambientMix);
+  col = mix(col, u_amb[0], ambLayer(puv, 0.10, 0.40) * u_ambientMix);
 
   float alpha = 1.0 - smoothstep(-0.75 * u_dpr, 0.75 * u_dpr, d);
   // Drop shadow cast by the same deformed capsule (light from above), premultiplied black.
   float ds = sdPill(p + vec2(0.0, 3.0 * u_dpr), hp, r);
   float shadow = 0.26 * (1.0 - smoothstep(-2.0 * u_dpr, 16.0 * u_dpr, ds));
-  o = vec4(clamp(col, 0.0, 1.0) * alpha, alpha + (1.0 - alpha) * shadow);
+  // Music glow around the deformed capsule (replaces the rectangular CSS box-shadow).
+  float glow = 0.55 * u_ambientMix * (1.0 - smoothstep(-6.0 * u_dpr, 20.0 * u_dpr, d));
+  float outA = shadow + glow - shadow * glow;
+  o = vec4(clamp(col, 0.0, 1.0) * alpha + (1.0 - alpha) * glow * u_ambient, alpha + (1.0 - alpha) * outA);
 }`;
 
 interface Target {
@@ -516,7 +516,7 @@ class GlassRenderer {
   }
 
   /** Composite pass only (hover animation, optics, radius, luminance / ambient easing). */
-  composite(radiusCss: number, frost: FrostPreset, lum: number, ambient: [number, number, number], ambientMix: number): boolean {
+  composite(radiusCss: number, frost: FrostPreset, lum: number, ambient: number[], ambientMix: number): boolean {
     const gl = this.gl;
     const input = this.blurred;
     const w = this.canvas.width;
@@ -543,7 +543,6 @@ class GlassRenderer {
     gl.uniform1f(u("u_radius"), radiusCss * dpr);
     gl.uniform1f(u("u_dpr"), dpr);
     gl.uniform4f(u("u_tint"), frost.tintRgb[0], frost.tintRgb[1], frost.tintRgb[2], frost.tint);
-    gl.uniform1f(u("u_grain"), frost.grain);
     gl.uniform1f(u("u_refract"), frost.refraction * dpr);
     gl.uniform1f(u("u_clarity"), frost.clarity);
     gl.uniform1f(u("u_rim"), frost.rim);
@@ -555,7 +554,7 @@ class GlassRenderer {
     gl.uniform1f(u("u_hoverVel"), hover.vel);
     gl.uniform1f(u("u_hoverRadius"), hover.radius * dpr);
     gl.uniform1f(u("u_edgeDir"), hover.edge === "top" ? -1 : 1);
-    gl.uniform3f(u("u_ambient"), ambient[0], ambient[1], ambient[2]);
+    gl.uniform3fv(u("u_amb[0]"), ambient);
     gl.uniform1f(u("u_ambientMix"), ambientMix);
     // The texture is uploaded flipped (v = 0 is the bottom row), so the pill's bottom edge maps to
     // `srcH - (y + h)`.
@@ -618,12 +617,12 @@ function cssRgb(css: string): [number, number, number] {
  * Renders behind the dock pill. `onActiveChange(true)` once the first desktop frame has been
  * drawn — until then (or if capture is unavailable) the dock shows its CSS fallback surface.
  * The eased luminance is mirrored on the pill as `--lb-glass-lum` / `data-glass-bright` so the
- * foreground can add contrast shadows over bright desktops. `ambient` is the dock's live colour
- * (Ambiance Musique), or null for neutral white highlights.
+ * foreground can add contrast shadows over bright desktops. `ambient` is the dock's live palette
+ * (Ambiance Musique, up to 3 colours), or empty for neutral white highlights.
  */
-export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; ambient: string | null; onActiveChange: (active: boolean) => void }) {
+export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; ambient: string[]; onActiveChange: (active: boolean) => void }) {
   const { radius, frost, ambient, onActiveChange } = props;
-  const ambientRef = useRef<[number, number, number] | null>(null);
+  const ambientRef = useRef<number[] | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const radiusRef = useRef(radius);
   radiusRef.current = radius;
@@ -654,7 +653,7 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
     let lum = -1;
     let easedAt = 0;
     let lumCss = "";
-    const amb: [number, number, number] = [1, 1, 1];
+    const amb = [1, 1, 1, 1, 1, 1, 1, 1, 1];
     let ambMix = 0;
 
     const host = canvas.parentElement;
@@ -678,7 +677,7 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
         // Ambient colour: glides between tracks; appears / fades out through the mix.
         const goal = ambientRef.current;
         const a = 1 - Math.exp(-dt / AMBIENT_TAU);
-        if (goal) for (let i = 0; i < 3; i++) amb[i] += (goal[i] - amb[i]) * (ambMix < 0.01 ? 1 : a);
+        if (goal) for (let i = 0; i < 9; i++) amb[i] += (goal[i] - amb[i]) * (ambMix < 0.01 ? 1 : a);
         ambMix += ((goal ? 1 : 0) - ambMix) * a;
         ok = renderer.composite(radiusRef.current, frostRef.current, lum, amb, ambMix);
         mirrorLuminance();
@@ -766,9 +765,9 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
 
   // Slider / theme / radius / ambient changes re-composite the frame already on the GPU.
   useEffect(() => {
-    ambientRef.current = ambient ? cssRgb(ambient) : null;
+    ambientRef.current = ambient.length ? [0, 1, 2].flatMap((i) => cssRgb(ambient[i] ?? ambient[0])) : null;
     redraw.current?.();
-  }, [frost, radius, ambient]);
+  }, [frost, radius, ambient.join("|")]);
 
   // The canvas covers the pill's border box (the pill border is transparent while glass is live)
   // plus PAD on every side, where the droplet, the stretched ends and the drop shadow are drawn.
