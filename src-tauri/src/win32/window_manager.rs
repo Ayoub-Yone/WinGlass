@@ -440,8 +440,35 @@ pub fn prepare_overlay(window: &WebviewWindow) {
     }
 }
 
+/// Overlays whose webview has painted its first frame (see `mark_overlay_ready`).
+static OVERLAY_READY: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// Called once the webview painted: before that, a cold WebView2 (Windows boot) shows the huge
+/// overlay windows as opaque rectangles over the lower screen, so they stay hidden until now.
+pub fn mark_overlay_ready(app: &AppHandle, label: &str) {
+    if label != "dock" && label != "toast" {
+        return;
+    }
+    {
+        let mut ready = OVERLAY_READY.lock();
+        if ready.iter().any(|l| l == label) {
+            return;
+        }
+        ready.push(label.to_string());
+    }
+    // Monitors may not have been enumerated yet when setup ran at boot.
+    layout_windows(app);
+    if let Some(window) = app.get_webview_window(label) {
+        show_no_activate(&window);
+    }
+}
+
 /// Show a window above everything else without activating it (never steal focus from the user's app).
+/// No-op for an overlay whose webview has not painted yet.
 pub fn show_no_activate(window: &WebviewWindow) {
+    if !OVERLAY_READY.lock().iter().any(|l| l == window.label()) {
+        return;
+    }
     if let Ok(raw) = window.hwnd() {
         let hwnd = HWND(raw.0 as *mut core::ffi::c_void);
         unsafe {

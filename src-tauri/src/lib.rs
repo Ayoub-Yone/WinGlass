@@ -110,6 +110,13 @@ pub fn refresh_tray_language(app: &AppHandle, language: &str) {
 }
 
 pub fn run() {
+    // A `tauri dev` build loads its pages from the Vite server. Relaunched without it (Windows
+    // restoring apps at sign-in), every overlay would show a full-size "can't reach this page".
+    #[cfg(not(feature = "custom-protocol"))]
+    if std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 1420).into(), std::time::Duration::from_millis(500)).is_err() {
+        return;
+    }
+
     // Invariant 4: refuse to start (and touch nothing) when another instance is running.
     let Some(instance_guard) = win32::acquire_single_instance() else {
         return;
@@ -152,6 +159,7 @@ pub fn run() {
             commands::update_settings,
             commands::get_dock_layout,
             commands::set_hit_regions,
+            commands::overlay_ready,
             commands::snap_dock_to_cursor,
             commands::set_dock_position,
             commands::set_taskbar_mode,
@@ -241,10 +249,21 @@ pub fn run() {
             window_manager::layout_windows(&handle);
             for label in ["dock", "toast"] {
                 if let Some(window) = handle.get_webview_window(label) {
+                    // Shown by `overlay_ready` once the webview painted.
                     window_manager::prepare_overlay(&window);
-                    window_manager::show_no_activate(&window);
                 }
             }
+            // Fallback: never leave the user without a dock if the frontend fails to report.
+            let ready_handle = handle.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                let h = ready_handle.clone();
+                let _ = ready_handle.run_on_main_thread(move || {
+                    for label in ["dock", "toast"] {
+                        window_manager::mark_overlay_ready(&h, label);
+                    }
+                });
+            });
 
             let sentinel_handle = handle.clone();
             sentinel::start(Box::new(move |event| match event {

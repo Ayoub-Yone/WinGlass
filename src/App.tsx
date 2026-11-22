@@ -12,7 +12,7 @@ import { startHub } from "./engine/DataHub";
 import { applyTheme } from "./engine/ThemeEngine";
 import { I18nProvider, normalizeLang } from "./i18n";
 import { useSettings } from "./lib/hooks";
-import { broadcast, subscribe } from "./lib/ipc";
+import { broadcast, ipc, subscribe } from "./lib/ipc";
 
 export type WindowKind = "dock" | "toast" | "picker" | "settings";
 
@@ -83,6 +83,9 @@ export default function App() {
   const kind = currentWindow();
   useEffect(() => {
     document.documentElement.dataset.window = kind;
+    // The backend keeps dock/toast hidden until the page is up (a cold WebView2 at boot would show
+    // opaque rectangles). Not rAF: a hidden webview never draws a frame.
+    if (kind === "dock" || kind === "toast") void ipc.overlayReady().catch(() => {});
     // Native context menu would look foreign in every winglass window.
     const block = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest("input, textarea")) e.preventDefault();

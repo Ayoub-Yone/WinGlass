@@ -89,6 +89,14 @@ pub fn set_hit_regions(window: WebviewWindow, rects: Vec<HitRect>, capture_all: 
 }
 
 #[tauri::command]
+pub fn overlay_ready(app: AppHandle, window: WebviewWindow) {
+    let label = window.label().to_string();
+    // Win32 show + SetWindowPos belong on the main thread.
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || window_manager::mark_overlay_ready(&h, &label));
+}
+
+#[tauri::command]
 pub fn snap_dock_to_cursor(app: AppHandle) -> Result<String, String> {
     window_manager::snap_to_cursor(&app)
         .map(|edge| edge.as_str().to_string())

@@ -51,6 +51,7 @@ export const ipc = {
   closeWindow: (label: "picker" | "settings") => invoke<void>("close_window", { label }),
 
   setGlassRect: (rect: HitRect) => invoke<void>("set_glass_rect", { rect }),
+  overlayReady: () => invoke<void>("overlay_ready"),
   getGlassStatus: () => invoke<string>("get_glass_status"),
 
   listApps: () => invoke<AppEntry[]>("list_apps"),
