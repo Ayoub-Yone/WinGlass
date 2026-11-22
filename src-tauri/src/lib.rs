@@ -113,8 +113,14 @@ pub fn run() {
     // A `tauri dev` build loads its pages from the Vite server. Relaunched without it (Windows
     // restoring apps at sign-in), every overlay would show a full-size "can't reach this page".
     #[cfg(not(feature = "custom-protocol"))]
-    if std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 1420).into(), std::time::Duration::from_millis(500)).is_err() {
-        return;
+    {
+        // Vite binds `localhost`, which Node resolves to ::1 on Windows: probe IPv4 and IPv6.
+        let vite_up = [std::net::SocketAddr::from(([127, 0, 0, 1], 1420)), std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 1420))]
+            .iter()
+            .any(|addr| std::net::TcpStream::connect_timeout(addr, std::time::Duration::from_millis(500)).is_ok());
+        if !vite_up {
+            return;
+        }
     }
 
     // Invariant 4: refuse to start (and touch nothing) when another instance is running.
