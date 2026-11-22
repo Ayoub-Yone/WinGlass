@@ -64,6 +64,7 @@ export interface ProviderSettings {
   xUsername: string;
   youtubeChannelId: string;
   instagramUserId: string;
+  tiktokUsername: string;
   gmailAddress: string;
   apiCounterUrl: string;
   apiCounterJsonPath: string;
@@ -226,6 +227,7 @@ export type ProviderId =
   | "x"
   | "youtube"
   | "instagram"
+  | "tiktok"
   | "github"
   | "leetcode"
   | "api_counter"

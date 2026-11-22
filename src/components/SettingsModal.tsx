@@ -857,6 +857,7 @@ function IntegrationsTab({ s }: { s: Settings }) {
         <Row label={t("settings.xHandle")}><CommitInput value={p.xUsername} placeholder="@handle" onCommit={(v) => setP({ xUsername: v.trim() })} /></Row>
         <Row label={t("settings.youtubeChannel")} hint={t("settings.youtubeChannelHint")}><CommitInput value={p.youtubeChannelId} onCommit={(v) => setP({ youtubeChannelId: v.trim() })} /></Row>
         <Row label={t("settings.instagramId")} hint={t("settings.instagramIdHint")}><CommitInput value={p.instagramUserId} onCommit={(v) => setP({ instagramUserId: v.trim() })} /></Row>
+        <Row label={t("settings.tiktokHandle")} hint={t("settings.tiktokHandleHint")}><CommitInput value={p.tiktokUsername ?? ""} placeholder="@handle" onCommit={(v) => setP({ tiktokUsername: v.trim() })} /></Row>
         <Row label={t("settings.gmailAddress")} hint={t("settings.gmailAddressHint")}><CommitInput value={p.gmailAddress} onCommit={(v) => setP({ gmailAddress: v.trim() })} /></Row>
       </Section>
       <Section title={t("settings.apiCounter")} description={t("settings.apiCounterDesc")}>

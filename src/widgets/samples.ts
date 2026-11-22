@@ -76,6 +76,7 @@ export const SAMPLE_PROVIDER_DATA: Partial<Record<ProviderId, unknown>> = {
   x: social("@winglass", 12480, 37),
   youtube: social("winglass", 48210, 112, "subscribers"),
   instagram: social("@winglass", 9031, 14),
+  tiktok: social("@winglass", 23640, 85),
   github: {
     login: "octocat",
     weeks: Array.from({ length: 52 }, (_, w) =>

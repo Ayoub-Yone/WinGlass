@@ -85,6 +85,9 @@ export const XWidget = (p: WidgetProps) => (
 export const YouTubeWidget = (p: WidgetProps) => (
   <SocialWidget {...p} providerId="youtube" name="YouTube" url={() => "https://studio.youtube.com"} />
 );
+export const TikTokWidget = (p: WidgetProps) => (
+  <SocialWidget {...p} providerId="tiktok" name="TikTok" url={(d) => `https://www.tiktok.com/@${d.handle.replace(/^@/, "")}`} />
+);
 export const InstagramWidget = (p: WidgetProps) => (
   <SocialWidget {...p} providerId="instagram" name="Instagram" url={(d) => `https://www.instagram.com/${d.handle.replace(/^@/, "")}`} />
 );

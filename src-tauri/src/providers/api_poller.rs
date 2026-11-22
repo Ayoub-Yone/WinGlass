@@ -23,7 +23,7 @@ use crate::storage::settings::Settings;
 
 pub const PROVIDERS: &[&str] = &[
     "claude", "chatgpt", "gemini", "grok", "deepseek", "glm", "stripe", "polar", "dodo", "datafast", "gmail", "x",
-    "youtube", "instagram", "github", "leetcode", "api_counter", "weather", "calendar", "prayer",
+    "youtube", "instagram", "tiktok", "github", "leetcode", "api_counter", "weather", "calendar", "prayer",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -733,6 +733,37 @@ async fn fetch_instagram(ctx: &Ctx) -> R<Outcome> {
     Ok(Outcome::Data(json!({ "followers": followers, "deltaToday": delta, "handle": handle, "metric": "followers" })))
 }
 
+/// TikTok has no keyless follower API: read the count the public profile page embeds.
+/// shortcut: breaks if TikTok changes its page JSON; switch to the Display API (OAuth, user.info.stats) then.
+async fn fetch_tiktok(ctx: &Ctx) -> R<Outcome> {
+    let user = ctx.settings.providers.tiktok_username.trim().trim_start_matches('@').to_string();
+    if user.is_empty() {
+        return Ok(Outcome::Unconfigured("Add your TikTok @handle".into()));
+    }
+    let resp = CLIENT
+        .get(format!("https://www.tiktok.com/@{user}"))
+        .header("Accept-Language", "en-US,en;q=0.8")
+        .send()
+        .await
+        .map_err(|e| format!("network error: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("TikTok returned HTTP {}", resp.status().as_u16()));
+    }
+    let html = resp.text().await.map_err(|e| e.to_string())?;
+    let followers = tiktok_followers(&html).ok_or("TikTok profile not found or page format changed")?;
+    let delta = daily_delta(ctx, "tiktok", followers);
+    Ok(Outcome::Data(json!({ "followers": followers, "deltaToday": delta, "handle": format!("@{user}"), "metric": "followers" })))
+}
+
+/// Exact count from `statsV2` (a string), else the rounded `stats` number.
+fn tiktok_followers(html: &str) -> Option<f64> {
+    ["\"statsV2\":{\"followerCount\":\"", "\"stats\":{\"followerCount\":"].iter().find_map(|key| {
+        let rest = &html[html.find(key)? + key.len()..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().ok()
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Developer
 // ---------------------------------------------------------------------------------------------
@@ -1071,6 +1102,7 @@ fn simulate(id: &str, settings: &Settings) -> Option<Value> {
         "x" => json!({ "followers": 12480 + (wave(900.0, 0.0) * 8.0) as i64, "deltaToday": 37, "handle": "@winglass", "metric": "followers" }),
         "youtube" => json!({ "followers": 48210, "deltaToday": 112, "handle": "winglass", "metric": "subscribers" }),
         "instagram" => json!({ "followers": 9031, "deltaToday": 14, "handle": "@winglass", "metric": "followers" }),
+        "tiktok" => json!({ "followers": 23640, "deltaToday": 85, "handle": "@winglass", "metric": "followers" }),
         "github" => {
             let weeks: Vec<Vec<f64>> = (0..52)
                 .map(|w| (0..7).map(|d| {
@@ -1136,6 +1168,7 @@ async fn fetch_one(ctx: &Ctx, id: &str) -> R<Outcome> {
         "x" => fetch_x(ctx).await,
         "youtube" => fetch_youtube(ctx).await,
         "instagram" => fetch_instagram(ctx).await,
+        "tiktok" => fetch_tiktok(ctx).await,
         "github" => fetch_github(ctx).await,
         "leetcode" => fetch_leetcode(ctx).await,
         "api_counter" => fetch_api_counter(ctx).await,
@@ -1213,4 +1246,17 @@ pub fn start(app: AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tiktok_tests {
+    use super::tiktok_followers;
+
+    #[test]
+    fn parses_exact_then_rounded_then_missing() {
+        let page = r#""stats":{"followerCount":162900000,"heart":1},"statsV2":{"followerCount":"162924512""#;
+        assert_eq!(tiktok_followers(page), Some(162924512.0));
+        assert_eq!(tiktok_followers(r#""stats":{"followerCount":9031,"#), Some(9031.0));
+        assert_eq!(tiktok_followers(r#""statusCode":10221"#), None);
+    }
 }

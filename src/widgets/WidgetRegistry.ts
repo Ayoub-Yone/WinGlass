@@ -43,7 +43,7 @@ import { MediaController } from "./MediaController";
 import { PinnedRunningApps } from "./PinnedRunningApps";
 import { DataFastWidget, DodoWidget, PolarWidget, StripeWidget } from "./RevenueWidgets";
 import { ScreenTimeWidget } from "./ScreenTimeWidget";
-import { GmailWidget, InstagramWidget, XWidget, YouTubeWidget } from "./SocialMailWidgets";
+import { GmailWidget, InstagramWidget, TikTokWidget, XWidget, YouTubeWidget } from "./SocialMailWidgets";
 import {
   BatteryWidget,
   CpuWidget,
@@ -102,6 +102,7 @@ export const WIDGETS: WidgetDefinition[] = [
   { id: "x", name: "X", description: "Live follower counter", category: "Social", sizes: S12, defaultSize: "1x1", icon: Users, keywords: ["twitter", "followers"], providerId: "x", component: XWidget },
   { id: "youtube", name: "YouTube", description: "Live subscriber counter", category: "Social", sizes: S12, defaultSize: "1x1", icon: Users, keywords: ["subscribers", "channel"], providerId: "youtube", component: YouTubeWidget },
   { id: "instagram", name: "Instagram", description: "Live follower counter", category: "Social", sizes: S12, defaultSize: "1x1", icon: Users, keywords: ["followers", "ig"], providerId: "instagram", component: InstagramWidget },
+  { id: "tiktok", name: "TikTok", description: "Live follower counter", category: "Social", sizes: S12, defaultSize: "1x1", icon: Users, keywords: ["followers", "tiktok"], providerId: "tiktok", component: TikTokWidget },
 
   { id: "github", name: "GitHub", description: "52-week contribution heatmap + notifications", category: "Developer", sizes: S123, defaultSize: "3x1", icon: Code, keywords: ["contributions", "commits", "notifications"], providerId: "github", component: GithubWidget },
   { id: "leetcode", name: "LeetCode", description: "Problems solved and daily streak", category: "Developer", sizes: S12, defaultSize: "2x1", icon: Code, keywords: ["algorithms", "streak"], providerId: "leetcode", component: LeetcodeWidget },

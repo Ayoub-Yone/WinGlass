@@ -347,6 +347,14 @@ export function BrandGlyph(props: { id: string; size?: number }) {
           </svg>
         </Tile>
       );
+    case "tiktok":
+      return (
+        <Tile bg="#000" size={s}>
+          <svg width={inner} height={inner} viewBox="0 0 24 24" fill="#fff">
+            <path d="M16.6 3c.4 2.3 1.8 3.8 4.1 4v3.1a7.4 7.4 0 0 1-4-1.2v6.3a5.8 5.8 0 1 1-5.8-5.8c.3 0 .6 0 .9.1v3.2a2.7 2.7 0 1 0 1.8 2.5V3z" />
+          </svg>
+        </Tile>
+      );
     case "github":
       return (
         <Tile bg="#24292F" size={s}>
