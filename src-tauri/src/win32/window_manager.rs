@@ -24,7 +24,7 @@ use windows::Win32::UI::Shell::{
     QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+    GetClassNameW, GetCursorPos, SetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
     GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, HWND_TOPMOST, IsZoomed, LWA_ALPHA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_LAYERED,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
@@ -380,6 +380,14 @@ fn hit_test_tick() {
     }
     for (hwnd, interactive) in changes {
         set_click_through(HWND(hwnd as *mut core::ffi::c_void), !interactive);
+        // The move that brought the cursor in went to the window below (we were still click-through).
+        // Re-post the cursor where it is so the webview gets a pointermove even if the mouse stops now;
+        // otherwise the hovered icon only magnifies after the next physical move.
+        if interactive {
+            unsafe {
+                let _ = SetCursorPos(cursor.x, cursor.y);
+            }
+        }
     }
 }
 

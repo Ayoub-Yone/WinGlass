@@ -193,11 +193,14 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
   let glassY = 1;
   let glassRadius = glassHover.radius;
   let running = false;
+  let measuredPill: DOMRect | null = null;
 
   const measure = () => {
+    measuredPill = pill.getBoundingClientRect();
+    const prev = strips;
     const groups = Array.from(pill.querySelectorAll<HTMLElement>("[data-mag-group]"));
     strips = groups
-      .map((group) => {
+      .map((group, gi) => {
         const items = Array.from(group.querySelectorAll<HTMLElement>("[data-mag]")).map((el): Tracked => {
           const shift = parseFloat(el.style.getPropertyValue("--mag-shift-x")) || 0;
           const r = el.getBoundingClientRect();
@@ -218,7 +221,8 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
         const n = items.length;
         const left = n ? items[0].left : 0;
         const right = n ? items[n - 1].left + items[n - 1].width : 0;
-        return { items, left, right, slot: n ? (right - left) / n : 0, weight: 0 };
+        // Keep the hover weight across re-measures (mid-slide) so the growth does not restart.
+        return { items, left, right, slot: n ? (right - left) / n : 0, weight: prev[gi]?.weight ?? 0 };
       })
       .filter((s) => s.items.length > 0);
   };
@@ -254,6 +258,10 @@ export function attachMagnifier(pill: HTMLElement, opts: MagnifierOptions): () =
     const edge = opts.edge();
     const liftDir = edge === "bottom" ? -1 : 1;
     const pr = pill.getBoundingClientRect();
+    // The pill may still be sliding / scaling in (auto-hide reveal): geometry measured mid-slide
+    // put the icons off the capsule, so maxIconScale capped them at 1×. Re-measure until it rests.
+    const m = measuredPill;
+    if (!m || Math.abs(pr.top - m.top) > 0.5 || Math.abs(pr.left - m.left) > 0.5 || Math.abs(pr.width - m.width) > 0.5) measure();
     const bulge = opts.bulge();
     let settled = true;
     let best: { t: Tracked; shift: number; strip: Strip } | null = null;
