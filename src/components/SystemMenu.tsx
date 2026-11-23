@@ -69,33 +69,33 @@ const TILES = [
   [10.7, 10.7],
 ].map(([x, y]) => squircle(x, y, TILE));
 
-/** The four Windows tiles, Apple-style: squircle tiles in frosted silver lit from the top, a soft
- *  top gloss, a hairline rim highlight and a fine contact shadow for relief. Follows the text
- *  color, so it turns graphite on the light theme. */
+/** WinGlass "Spatial Glass Tiles" mark (same design as the app icon, public/favicon.svg): four
+ *  translucent frosted panes with a luminance gradient, a specular rim and a faint cyan edge glint.
+ *  Follows the text color, so it turns graphite on the light theme. */
 export function WindowsGlyph({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 20 20" aria-hidden style={{ overflow: "visible" }}>
       <defs>
-        <linearGradient id="lb-win-frost" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" style={{ stopColor: "var(--lb-text)" }} />
-          <stop offset="55%" style={{ stopColor: "var(--lb-text)", stopOpacity: 0.84 }} />
-          <stop offset="100%" style={{ stopColor: "var(--lb-text)", stopOpacity: 0.6 }} />
+        <linearGradient id="lb-win-pane" x1="0" y1="0" x2="0.3" y2="1">
+          <stop offset="0%" style={{ stopColor: "var(--lb-text)", stopOpacity: 0.62 }} />
+          <stop offset="55%" style={{ stopColor: "var(--lb-text)", stopOpacity: 0.34 }} />
+          <stop offset="100%" style={{ stopColor: "var(--lb-text)", stopOpacity: 0.22 }} />
         </linearGradient>
-        <radialGradient id="lb-win-gloss" cx="0.5" cy="0" r="0.75">
-          <stop offset="0%" stopColor="#fff" stopOpacity="0.42" />
-          <stop offset="70%" stopColor="#fff" stopOpacity="0" />
+        <radialGradient id="lb-win-gloss" cx="0.28" cy="0" r="0.85">
+          <stop offset="0%" stopColor="#fff" stopOpacity="0.45" />
+          <stop offset="55%" stopColor="#fff" stopOpacity="0" />
         </radialGradient>
-        <linearGradient id="lb-win-sheen" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#fff" stopOpacity="0.75" />
-          <stop offset="35%" stopColor="#fff" stopOpacity="0" />
+        <linearGradient id="lb-win-rim" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" style={{ stopColor: "var(--lb-text)", stopOpacity: 1 }} />
+          <stop offset="100%" style={{ stopColor: "var(--lb-text)", stopOpacity: 0.4 }} />
         </linearGradient>
       </defs>
       {TILES.map((d) => (
         <g key={d}>
-          <path d={d} transform="translate(0 0.5)" fill="#000" fillOpacity="0.28" />
-          <path d={d} fill="url(#lb-win-frost)" />
+          <path d={d} fill="url(#lb-win-pane)" />
           <path d={d} fill="url(#lb-win-gloss)" />
-          <path d={d} fill="none" stroke="url(#lb-win-sheen)" strokeWidth="0.55" />
+          <path d={d} transform="translate(-0.22 -0.22)" fill="none" stroke="#7ff1ff" strokeOpacity="0.45" strokeWidth="0.45" />
+          <path d={d} fill="none" stroke="url(#lb-win-rim)" strokeWidth="0.7" />
         </g>
       ))}
     </svg>
