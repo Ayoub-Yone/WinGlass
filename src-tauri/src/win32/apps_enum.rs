@@ -7,7 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RPC_E_CHANGED_MODE, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
@@ -67,6 +67,55 @@ pub(crate) struct RawWindow {
     pub hwnd: HWND,
     pub title: String,
     pub exe: String,
+}
+
+/// One WinGlass pin, in dock order. Persisted as JSON in `kv.pinned_apps`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pin {
+    /// Launch target (.lnk / .exe / `shell:AppsFolder\<AUMID>`); also the dock id.
+    pub target: String,
+    pub name: String,
+    pub icon_key: String,
+    /// Executable matched against open windows. None for packaged AUMIDs: their windows stay unpinned entries.
+    pub exe: Option<String>,
+}
+
+/// None until loaded from SQLite or seeded once from the Windows taskbar pins.
+static PINS: Lazy<Mutex<Option<Vec<Pin>>>> = Lazy::new(|| Mutex::new(None));
+/// Unpinned app keys in the order they first appeared, so focus (EnumWindows z-order) never reorders the dock.
+static LAUNCH_ORDER: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+pub fn set_pins(pins: Vec<Pin>) {
+    *PINS.lock() = Some(pins);
+}
+
+pub fn pins() -> Vec<Pin> {
+    if let Some(p) = PINS.lock().as_ref() {
+        return p.clone();
+    }
+    let seed: Vec<Pin> = pinned_shortcuts()
+        .into_iter()
+        .map(|s| Pin { target: s.path.clone(), name: s.name, icon_key: s.path, exe: s.target })
+        .collect();
+    PINS.lock().get_or_insert(seed).clone()
+}
+
+/// Executable behind a launch target, for matching its windows.
+pub fn target_exe(target: &str) -> Option<String> {
+    let target = target.to_string();
+    with_com(move || {
+        if let Some(aumid) = target.strip_prefix(super::app_search::APPS_FOLDER_PREFIX) {
+            known_folder_exe(aumid)
+        } else if is_shortcut(&target) {
+            resolve_shortcut(Path::new(&target))
+        } else if target.to_ascii_lowercase().ends_with(".exe") {
+            Some(target)
+        } else {
+            None
+        }
+    })
+    .flatten()
 }
 
 struct PinnedShortcut {
@@ -340,6 +389,44 @@ fn version_description(exe: &str) -> Option<String> {
 }
 
 /// Pinned shortcuts first (with any matching running windows), then unpinned running apps grouped by exe.
+/// Sorts `groups` by first appearance: closed apps leave `order`, new ones join at the end.
+fn stable_order<T>(order: &mut Vec<String>, groups: &mut [(String, T)]) {
+    order.retain(|k| groups.iter().any(|(g, _)| g == k));
+    for (k, _) in groups.iter() {
+        if !order.contains(k) {
+            order.push(k.clone());
+        }
+    }
+    groups.sort_by_key(|(k, _)| order.iter().position(|o| o == k));
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::stable_order;
+
+    fn keys(g: &[(String, ())]) -> Vec<&str> {
+        g.iter().map(|(k, _)| k.as_str()).collect()
+    }
+
+    #[test]
+    fn focus_never_reorders_and_new_apps_append() {
+        let mut order = Vec::new();
+        let mut g: Vec<(String, ())> = vec![("a".into(), ()), ("b".into(), ())];
+        stable_order(&mut order, &mut g);
+        assert_eq!(keys(&g), ["a", "b"]);
+        // b focused -> first in z-order; c launched.
+        let mut g: Vec<(String, ())> = vec![("c".into(), ()), ("b".into(), ()), ("a".into(), ())];
+        stable_order(&mut order, &mut g);
+        assert_eq!(keys(&g), ["a", "b", "c"]);
+        // a closed and reopened -> goes to the end.
+        let mut g: Vec<(String, ())> = vec![("b".into(), ()), ("c".into(), ())];
+        stable_order(&mut order, &mut g);
+        let mut g: Vec<(String, ())> = vec![("a".into(), ()), ("c".into(), ()), ("b".into(), ())];
+        stable_order(&mut order, &mut g);
+        assert_eq!(keys(&g), ["b", "c", "a"]);
+    }
+}
+
 pub fn list_apps() -> Vec<AppEntry> {
     let raw = enumerate_windows();
     let tracked = sentinel::last_external_foreground();
@@ -356,8 +443,8 @@ pub fn list_apps() -> Vec<AppEntry> {
     let mut used = vec![false; raw.len()];
     let mut out = Vec::new();
 
-    for pin in pinned_shortcuts() {
-        let target_lower = pin.target.as_ref().map(|t| t.to_ascii_lowercase());
+    for pin in pins() {
+        let target_lower = pin.exe.as_ref().map(|t| t.to_ascii_lowercase());
         let mut windows = Vec::new();
         if let Some(target) = &target_lower {
             for (i, w) in raw.iter().enumerate() {
@@ -369,11 +456,11 @@ pub fn list_apps() -> Vec<AppEntry> {
         }
         let is_active = windows.iter().any(|w| w.is_active);
         out.push(AppEntry {
-            id: pin.path.clone(),
-            name: pin.name.clone(),
-            exe_path: pin.target.clone(),
-            icon_key: pin.path.clone(),
-            pinned_path: Some(pin.path),
+            id: pin.target.clone(),
+            name: pin.name,
+            exe_path: pin.exe,
+            icon_key: pin.icon_key,
+            pinned_path: Some(pin.target),
             windows,
             is_active,
         });
@@ -390,6 +477,7 @@ pub fn list_apps() -> Vec<AppEntry> {
             None => groups.push((key, vec![i])),
         }
     }
+    stable_order(&mut LAUNCH_ORDER.lock(), &mut groups);
     for (key, indices) in groups {
         let first = &raw[indices[0]];
         let windows: Vec<AppWindow> = indices.iter().map(|&i| to_window(&raw[i])).collect();

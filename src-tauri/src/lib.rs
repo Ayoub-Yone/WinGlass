@@ -175,6 +175,8 @@ pub fn run() {
             commands::set_glass_rect,
             commands::get_glass_status,
             commands::list_apps,
+            commands::pin_app,
+            commands::unpin_app,
             commands::get_app_icon,
             commands::activate_window,
             commands::launch_app,
@@ -295,6 +297,9 @@ pub fn run() {
             win32::memory::start();
             win32::media_smtc::start(handle.clone());
             win32::audio::start(handle.clone());
+            if let Some(pins) = handle.state::<AppState>().db.kv_get("pinned_apps").and_then(|j| serde_json::from_str(&j).ok()) {
+                win32::apps_enum::set_pins(pins);
+            }
             let snapshot = handle
                 .state::<AppState>()
                 .db

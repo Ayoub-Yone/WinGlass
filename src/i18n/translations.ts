@@ -286,6 +286,11 @@ const en = {
   "keyboard.title": "Input language — click to switch",
   "apps.none": "No apps",
   "apps.newWindow": "New window",
+  "apps.open": "Open",
+  "apps.closeWindow": "Close window",
+  "apps.closeWindows": "Close all windows",
+  "apps.pin": "Pin to WinGlass",
+  "apps.unpin": "Unpin from WinGlass",
 
   // ------------------------------------------------------------ utilities
   "pomodoro.focus": "Focus {round}/4",
@@ -940,6 +945,11 @@ const fr: Dictionary = {
   "keyboard.title": "Langue de saisie — cliquez pour changer",
   "apps.none": "Aucune application",
   "apps.newWindow": "Nouvelle fenêtre",
+  "apps.open": "Ouvrir",
+  "apps.closeWindow": "Fermer la fenêtre",
+  "apps.closeWindows": "Fermer toutes les fenêtres",
+  "apps.pin": "Épingler à WinGlass",
+  "apps.unpin": "Désépingler de WinGlass",
 
   // ------------------------------------------------------------ utilities
   "pomodoro.focus": "Focus {round}/4",

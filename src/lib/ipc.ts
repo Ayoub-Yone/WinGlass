@@ -61,6 +61,8 @@ export const ipc = {
   focusAppWindow: (hwnd: number) => invoke<void>("focus_app_window", { hwnd }),
   closeAppWindow: (hwnd: number) => invoke<void>("close_app_window", { hwnd }),
   launchApp: (path: string) => invoke<void>("launch_app", { path }),
+  pinApp: (target: string, name: string, iconKey: string) => invoke<void>("pin_app", { target, name, iconKey }),
+  unpinApp: (target: string) => invoke<void>("unpin_app", { target }),
   openTarget: (target: string) => invoke<void>("open_target", { target }),
   searchInstalledApps: (query: string) => invoke<AppHit[]>("search_installed_apps", { query }),
 

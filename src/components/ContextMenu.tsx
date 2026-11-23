@@ -3,6 +3,7 @@
 
 import { Check, ChevronRight, type LucideIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { useCapture } from "../lib/hitRegions";
 
 export interface MenuItem {
@@ -139,5 +140,6 @@ export function ContextMenu(props: { x: number; y: number; items: MenuItem[]; on
     };
   }, [onClose]);
 
-  return <MenuList items={items} onClose={onClose} style={style} listRef={ref} />;
+  // Portaled: a transformed / backdrop-filtered ancestor (dock slot, launcher popover) would make `fixed` relative to it.
+  return createPortal(<MenuList items={items} onClose={onClose} style={style} listRef={ref} />, document.body);
 }

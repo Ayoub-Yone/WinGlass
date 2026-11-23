@@ -1,9 +1,12 @@
 // Pinned taskbar shortcuts + live top-level windows, with running / focused indicator dots.
 // Click: launch (not running) · focus / minimize (one window) · window list (several windows).
 // Middle-click: start a new instance. Hover a running app: live window previews (WindowPreviewCard).
+// Right-click: Open / close windows · Pin to / Unpin from WinGlass. Order is stable: pins first (their saved
+// order), then unpinned apps in launch order (backend `LAUNCH_ORDER`); focus only moves the indicator.
 
-import { AppWindow as AppWindowIcon } from "lucide-react";
+import { AppWindow as AppWindowIcon, Pin, PinOff, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { Popover } from "../components/ui";
 import { WindowPreviewCard } from "../components/WindowPreviewCard";
 import { getHub } from "../engine/DataHub";
@@ -83,11 +86,13 @@ function AppButton(props: {
   onHoverStart: (app: AppEntry, el: HTMLElement) => void;
   onHoverEnd: () => void;
   onDismissPreview: () => void;
+  onChanged: () => void;
 }) {
-  const { app, onError, onHoverStart, onHoverEnd, onDismissPreview } = props;
+  const { app, onError, onHoverStart, onHoverEnd, onDismissPreview, onChanged } = props;
   const { t } = useI18n();
   const icon = useIcon(app.iconKey);
   const [menu, setMenu] = useState(false);
+  const [ctx, setCtx] = useState<{ x: number; y: number } | null>(null);
   const ref = useRef<HTMLButtonElement | null>(null);
   const running = app.windows.length > 0;
   const allMinimized = running && app.windows.every((w) => w.isMinimized);
@@ -107,6 +112,29 @@ function AppButton(props: {
     setMenu((m) => !m);
   };
 
+  const pinned = app.pinnedPath !== null;
+  const ctxItems: MenuItem[] = [
+    { id: "open", label: running ? t("apps.newWindow") : t("apps.open"), icon: AppWindowIcon, disabled: !(app.pinnedPath ?? app.exePath), onSelect: launch },
+    ...(running
+      ? [{
+          id: "close",
+          label: app.windows.length === 1 ? t("apps.closeWindow") : t("apps.closeWindows"),
+          icon: X,
+          onSelect: () => app.windows.forEach((w) => ipc.closeAppWindow(w.hwnd).catch((e) => onError(errorMessage(e)))),
+        }]
+      : []),
+    pinned
+      ? { id: "unpin", label: t("apps.unpin"), icon: PinOff, separatorBefore: true, onSelect: () => ipc.unpinApp(app.pinnedPath!).then(onChanged, (e) => onError(errorMessage(e))) }
+      : {
+          id: "pin",
+          label: t("apps.pin"),
+          icon: Pin,
+          separatorBefore: true,
+          disabled: !app.exePath,
+          onSelect: () => app.exePath && ipc.pinApp(app.exePath, app.name, app.iconKey).then(onChanged, (e) => onError(errorMessage(e))),
+        },
+  ];
+
   return (
     <>
       <button
@@ -119,6 +147,13 @@ function AppButton(props: {
         onClick={click}
         onPointerEnter={(e) => onHoverStart(app, e.currentTarget)}
         onPointerLeave={onHoverEnd}
+        onContextMenu={(e) => {
+          // Our own menu, not the dock's layout menu.
+          e.preventDefault();
+          e.stopPropagation();
+          onDismissPreview();
+          setCtx({ x: e.clientX, y: e.clientY });
+        }}
         onAuxClick={(e) => {
           if (e.button === 1) launch();
         }}
@@ -164,6 +199,7 @@ function AppButton(props: {
           {t("apps.newWindow")}
         </button>
       </Popover>
+      {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems} preferUp={getHub().position === "bottom"} onClose={() => setCtx(null)} />}
     </>
   );
 }
@@ -205,6 +241,8 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
     window.clearTimeout(openTimer.current);
     window.clearTimeout(closeTimer.current);
   }, []);
+  const [reloadKey, setReloadKey] = useState(0);
+  const reload = useCallback(() => setReloadKey((k) => k + 1), []);
   const hovered = hover ? apps.find((a) => a.id === hover.id && a.windows.length > 0) : undefined;
 
   useEffect(() => {
@@ -228,13 +266,13 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
       window.clearInterval(timer);
       off();
     };
-  }, [preview]);
+  }, [preview, reloadKey]);
 
   return (
     <div className="flex h-full shrink-0 items-center" title={error ?? undefined}>
       <div data-mag-group="apps" className="flex h-full items-center gap-[2px]">
         {apps.map((app) => (
-          <AppButton key={app.id} app={app} onError={setError} onHoverStart={hoverStart} onHoverEnd={scheduleClose} onDismissPreview={dismissPreview} />
+          <AppButton key={app.id} app={app} onError={setError} onHoverStart={hoverStart} onHoverEnd={scheduleClose} onDismissPreview={dismissPreview} onChanged={reload} />
         ))}
         {apps.length === 0 && <div className="whitespace-nowrap px-2 lb-muted">{t("apps.none")}</div>}
       </div>

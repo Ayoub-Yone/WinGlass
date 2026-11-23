@@ -6,9 +6,11 @@
 // completions instead: Enter opens it in Explorer (files are revealed, never executed).
 //   ↑ / ↓ select · Enter launches and dismisses · Esc / click outside closes.
 
-import { File, Folder, Globe, Search } from "lucide-react";
+import { File, Folder, Globe, Pin, PinOff, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppIcon } from "../components/AppIcon";
+import { ContextMenu } from "../components/ContextMenu";
+import { getHub } from "../engine/DataHub";
 import { Popover, WidgetCard } from "../components/ui";
 import { useI18n } from "../i18n";
 import { errorMessage, ipc, subscribe } from "../lib/ipc";
@@ -42,6 +44,17 @@ export function SearchWidget({ span, preview }: WidgetProps) {
   const input = useRef<HTMLInputElement | null>(null);
   const card = useRef<HTMLDivElement | null>(null);
   const seq = useRef(0);
+  const [ctx, setCtx] = useState<{ x: number; y: number; hit: AppHit; pinned: boolean } | null>(null);
+
+  const openPinMenu = (e: React.MouseEvent, hit: AppHit) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const at = { x: e.clientX, y: e.clientY };
+    ipc
+      .listApps()
+      .then((apps) => setCtx({ ...at, hit, pinned: apps.some((a) => a.pinnedPath === hit.path) }))
+      .catch((err) => setError(errorMessage(err)));
+  };
 
   const q = query.trim();
   const isPath = looksLikePath(q);
@@ -187,7 +200,7 @@ export function SearchWidget({ span, preview }: WidgetProps) {
             }
             if (item.kind === "app") {
               return (
-                <button key={item.hit.path} data-testid="search-hit" {...common}>
+                <button key={item.hit.path} data-testid="search-hit" {...common} onContextMenu={(e) => openPinMenu(e, item.hit)}>
                   <AppIcon iconKey={item.hit.path} />
                   <span className="min-w-0 flex-1 truncate font-medium">{item.hit.name}</span>
                   <span className="max-w-[40%] shrink-0 truncate lb-faint" style={{ fontSize: "var(--lb-small)" }}>
@@ -211,6 +224,19 @@ export function SearchWidget({ span, preview }: WidgetProps) {
             <div className="truncate px-2" style={{ fontSize: "var(--lb-small)", color: "var(--lb-red)" }} title={error}>
               {error}
             </div>
+          )}
+          {ctx && (
+            <ContextMenu
+              x={ctx.x}
+              y={ctx.y}
+              preferUp={getHub().position === "bottom"}
+              onClose={() => setCtx(null)}
+              items={[
+                ctx.pinned
+                  ? { id: "unpin", label: t("apps.unpin"), icon: PinOff, onSelect: () => ipc.unpinApp(ctx.hit.path).catch((e) => setError(errorMessage(e))) }
+                  : { id: "pin", label: t("apps.pin"), icon: Pin, onSelect: () => ipc.pinApp(ctx.hit.path, ctx.hit.name, ctx.hit.path).catch((e) => setError(errorMessage(e))) },
+              ]}
+            />
           )}
         </div>
       </Popover>

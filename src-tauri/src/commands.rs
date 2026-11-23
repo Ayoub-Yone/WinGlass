@@ -184,6 +184,36 @@ pub async fn list_apps() -> Result<Vec<AppEntry>, String> {
     blocking(|| Ok(apps_enum::list_apps())).await
 }
 
+fn save_pins(state: &AppState, pins: Vec<apps_enum::Pin>) -> Result<(), String> {
+    let json = serde_json::to_string(&pins).map_err(|e| e.to_string())?;
+    state.db.kv_set("pinned_apps", &json).map_err(|e| e.to_string())?;
+    apps_enum::set_pins(pins);
+    Ok(())
+}
+
+/// Appends to the WinGlass pin list (dock order = list order); no-op if already pinned.
+#[tauri::command]
+pub async fn pin_app(state: State<'_, AppState>, target: String, name: String, icon_key: String) -> Result<(), String> {
+    let lookup = target.clone();
+    let exe = blocking(move || Ok(apps_enum::target_exe(&lookup))).await?;
+    let mut pins = apps_enum::pins();
+    let same = |p: &apps_enum::Pin| {
+        p.target.eq_ignore_ascii_case(&target)
+            || matches!((&p.exe, &exe), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b))
+    };
+    if !pins.iter().any(same) {
+        pins.push(apps_enum::Pin { target, name, icon_key, exe });
+    }
+    save_pins(&state, pins)
+}
+
+#[tauri::command]
+pub fn unpin_app(state: State<'_, AppState>, target: String) -> Result<(), String> {
+    let mut pins = apps_enum::pins();
+    pins.retain(|p| p.target != target);
+    save_pins(&state, pins)
+}
+
 #[tauri::command]
 pub async fn get_app_icon(key: String) -> Result<Option<String>, String> {
     blocking(move || Ok(apps_enum::icon_data_url(&key))).await

@@ -196,7 +196,8 @@ export function Popover(props: {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
       const target = e.target as Node;
-      if (ref.current?.contains(target) || anchor.current?.contains(target)) return;
+      // A context menu opened from inside the popover (portaled to <body>) belongs to it.
+      if (ref.current?.contains(target) || anchor.current?.contains(target) || (target as Element).closest?.('[role="menu"]')) return;
       onClose();
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
