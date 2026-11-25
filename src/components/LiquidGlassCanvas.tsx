@@ -347,6 +347,8 @@ class GlassRenderer {
   private lumBuf = new Uint8Array(0);
   /** Mean luminance (0..1) of the desktop behind the pill for the latest frame; −1 before any. */
   luminance = -1;
+  /** WCAG 2.x relative luminance (linearised sRGB, 0..1) of the same area; −1 before any frame. */
+  relLuminance = -1;
 
   constructor(private canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", { premultipliedAlpha: true, antialias: false, alpha: true, preserveDrawingBuffer: false });
@@ -504,15 +506,19 @@ class GlassRenderer {
     const y0 = Math.floor(((this.srcH - iy - ih) / this.srcH) * t.h);
     const y1 = Math.min(t.h, Math.max(y0 + 1, Math.ceil(((this.srcH - iy) / this.srcH) * t.h)));
     let sum = 0;
+    let rel = 0;
     let count = 0;
+    const b = this.lumBuf;
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
         const i = (y * t.w + x) * 4;
-        sum += 0.2126 * this.lumBuf[i] + 0.7152 * this.lumBuf[i + 1] + 0.0722 * this.lumBuf[i + 2];
+        sum += 0.2126 * b[i] + 0.7152 * b[i + 1] + 0.0722 * b[i + 2];
+        rel += 0.2126 * SRGB_LINEAR[b[i]] + 0.7152 * SRGB_LINEAR[b[i + 1]] + 0.0722 * SRGB_LINEAR[b[i + 2]];
         count++;
       }
     }
     this.luminance = count ? sum / count / 255 : 0;
+    this.relLuminance = count ? rel / count : 0;
   }
 
   /** Composite pass only (hover animation, optics, radius, luminance / ambient easing). */
@@ -596,9 +602,35 @@ function parseInner(header: string | null, width: number, height: number): [numb
   return valid ? [x, y, w, h] : [0, 0, width, height];
 }
 
-/** Time constants of the adaptive-luminance and ambient-colour easing (the CSS bar glow takes 600 ms). */
-const LUM_TAU = 0.3;
+/** Time constants of the adaptive-luminance / foreground-ink and ambient-colour easing (the CSS bar glow takes 600 ms). */
+const LUM_TAU = 0.35;
 const AMBIENT_TAU = 0.2;
+
+/** sRGB byte -> linear channel, WCAG 2.x (webaim.org/resources/contrastchecker). */
+const SRGB_LINEAR = Float32Array.from({ length: 256 }, (_, v) => {
+  const c = v / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+});
+
+/** WCAG 2.x contrast ratio between two relative luminances. */
+function contrastRatio(a: number, b: number): number {
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+/** Dark ink of the Frost White theme (#111113), the foreground the dock switches to over bright desktops. */
+const INK_L = 0.0056;
+
+/** Whether the foreground should be dark ink (1) or stay white (0) over a backdrop of luminance `bg`.
+ *  The glass itself is never darkened: only the text and monochrome icons change. Ink wins once it
+ *  out-contrasts white (crossover L ≈ 0.19); ±0.02 of hysteresis keeps a backdrop near it from flickering. */
+function inkTarget(bg: number, current: number): number {
+  const margin = current >= 0.5 ? 0.02 : -0.02;
+  return contrastRatio(INK_L, bg + margin) > contrastRatio(1, bg + margin) ? 1 : 0;
+}
+console.assert(
+  inkTarget(1, 0) === 1 && inkTarget(0.05, 1) === 0 && inkTarget(0.2, 0) === 0 && inkTarget(0.2, 1) === 1 && contrastRatio(1, 0) === 21,
+  "inkTarget",
+);
 
 let probe: CanvasRenderingContext2D | null = null;
 /** Any CSS colour (the ambient palette is oklch) -> sRGB 0..1, rasterised by a 1×1 canvas. */
@@ -653,11 +685,19 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
     let lum = -1;
     let easedAt = 0;
     let lumCss = "";
+    let ink = -1;
+    let boostCss = "";
     const amb = [1, 1, 1, 1, 1, 1, 1, 1, 1];
     let ambMix = 0;
 
     const host = canvas.parentElement;
     const mirrorLuminance = () => {
+      // 0 = white foreground, 1 = dark ink (index.css mixes the text / icon colours with it).
+      const boost = ink.toFixed(3);
+      if (host && boost !== boostCss) {
+        boostCss = boost;
+        host.style.setProperty("--glass-contrast-boost", boost);
+      }
       const css = lum.toFixed(2);
       if (!host || css === lumCss) return;
       lumCss = css;
@@ -673,7 +713,10 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
         const dt = easedAt ? Math.min(0.1, (now - easedAt) / 1000) : 0;
         easedAt = now;
         const target = renderer.luminance;
-        lum = lum < 0 ? target : lum + (target - lum) * (1 - Math.exp(-dt / LUM_TAU));
+        const k = 1 - Math.exp(-dt / LUM_TAU);
+        lum = lum < 0 ? target : lum + (target - lum) * k;
+        const inkGoal = inkTarget(renderer.relLuminance, ink);
+        ink = ink < 0 ? inkGoal : ink + (inkGoal - ink) * k;
         // Ambient colour: glides between tracks; appears / fades out through the mix.
         const goal = ambientRef.current;
         const a = 1 - Math.exp(-dt / AMBIENT_TAU);
@@ -683,7 +726,8 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
         mirrorLuminance();
         // Keep easing (composite-only frames, ~1 s at most).
         const easing =
-          Math.abs(target - lum) > 0.004 || Math.abs((goal ? 1 : 0) - ambMix) > 0.004 || (goal !== null && goal.some((v, i) => Math.abs(v - amb[i]) > 0.004));
+          Math.abs(target - lum) > 0.004 ||
+          Math.abs(inkGoal - ink) > 0.002 || Math.abs((goal ? 1 : 0) - ambMix) > 0.004 || (goal !== null && goal.some((v, i) => Math.abs(v - amb[i]) > 0.004));
         if (easing) scheduleDraw();
         else easedAt = 0;
       }
@@ -758,6 +802,7 @@ export function LiquidGlassCanvas(props: { radius: number; frost: FrostPreset; a
       if (raf) cancelAnimationFrame(raf);
       renderer.dispose();
       host?.style.removeProperty("--lb-glass-lum");
+      host?.style.removeProperty("--glass-contrast-boost");
       if (host) delete host.dataset.glassBright;
       activeCb.current(false);
     };

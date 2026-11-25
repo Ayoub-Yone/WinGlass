@@ -401,8 +401,14 @@ html[data-hidden="true"] *::after {
    rectangular CSS shadow would not follow the droplet. */
 .lb-pill[data-glass="live"] {
   box-shadow: none;
-  /* Readable over any desktop without darkening the glass itself. */
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+  /* Over a bright desktop the glass stays clear and only the foreground changes: white fades to the
+     Frost White ink (--glass-contrast-boost 0..1, eased 350 ms by LiquidGlassCanvas, WCAG contrast). */
+  --lb-text: color-mix(in oklch, #f5f5f7, #111113 calc(var(--glass-contrast-boost, 0) * 100%));
+  --lb-muted: color-mix(in oklch, rgb(235 235 245 / 0.7), rgb(60 60 67 / 0.7) calc(var(--glass-contrast-boost, 0) * 100%));
+  --lb-faint: color-mix(in oklch, rgb(235 235 245 / 0.4), rgb(60 60 67 / 0.4) calc(var(--glass-contrast-boost, 0) * 100%));
+  color: var(--lb-text);
+  /* The white type keeps its soft shadow; dark ink needs none. */
+  text-shadow: 0 1px 3px rgb(0 0 0 / calc(0.65 * (1 - var(--glass-contrast-boost, 0))));
 }
 .lb-pill[data-glass="live"][data-ambient="on"]:not(.lb-clear) {
   /* The shader draws the music tint and glow inside / around the deformed capsule. */
@@ -412,7 +418,7 @@ html[data-hidden="true"] *::after {
   display: none;
 }
 .lb-pill[data-glass="live"] svg {
-  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.65));
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / calc(0.65 * (1 - var(--glass-contrast-boost, 0)))));
 }
 
 /* ---------------------------------------------------------------- full-bleed album art */
