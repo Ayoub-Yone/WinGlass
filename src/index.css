@@ -202,6 +202,31 @@ textarea {
   }
 }
 
+/* macOS-style dock icon motion. Runs on the <img> (the slot and icon wrapper belong to lib/magnify.ts).
+   --lb-away: -1 docked bottom (icons jump up), 1 docked top. */
+.lb-dock-img {
+  transform-origin: 50% calc(50% - 50% * var(--lb-away, -1));
+  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2), filter 180ms ease;
+}
+.lb-dock-launch {
+  animation: lb-dock-launch 620ms cubic-bezier(0.3, 0, 0.5, 1) infinite;
+}
+.lb-drop-target {
+  transform: translateY(calc(6px * var(--lb-away, -1))) scale(1.14);
+  filter: brightness(0.78);
+}
+@keyframes lb-dock-launch {
+  0%, 100% { transform: translateY(0); }
+  45% { transform: translateY(calc(14px * var(--lb-away, -1))); }
+  /* landing squash */
+  88% { transform: translateY(0) scale(1.06, 0.92); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lb-dock-launch {
+    animation: none !important;
+  }
+}
+
 /* Hairline inside every widget card (visible on matte liquid glass, transparent elsewhere).
    An inset shadow rather than a real border so card content keeps its exact geometry. */
 .lb-card {

@@ -219,9 +219,19 @@ pub async fn get_app_icon(key: String) -> Result<Option<String>, String> {
     blocking(move || Ok(apps_enum::icon_data_url(&key))).await
 }
 
+/// The dock's app icons on screen, one entry per listed window (title-bar minimize genie target).
 #[tauri::command]
-pub fn activate_window(hwnd: i64) -> Result<(), String> {
-    apps_enum::activate_window(hwnd)
+pub fn set_dock_icon_rects(icons: Vec<(i64, [i32; 4])>) {
+    use windows::Win32::Foundation::RECT;
+    crate::win32::genie::set_icon_rects(
+        icons.into_iter().map(|(hwnd, [left, top, right, bottom])| (hwnd as isize, RECT { left, top, right, bottom })).filter(|(_, r)| r.right > r.left && r.bottom > r.top),
+    );
+}
+
+/// `icon`: the dock icon's screen rect [left, top, right, bottom] (physical px) for the genie animation.
+#[tauri::command]
+pub fn activate_window(hwnd: i64, icon: Option<[i32; 4]>) -> Result<(), String> {
+    apps_enum::activate_window(hwnd, icon)
 }
 
 #[tauri::command]
@@ -229,13 +239,37 @@ pub async fn launch_app(path: String) -> Result<(), String> {
     blocking(move || launch_checked(&path)).await
 }
 
+/// Files dragged from Explorer onto a dock app icon: open them with that app.
+#[tauri::command]
+pub async fn open_files_with(path: String, files: Vec<String>) -> Result<(), String> {
+    blocking(move || {
+        check_target(&path)?;
+        if path.to_ascii_lowercase().ends_with(".url") {
+            return Err("internet shortcuts cannot open files".into());
+        }
+        if files.is_empty() || files.len() > 64 {
+            return Err("drop between 1 and 64 files".into());
+        }
+        if let Some(bad) = files.iter().find(|f| !app_search::is_local_path(f) || f.contains('"') || !std::path::Path::new(f).exists()) {
+            return Err(format!("{bad} is not an existing local path"));
+        }
+        apps_enum::open_files_with(&path, files)
+    })
+    .await
+}
+
 fn launch_checked(path: &str) -> Result<(), String> {
+    check_target(path)?;
+    apps_enum::launch(path)
+}
+
+fn check_target(path: &str) -> Result<(), String> {
     // Packaged (MSIX / Store) apps: only AUMIDs the launcher index found in the AppsFolder.
     if let Some(aumid) = path.strip_prefix(app_search::APPS_FOLDER_PREFIX) {
         if aumid.is_empty() || !app_search::is_indexed(path) {
             return Err("this app is not in the app index".into());
         }
-        return apps_enum::launch(path);
+        return Ok(());
     }
     let lower = path.to_ascii_lowercase();
     if !(lower.ends_with(".lnk") || lower.ends_with(".exe") || lower.ends_with(".url")) || !std::path::Path::new(path).exists() {
@@ -245,7 +279,7 @@ fn launch_checked(path: &str) -> Result<(), String> {
     if lower.ends_with(".url") && !app_search::is_indexed(path) {
         return Err("this internet shortcut is not in the app index".into());
     }
-    apps_enum::launch(path)
+    Ok(())
 }
 
 /// Quick folders, https links and a small allow-list of Windows URI schemes.

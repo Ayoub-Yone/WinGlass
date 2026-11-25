@@ -1,9 +1,12 @@
 // Pinned taskbar shortcuts + live top-level windows, with running / focused indicator dots.
 // Click: launch (not running) · focus / minimize (one window) · window list (several windows).
 // Middle-click: start a new instance. Hover a running app: live window previews (WindowPreviewCard).
+// Drop files from Explorer on an icon: open them with that app (`open_files_with`).
 // Right-click: Open / close windows · Pin to / Unpin from WinGlass. Order is stable: pins first (their saved
 // order), then unpinned apps in launch order (backend `LAUNCH_ORDER`); focus only moves the indicator.
 
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppWindow as AppWindowIcon, Pin, PinOff, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
@@ -75,6 +78,13 @@ function useIcon(key: string): string | null {
   return src;
 }
 
+type ScreenRect = [number, number, number, number];
+/** A dock element's rect in physical screen px, given the dock window's inner position. */
+function toScreen(r: DOMRect, origin: { x: number; y: number }): ScreenRect {
+  const d = devicePixelRatio;
+  return [origin.x + r.left * d, origin.y + r.top * d, origin.x + r.right * d, origin.y + r.bottom * d].map(Math.round) as ScreenRect;
+}
+
 /** First hover waits this long; moving to an adjacent running app while a card is open is instant. */
 const PREVIEW_DELAY_MS = 200;
 /** Grace period to reach the card from the icon (or slide to a neighbour) before it closes. */
@@ -87,8 +97,11 @@ function AppButton(props: {
   onHoverEnd: () => void;
   onDismissPreview: () => void;
   onChanged: () => void;
+  dropTarget: boolean;
+  /** Bumped each time files are dropped on this icon. */
+  dropCount: number;
 }) {
-  const { app, onError, onHoverStart, onHoverEnd, onDismissPreview, onChanged } = props;
+  const { app, onError, onHoverStart, onHoverEnd, onDismissPreview, onChanged, dropTarget, dropCount } = props;
   const { t } = useI18n();
   const icon = useIcon(app.iconKey);
   const [menu, setMenu] = useState(false);
@@ -97,18 +110,50 @@ function AppButton(props: {
   const running = app.windows.length > 0;
   const allMinimized = running && app.windows.every((w) => w.isMinimized);
 
+  // macOS dock motion: the icon bounces while its app opens (click or file drop), nothing else.
+  const [bouncing, setBouncing] = useState(false);
+  const bounceSince = useRef(0);
+  const bounce = () => {
+    bounceSince.current = Date.now();
+    setBouncing(true);
+  };
+  useEffect(() => {
+    if (dropCount > 0) bounce();
+  }, [dropCount]);
+
+  const launching = useRef(false);
   const launch = () => {
     const target = app.pinnedPath ?? app.exePath;
-    if (target) ipc.launchApp(target).catch((e) => onError(errorMessage(e)));
+    // One launch in flight per icon: repeated clicks on a slow app no longer stack launch threads.
+    if (!target || launching.current) return;
+    launching.current = true;
+    bounce();
+    ipc
+      .launchApp(target)
+      .catch((e) => {
+        setBouncing(false);
+        onError(errorMessage(e));
+      })
+      .finally(() => (launching.current = false));
   };
+  const imgClass = `lb-dock-img ${dropTarget ? "lb-drop-target" : ""} ${bouncing ? "lb-dock-launch" : ""}`;
+  const away = getHub().position === "top" ? 1 : -1;
+
+  /** The icon on screen (physical px): where the genie minimizes to and restores from. */
+  const iconRect = async (): Promise<ScreenRect | undefined> => {
+    const el = ref.current?.querySelector("[data-mag-icon]");
+    const origin = await getCurrentWindow().innerPosition().catch(() => null);
+    return el && origin ? toScreen(el.getBoundingClientRect(), origin) : undefined;
+  };
+  const activate = (hwnd: number) =>
+    void iconRect()
+      .then((rect) => ipc.activateWindow(hwnd, rect))
+      .catch((e) => onError(errorMessage(e)));
 
   const click = () => {
     onDismissPreview();
     if (!running) return launch();
-    if (app.windows.length === 1) {
-      ipc.activateWindow(app.windows[0].hwnd).catch((e) => onError(errorMessage(e)));
-      return;
-    }
+    if (app.windows.length === 1) return activate(app.windows[0].hwnd);
     setMenu((m) => !m);
   };
 
@@ -141,6 +186,7 @@ function AppButton(props: {
         ref={ref}
         data-mag=""
         data-mag-label={app.name}
+        data-app-id={app.id}
         className="lb-icon-btn lb-focus relative flex h-full shrink-0 flex-col items-center justify-center rounded-[12px]"
         style={{ width: "calc(var(--lb-icon) + 12px)" }}
         title={app.windows.length === 1 ? app.windows[0].title : app.name}
@@ -158,16 +204,23 @@ function AppButton(props: {
           if (e.button === 1) launch();
         }}
       >
-        <span data-mag-icon="" className="flex items-center justify-center" style={{ width: "var(--lb-icon)", height: "var(--lb-icon)" }}>
+        <span
+          data-mag-icon=""
+          className="flex items-center justify-center"
+          style={{ width: "var(--lb-icon)", height: "var(--lb-icon)", ["--lb-away" as string]: away }}
+          // The bounce runs until the app has a window (checked once per hop, so it always lands), 10 s at most.
+          onAnimationIteration={() => (running || Date.now() - bounceSince.current > 10_000) && setBouncing(false)}
+        >
           {icon ? (
             <img
               src={icon}
               alt=""
               draggable={false}
+              className={imgClass}
               style={{ width: "var(--lb-icon)", height: "var(--lb-icon)", opacity: allMinimized ? 0.72 : 1, imageRendering: "auto" }}
             />
           ) : (
-            <AppWindowIcon style={{ width: "var(--lb-icon)", height: "var(--lb-icon)" }} className="lb-muted" />
+            <AppWindowIcon style={{ width: "var(--lb-icon)", height: "var(--lb-icon)" }} className={`lb-muted ${imgClass}`} />
           )}
         </span>
         <span
@@ -188,7 +241,7 @@ function AppButton(props: {
             className="lb-card flex w-full items-center gap-2 rounded-lg border-none px-2 py-1.5 text-left"
             onClick={() => {
               setMenu(false);
-              ipc.activateWindow(w.hwnd).catch((e) => onError(errorMessage(e)));
+              activate(w.hwnd);
             }}
           >
             <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: w.isActive ? "var(--lb-accent)" : "var(--lb-muted)" }} />
@@ -245,6 +298,59 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
   const hovered = hover ? apps.find((a) => a.id === hover.id && a.windows.length > 0) : undefined;
 
+  // Where each listed window's icon sits, so a click on the window's own minimize button can run the
+  // genie without a round trip (backend `set_dock_icon_rects`). Sent only when it changed; empty
+  // while the dock is hidden behind a fullscreen app.
+  const sentIcons = useRef("");
+  useEffect(() => {
+    if (preview) return;
+    let alive = true;
+    void getCurrentWindow()
+      .innerPosition()
+      .then((origin) => {
+        if (!alive) return;
+        const icons = getHub().fullscreen
+          ? []
+          : apps.flatMap((a) => {
+              const el = document.querySelector(`[data-app-id="${CSS.escape(a.id)}"] [data-mag-icon]`);
+              if (!el) return [];
+              const rect = toScreen(el.getBoundingClientRect(), origin);
+              return a.windows.map((w): [number, ScreenRect] => [w.hwnd, rect]);
+            });
+        const key = JSON.stringify(icons);
+        if (key === sentIcons.current) return;
+        sentIcons.current = key;
+        void ipc.setDockIconRects(icons).catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [apps, preview]);
+
+  // Files dragged from Explorer: Tauri's native drop handler gives real paths (HTML5 drop does not).
+  const [dropId, setDropId] = useState<string | null>(null);
+  const [drops, setDrops] = useState<Record<string, number>>({});
+  const appsRef = useRef(apps);
+  appsRef.current = apps;
+  useEffect(() => {
+    if (preview) return;
+    const hit = (p: { x: number; y: number }) =>
+      document.elementFromPoint(p.x / devicePixelRatio, p.y / devicePixelRatio)?.closest<HTMLElement>("[data-app-id]")?.dataset.appId ?? null;
+    const off = getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (payload.type === "leave") return setDropId(null);
+      const id = hit(payload.position);
+      if (payload.type !== "drop") return setDropId(id);
+      setDropId(null);
+      const app = appsRef.current.find((a) => a.id === id);
+      const target = app && (app.pinnedPath ?? app.exePath);
+      if (!app || !target || payload.paths.length === 0) return;
+      setDrops((d) => ({ ...d, [app.id]: (d[app.id] ?? 0) + 1 }));
+      ipc.openFilesWith(target, payload.paths).catch((e) => setError(errorMessage(e)));
+    });
+    return () => void off.then((f) => f());
+  }, [preview]);
+
   useEffect(() => {
     let alive = true;
     let pending = false;
@@ -272,7 +378,7 @@ export function PinnedRunningApps({ preview: previewProp }: WidgetProps) {
     <div className="flex h-full shrink-0 items-center" title={error ?? undefined}>
       <div data-mag-group="apps" className="flex h-full items-center gap-[2px]">
         {apps.map((app) => (
-          <AppButton key={app.id} app={app} onError={setError} onHoverStart={hoverStart} onHoverEnd={scheduleClose} onDismissPreview={dismissPreview} onChanged={reload} />
+          <AppButton key={app.id} app={app} onError={setError} onHoverStart={hoverStart} onHoverEnd={scheduleClose} onDismissPreview={dismissPreview} onChanged={reload} dropTarget={dropId === app.id} dropCount={drops[app.id] ?? 0} />
         ))}
         {apps.length === 0 && <div className="whitespace-nowrap px-2 lb-muted">{t("apps.none")}</div>}
       </div>

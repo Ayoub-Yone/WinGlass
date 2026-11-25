@@ -3,6 +3,7 @@ pub mod brightness;
 pub mod apps_enum;
 pub mod audio;
 pub mod dpapi;
+pub mod genie;
 pub mod guardian;
 pub mod liner;
 pub mod media_smtc;

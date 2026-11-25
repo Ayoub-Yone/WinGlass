@@ -180,6 +180,8 @@ pub fn run() {
             commands::get_app_icon,
             commands::activate_window,
             commands::launch_app,
+            commands::open_files_with,
+            commands::set_dock_icon_rects,
             commands::open_target,
             commands::search_installed_apps,
             commands::audio_state,
@@ -289,6 +291,7 @@ pub fn run() {
                 }
             }));
 
+            win32::genie::start_title_bar_hook();
             window_manager::start_hit_testing();
             window_manager::start_fullscreen_watch(handle.clone());
             updater::start(handle.clone());

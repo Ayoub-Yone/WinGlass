@@ -56,11 +56,15 @@ export const ipc = {
 
   listApps: () => invoke<AppEntry[]>("list_apps"),
   getAppIcon: (key: string) => invoke<string | null>("get_app_icon", { key }),
-  activateWindow: (hwnd: number) => invoke<void>("activate_window", { hwnd }),
+  /** `icon`: the dock icon's screen rect [l, t, r, b] in physical px, for the genie minimize / restore. */
+  activateWindow: (hwnd: number, icon?: [number, number, number, number]) => invoke<void>("activate_window", { hwnd, icon: icon ?? null }),
+  /** Each dock-listed window's icon rect (screen px): target of the title-bar minimize genie. */
+  setDockIconRects: (icons: [number, [number, number, number, number]][]) => invoke<void>("set_dock_icon_rects", { icons }),
   getAppWindowPreviews: (appId: string) => invoke<WindowPreview[]>("get_app_window_previews", { appId }),
   focusAppWindow: (hwnd: number) => invoke<void>("focus_app_window", { hwnd }),
   closeAppWindow: (hwnd: number) => invoke<void>("close_app_window", { hwnd }),
   launchApp: (path: string) => invoke<void>("launch_app", { path }),
+  openFilesWith: (path: string, files: string[]) => invoke<void>("open_files_with", { path, files }),
   pinApp: (target: string, name: string, iconKey: string) => invoke<void>("pin_app", { target, name, iconKey }),
   unpinApp: (target: string) => invoke<void>("unpin_app", { target }),
   openTarget: (target: string) => invoke<void>("open_target", { target }),

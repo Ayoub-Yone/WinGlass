@@ -26,13 +26,13 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     ILFree, IShellLinkW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_PIDL, SHGetFileInfoW, SHParseDisplayName,
-    ShellExecuteW, ShellLink,
+    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, DI_MASK, DI_NORMAL, DestroyIcon, DrawIconEx, EnumChildWindows, EnumWindows, GCLP_HICON, GW_OWNER,
     GWL_EXSTYLE, GetClassLongPtrW, GetForegroundWindow, GetIconInfo, GetWindow, GetWindowLongPtrW,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HICON, ICON_BIG, ICONINFO, IsIconic,
-    IsWindowVisible, SMTO_ABORTIFHUNG, SHOW_WINDOW_CMD, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL, SendMessageTimeoutW,
+    IsWindowVisible, SMTO_ABORTIFHUNG, SHOW_WINDOW_CMD, SW_RESTORE, SW_SHOWNORMAL, SendMessageTimeoutW,
     SetForegroundWindow, ShowWindow, SwitchToThisWindow, WM_GETICON, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
 };
@@ -839,18 +839,30 @@ pub fn icon_data_url(key: &str) -> Option<String> {
 // ---------------------------------------------------------------------------------------------
 
 /// Taskbar semantics: focused -> minimize, minimized -> restore + focus, background -> focus.
-pub fn activate_window(hwnd_raw: i64) -> Result<(), String> {
+/// With `icon` (the dock icon's screen rect), minimize / restore run the genie animation.
+pub fn activate_window(hwnd_raw: i64, icon: Option<[i32; 4]>) -> Result<(), String> {
+    use windows::Win32::Foundation::RECT;
     let hwnd = HWND(hwnd_raw as isize as *mut core::ffi::c_void);
+    let icon = icon.map(|[left, top, right, bottom]| RECT { left, top, right, bottom }).filter(|r| r.right > r.left && r.bottom > r.top);
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() {
             return Err("window no longer exists".into());
         }
         let last_external = sentinel::last_external_foreground();
         if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-            focus(hwnd);
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+            match icon {
+                Some(r) => super::genie::restore(hwnd, r, focus),
+                None => {
+                    super::genie::restore_window(hwnd);
+                    focus(hwnd);
+                }
+            }
         } else if last_external == hwnd.0 as isize {
-            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            match icon {
+                Some(r) => super::genie::minimize(hwnd, r),
+                None => super::genie::minimize_window(hwnd),
+            }
         } else {
             focus(hwnd);
         }
@@ -868,27 +880,82 @@ pub fn focus(hwnd: HWND) {
 
 /// Launcher / pinned-app click. Order: an existing window of the same executable is restored and
 /// focused (single-instance apps: Task Manager, Discord, Steam…); a packaged app is activated by
-/// AUMID; anything else goes through `ShellExecuteW`, which runs `.lnk` targets and shows the UAC
+/// AUMID; anything else goes through `ShellExecuteExW`, which runs `.lnk` targets and shows the UAC
 /// prompt for elevated binaries (`taskmgr.exe`) instead of failing with ERROR_ELEVATION_REQUIRED.
 /// `target` must already be validated by the caller (`commands::launch_app`).
 pub fn launch(target: &str) -> Result<(), String> {
     let target = target.to_string();
+    on_launch_thread(move || launch_on_sta(&target))
+}
+
+/// Files dropped on a dock icon: open them with that app (macOS dock semantics). `target` and
+/// `files` must already be validated by the caller (`commands::open_files_with`). Never surfaces an
+/// existing window instead: single-instance apps get the paths through their own relaunch hand-off.
+pub fn open_files_with(target: &str, files: Vec<String>) -> Result<(), String> {
+    let target = target.to_string();
+    on_launch_thread(move || {
+        unsafe {
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+        }
+        if let Some(aumid) = target.strip_prefix(super::app_search::APPS_FOLDER_PREFIX) {
+            if let Some(exe) = known_folder_exe(aumid) {
+                return shell_open(&exe, Some(&quote_args(&files)));
+            }
+            return files.iter().try_for_each(|f| activate_packaged_for_file(aumid, f).map(drop).map_err(|e| format!("ActivateForFile failed ({e})")));
+        }
+        let exe = if is_shortcut(&target) { resolve_shortcut(Path::new(&target)).ok_or("shortcut has no target")? } else { target.clone() };
+        shell_open(&exe, Some(&quote_args(&files)))
+    })
+}
+
+/// Paths are validated (existing, local) so they never contain `"`; quoting keeps spaces intact.
+fn quote_args(files: &[String]) -> String {
+    files.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(" ")
+}
+
+fn activate_packaged_for_file(aumid: &str, file: &str) -> windows::core::Result<u32> {
+    use windows::Win32::System::Com::CLSCTX_LOCAL_SERVER;
+    use windows::Win32::UI::Shell::{
+        ApplicationActivationManager, IApplicationActivationManager, IShellItem, SHCreateItemFromParsingName,
+        SHCreateShellItemArrayFromShellItem,
+    };
+    let id = wide(aumid);
+    let path = wide(file);
+    let verb = wide("open");
+    unsafe {
+        let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(path.as_ptr()), None)?;
+        let items: windows::Win32::UI::Shell::IShellItemArray = SHCreateShellItemArrayFromShellItem(&item)?;
+        let manager: IApplicationActivationManager = CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?;
+        manager.ActivateForFile(PCWSTR(id.as_ptr()), &items, PCWSTR(verb.as_ptr()))
+    }
+}
+
+fn on_launch_thread(job: impl FnOnce() -> Result<(), String> + Send + 'static) -> Result<(), String> {
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+    let (tx, rx) = sync_channel(1);
     // Own STA thread: ShellExecute wants an STA, and a UAC prompt can hold the call for as long as
     // the user takes (the shared shell STA would time out and block icon extraction meanwhile).
     std::thread::Builder::new()
         .name("winglass-launch".into())
         .spawn(move || {
             let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-            let out = launch_on_sta(&target);
+            let out = job();
             if hr.is_ok() {
                 unsafe { CoUninitialize() };
             }
-            out
+            let _ = tx.send(out);
         })
-        .map_err(|e| e.to_string())?
-        .join()
-        .map_err(|_| "launch thread panicked".to_string())?
+        .map_err(|e| e.to_string())?;
+    // A hung shell verb or a broken Store activation never holds the caller: after the timeout the
+    // thread is left to finish (or wait on a UAC prompt) on its own and cleans up after itself.
+    match rx.recv_timeout(LAUNCH_TIMEOUT) {
+        Ok(out) => out,
+        Err(RecvTimeoutError::Timeout) => Err("The app did not answer within 3 s (it may still open).".into()),
+        Err(RecvTimeoutError::Disconnected) => Err("launch thread panicked".into()),
+    }
 }
+
+const LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn launch_on_sta(target: &str) -> Result<(), String> {
     // The click on the dock was the last input, so this process may set the foreground: pass that
@@ -999,18 +1066,18 @@ fn shell_exec(verb: &str, target: &str, args: Option<&str>, show: SHOW_WINDOW_CM
     let wverb = wide(verb);
     let wtarget = wide(target);
     let wargs = args.map(wide);
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(wverb.as_ptr()),
-            PCWSTR(wtarget.as_ptr()),
-            wargs.as_ref().map(|a| PCWSTR(a.as_ptr())).unwrap_or(PCWSTR::null()),
-            PCWSTR::null(),
-            show,
-        )
+    // FLAG_NO_UI: a missing target returns an error instead of a modal "Windows cannot find…" box that
+    // stays hidden behind the (hidden) taskbar and pins this thread. The UAC prompt still shows.
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
+        lpVerb: PCWSTR(wverb.as_ptr()),
+        lpFile: PCWSTR(wtarget.as_ptr()),
+        lpParameters: wargs.as_ref().map(|a| PCWSTR(a.as_ptr())).unwrap_or(PCWSTR::null()),
+        nShow: show.0,
+        ..Default::default()
     };
-    // ShellExecute returns a value > 32 on success.
-    if result.0 as isize > 32 { Ok(()) } else { Err(format!("ShellExecuteW failed ({})", result.0 as isize)) }
+    unsafe { ShellExecuteExW(&mut info) }.map_err(|e| format!("ShellExecuteExW failed ({e})"))
 }
 
 #[cfg(test)]
